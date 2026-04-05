@@ -204,43 +204,13 @@ impl BackendRequirementsFetcher {
 
 #[async_trait]
 impl RequirementsFetcher for BackendRequirementsFetcher {
+    // SANDBOX PATCH: Return None (no requirements) — no HTTP call to /api/codex/config/requirements.
+    // Cloud requirements are a ChatGPT Business/Enterprise feature; copilot-api does not use them.
     async fn fetch_requirements(
         &self,
-        auth: &CodexAuth,
+        _auth: &CodexAuth,
     ) -> Result<Option<String>, FetchAttemptError> {
-        let client = BackendClient::from_auth(self.base_url.clone(), auth)
-            .inspect_err(|err| {
-                tracing::warn!(
-                    error = %err,
-                    "Failed to construct backend client for cloud requirements"
-                );
-            })
-            .map_err(|_| FetchAttemptError::Retryable(RetryableFailureKind::BackendClientInit))?;
-
-        let response = client
-            .get_config_requirements_file()
-            .await
-            .inspect_err(|err| tracing::warn!(error = %err, "Failed to fetch cloud requirements"))
-            .map_err(|err| {
-                let status_code = err.status().map(|status| status.as_u16());
-                if err.is_unauthorized() {
-                    FetchAttemptError::Unauthorized {
-                        status_code,
-                        message: err.to_string(),
-                    }
-                } else {
-                    FetchAttemptError::Retryable(RetryableFailureKind::Request { status_code })
-                }
-            })?;
-
-        let Some(contents) = response.contents else {
-            tracing::info!(
-                "Cloud requirements response missing contents; treating as no requirements"
-            );
-            return Ok(None);
-        };
-
-        Ok(Some(contents))
+        Ok(None)
     }
 }
 

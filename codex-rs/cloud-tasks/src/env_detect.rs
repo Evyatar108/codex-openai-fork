@@ -1,8 +1,13 @@
+#[allow(unused_imports)]
 use codex_client::build_reqwest_client_with_custom_ca;
+#[allow(unused_imports)]
 use reqwest::header::CONTENT_TYPE;
 use reqwest::header::HeaderMap;
+#[allow(unused_imports)]
 use std::collections::HashMap;
+#[allow(unused_imports)]
 use tracing::info;
+#[allow(unused_imports)]
 use tracing::warn;
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -22,91 +27,18 @@ pub struct AutodetectSelection {
     pub label: Option<String>,
 }
 
+// SANDBOX PATCH: Return "no environments" immediately — no HTTP calls to
+// /api/codex/environments or /wham/environments.  Environment autodetection is
+// a ChatGPT Cloud feature; copilot-api does not use it.
 pub async fn autodetect_environment_id(
-    base_url: &str,
-    headers: &HeaderMap,
-    desired_label: Option<String>,
+    _base_url: &str,
+    _headers: &HeaderMap,
+    _desired_label: Option<String>,
 ) -> anyhow::Result<AutodetectSelection> {
-    // 1) Try repo-specific environments based on local git origins (GitHub only, like VSCode)
-    let origins = get_git_origins();
-    crate::append_error_log(format!("env: git origins: {origins:?}"));
-    let mut by_repo_envs: Vec<CodeEnvironment> = Vec::new();
-    for origin in &origins {
-        if let Some((owner, repo)) = parse_owner_repo(origin) {
-            let url = if base_url.contains("/backend-api") {
-                format!(
-                    "{}/wham/environments/by-repo/{}/{}/{}",
-                    base_url, "github", owner, repo
-                )
-            } else {
-                format!(
-                    "{}/api/codex/environments/by-repo/{}/{}/{}",
-                    base_url, "github", owner, repo
-                )
-            };
-            crate::append_error_log(format!("env: GET {url}"));
-            match get_json::<Vec<CodeEnvironment>>(&url, headers).await {
-                Ok(mut list) => {
-                    crate::append_error_log(format!(
-                        "env: by-repo returned {} env(s) for {owner}/{repo}",
-                        list.len(),
-                    ));
-                    by_repo_envs.append(&mut list);
-                }
-                Err(e) => crate::append_error_log(format!(
-                    "env: by-repo fetch failed for {owner}/{repo}: {e}"
-                )),
-            }
-        }
-    }
-    if let Some(env) = pick_environment_row(&by_repo_envs, desired_label.as_deref()) {
-        return Ok(AutodetectSelection {
-            id: env.id.clone(),
-            label: env.label.as_deref().map(str::to_owned),
-        });
-    }
-
-    // 2) Fallback to the full list
-    let list_url = if base_url.contains("/backend-api") {
-        format!("{base_url}/wham/environments")
-    } else {
-        format!("{base_url}/api/codex/environments")
-    };
-    crate::append_error_log(format!("env: GET {list_url}"));
-    // Fetch and log the full environments JSON for debugging
-    let http = build_reqwest_client_with_custom_ca(reqwest::Client::builder())?;
-    let res = http.get(&list_url).headers(headers.clone()).send().await?;
-    let status = res.status();
-    let ct = res
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let body = res.text().await.unwrap_or_default();
-    crate::append_error_log(format!("env: status={status} content-type={ct}"));
-    match serde_json::from_str::<serde_json::Value>(&body) {
-        Ok(v) => {
-            let pretty = serde_json::to_string_pretty(&v).unwrap_or(body.clone());
-            crate::append_error_log(format!("env: /environments JSON (pretty):\n{pretty}"));
-        }
-        Err(_) => crate::append_error_log(format!("env: /environments (raw):\n{body}")),
-    }
-    if !status.is_success() {
-        anyhow::bail!("GET {list_url} failed: {status}; content-type={ct}; body={body}");
-    }
-    let all_envs: Vec<CodeEnvironment> = serde_json::from_str(&body).map_err(|e| {
-        anyhow::anyhow!("Decode error for {list_url}: {e}; content-type={ct}; body={body}")
-    })?;
-    if let Some(env) = pick_environment_row(&all_envs, desired_label.as_deref()) {
-        return Ok(AutodetectSelection {
-            id: env.id.clone(),
-            label: env.label.as_deref().map(str::to_owned),
-        });
-    }
     anyhow::bail!("no environments available")
 }
 
+#[allow(dead_code)]
 fn pick_environment_row(
     envs: &[CodeEnvironment],
     desired_label: Option<&str>,
@@ -144,6 +76,7 @@ fn pick_environment_row(
     None
 }
 
+#[allow(dead_code)]
 async fn get_json<T: serde::de::DeserializeOwned>(
     url: &str,
     headers: &HeaderMap,
