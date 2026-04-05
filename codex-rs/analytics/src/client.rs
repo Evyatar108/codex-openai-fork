@@ -13,6 +13,8 @@ use crate::facts::SkillInvocation;
 use crate::facts::SkillInvokedInput;
 use crate::facts::SubAgentThreadStartedInput;
 use crate::facts::TrackEventsContext;
+// SANDBOX PATCH: AnalyticsReducer unused since telemetry is disabled
+#[allow(unused_imports)]
 use crate::reducer::AnalyticsReducer;
 use codex_app_server_protocol::ClientResponse;
 use codex_app_server_protocol::InitializeParams;
@@ -43,15 +45,11 @@ pub struct AnalyticsEventsClient {
 }
 
 impl AnalyticsEventsQueue {
-    pub(crate) fn new(auth_manager: Arc<AuthManager>, base_url: String) -> Self {
+    pub(crate) fn new(_auth_manager: Arc<AuthManager>, _base_url: String) -> Self {
         let (sender, mut receiver) = mpsc::channel(ANALYTICS_EVENTS_QUEUE_SIZE);
+        // SANDBOX PATCH: drain events without sending to disable telemetry
         tokio::spawn(async move {
-            let mut reducer = AnalyticsReducer::default();
-            while let Some(input) = receiver.recv().await {
-                let mut events = Vec::new();
-                reducer.ingest(input, &mut events).await;
-                send_track_events(&auth_manager, &base_url, events).await;
-            }
+            while receiver.recv().await.is_some() {}
         });
         Self {
             sender,
@@ -229,6 +227,8 @@ impl AnalyticsEventsClient {
     }
 }
 
+// SANDBOX PATCH: unused since telemetry is disabled
+#[allow(dead_code)]
 async fn send_track_events(
     auth_manager: &AuthManager,
     base_url: &str,
