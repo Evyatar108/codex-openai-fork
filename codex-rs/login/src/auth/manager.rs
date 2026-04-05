@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chrono::Utc;
+#[allow(unused_imports)]
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
@@ -24,6 +25,7 @@ pub use crate::auth::storage::AuthCredentialsStoreMode;
 pub use crate::auth::storage::AuthDotJson;
 use crate::auth::storage::AuthStorageBackend;
 use crate::auth::storage::create_auth_storage;
+#[allow(unused_imports)]
 use crate::auth::util::try_parse_error_message;
 use crate::default_client::create_client;
 use crate::token_data::TokenData;
@@ -35,6 +37,7 @@ use codex_protocol::auth::KnownPlan as InternalKnownPlan;
 use codex_protocol::auth::PlanType as InternalPlanType;
 use codex_protocol::auth::RefreshTokenFailedError;
 use codex_protocol::auth::RefreshTokenFailedReason;
+#[allow(unused_imports)]
 use serde_json::Value;
 use thiserror::Error;
 
@@ -76,12 +79,17 @@ impl PartialEq for CodexAuth {
 
 const TOKEN_REFRESH_INTERVAL: i64 = 8;
 
+#[allow(dead_code)]
 const REFRESH_TOKEN_EXPIRED_MESSAGE: &str = "Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.";
+#[allow(dead_code)]
 const REFRESH_TOKEN_REUSED_MESSAGE: &str = "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.";
+#[allow(dead_code)]
 const REFRESH_TOKEN_INVALIDATED_MESSAGE: &str = "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.";
+#[allow(dead_code)]
 const REFRESH_TOKEN_UNKNOWN_MESSAGE: &str =
     "Your access token could not be refreshed. Please log out and sign in again.";
 const REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE: &str = "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.";
+#[allow(dead_code)]
 const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 pub const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
 
@@ -636,6 +644,7 @@ fn load_auth(
 }
 
 // Persist refreshed tokens into auth storage and update last_refresh.
+#[allow(dead_code)]
 fn persist_tokens(
     storage: &Arc<dyn AuthStorageBackend>,
     id_token: Option<String>,
@@ -663,6 +672,7 @@ fn persist_tokens(
 
 // Requests refreshed ChatGPT OAuth tokens from the auth service using a refresh token.
 // The caller is responsible for persisting any returned tokens.
+#[allow(dead_code)]
 async fn request_chatgpt_token_refresh(
     refresh_token: String,
     client: &CodexHttpClient,
@@ -706,6 +716,7 @@ async fn request_chatgpt_token_refresh(
     }
 }
 
+#[allow(dead_code)]
 fn classify_refresh_token_failure(body: &str) -> RefreshTokenFailedError {
     let code = extract_refresh_token_error_code(body);
 
@@ -735,6 +746,7 @@ fn classify_refresh_token_failure(body: &str) -> RefreshTokenFailedError {
     RefreshTokenFailedError::new(reason, message)
 }
 
+#[allow(dead_code)]
 fn extract_refresh_token_error_code(body: &str) -> Option<String> {
     if body.trim().is_empty() {
         return None;
@@ -761,6 +773,7 @@ fn extract_refresh_token_error_code(body: &str) -> Option<String> {
     map.get("code").and_then(Value::as_str).map(str::to_string)
 }
 
+#[allow(dead_code)]
 #[derive(Serialize)]
 struct RefreshRequest {
     client_id: &'static str,
@@ -768,6 +781,7 @@ struct RefreshRequest {
     refresh_token: String,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Clone)]
 struct RefreshResponse {
     id_token: Option<String>,
@@ -778,6 +792,7 @@ struct RefreshResponse {
 // Shared constant for token refresh (client id used for oauth token refresh flow)
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
+#[allow(dead_code)]
 fn refresh_token_endpoint() -> String {
     std::env::var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR)
         .unwrap_or_else(|_| REFRESH_TOKEN_URL.to_string())
@@ -1104,6 +1119,7 @@ pub struct AuthManager {
     enable_codex_api_key_env: bool,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     forced_chatgpt_workspace_id: RwLock<Option<String>>,
+    #[allow(dead_code)]
     refresh_lock: AsyncMutex<()>,
     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
 }
@@ -1457,48 +1473,17 @@ impl AuthManager {
         }
     }
 
-    /// Attempt to refresh the token by first performing a guarded reload. Auth
-    /// is reloaded from storage only when the account id matches the currently
-    /// cached account id. If the persisted token differs from the cached token, we
-    /// can assume that some other instance already refreshed it. If the persisted
-    /// token is the same as the cached, then ask the token authority to refresh.
+    // SANDBOX PATCH: no-op — copilot-api handles authentication independently.
     pub async fn refresh_token(&self) -> Result<(), RefreshTokenError> {
-        let _refresh_guard = self.refresh_lock.lock().await;
-        let auth_before_reload = self.auth_cached();
-        if auth_before_reload
-            .as_ref()
-            .is_some_and(CodexAuth::is_api_key_auth)
-        {
-            return Ok(());
-        }
-        let expected_account_id = auth_before_reload
-            .as_ref()
-            .and_then(CodexAuth::get_account_id);
-
-        match self.reload_if_account_id_matches(expected_account_id.as_deref()) {
-            ReloadOutcome::ReloadedChanged => {
-                tracing::info!("Skipping token refresh because auth changed after guarded reload.");
-                Ok(())
-            }
-            ReloadOutcome::ReloadedNoChange => self.refresh_token_from_authority_impl().await,
-            ReloadOutcome::Skipped => {
-                Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
-                    RefreshTokenFailedReason::Other,
-                    REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE.to_string(),
-                )))
-            }
-        }
+        Ok(())
     }
 
-    /// Attempt to refresh the current auth token from the authority that issued
-    /// the token. On success, reloads the auth state from disk so other components
-    /// observe refreshed token. If the token refresh fails, returns the error to
-    /// the caller.
+    // SANDBOX PATCH: no-op — copilot-api handles authentication independently.
     pub async fn refresh_token_from_authority(&self) -> Result<(), RefreshTokenError> {
-        let _refresh_guard = self.refresh_lock.lock().await;
-        self.refresh_token_from_authority_impl().await
+        Ok(())
     }
 
+    #[allow(dead_code)]
     async fn refresh_token_from_authority_impl(&self) -> Result<(), RefreshTokenError> {
         tracing::info!("Refreshing token");
 
@@ -1635,6 +1620,7 @@ impl AuthManager {
 
     // Refreshes ChatGPT OAuth tokens, persists the updated auth state, and
     // reloads the in-memory cache so callers immediately observe new tokens.
+    #[allow(dead_code)]
     async fn refresh_and_persist_chatgpt_token(
         &self,
         auth: &ChatgptAuth,
