@@ -1,14 +1,22 @@
 use crate::config::Config;
+#[allow(unused_imports)]
 use codex_login::CodexAuth;
+#[allow(unused_imports)]
 use codex_login::default_client::build_reqwest_client;
+#[allow(unused_imports)]
 use codex_protocol::protocol::Product;
 use serde::Deserialize;
+#[allow(unused_imports)]
 use std::time::Duration;
+#[allow(unused_imports)]
 use url::Url;
 
 const DEFAULT_REMOTE_MARKETPLACE_NAME: &str = "openai-curated";
+#[allow(dead_code)]
 const REMOTE_PLUGIN_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+#[allow(dead_code)]
 const REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+#[allow(dead_code)]
 const REMOTE_PLUGIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -19,6 +27,7 @@ pub(crate) struct RemotePluginStatusSummary {
     pub(crate) enabled: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RemotePluginMutationResponse {
@@ -116,113 +125,42 @@ pub enum RemotePluginFetchError {
     },
 }
 
+// SANDBOX PATCH: return empty list — no HTTP requests to /plugins/list
 pub(crate) async fn fetch_remote_plugin_status(
-    config: &Config,
-    auth: Option<&CodexAuth>,
+    _config: &Config,
+    _auth: Option<&CodexAuth>,
 ) -> Result<Vec<RemotePluginStatusSummary>, RemotePluginFetchError> {
-    let Some(auth) = auth else {
-        return Err(RemotePluginFetchError::AuthRequired);
-    };
-    if !auth.is_chatgpt_auth() {
-        return Err(RemotePluginFetchError::UnsupportedAuthMode);
-    }
-
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/plugins/list");
-    let client = build_reqwest_client();
-    let token = auth
-        .get_token()
-        .map_err(RemotePluginFetchError::AuthToken)?;
-    let mut request = client
-        .get(&url)
-        .timeout(REMOTE_PLUGIN_FETCH_TIMEOUT)
-        .bearer_auth(token);
-    if let Some(account_id) = auth.get_account_id() {
-        request = request.header("chatgpt-account-id", account_id);
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(|source| RemotePluginFetchError::Request {
-            url: url.clone(),
-            source,
-        })?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(RemotePluginFetchError::UnexpectedStatus { url, status, body });
-    }
-
-    serde_json::from_str(&body).map_err(|source| RemotePluginFetchError::Decode {
-        url: url.clone(),
-        source,
-    })
+    Ok(Vec::new())
 }
 
+// SANDBOX PATCH: return empty list — no HTTP requests to /plugins/featured
 pub async fn fetch_remote_featured_plugin_ids(
-    config: &Config,
-    auth: Option<&CodexAuth>,
-    product: Option<Product>,
+    _config: &Config,
+    _auth: Option<&CodexAuth>,
+    _product: Option<Product>,
 ) -> Result<Vec<String>, RemotePluginFetchError> {
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/plugins/featured");
-    let client = build_reqwest_client();
-    let mut request = client
-        .get(&url)
-        .query(&[(
-            "platform",
-            product.unwrap_or(Product::Codex).to_app_platform(),
-        )])
-        .timeout(REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT);
-
-    if let Some(auth) = auth.filter(|auth| auth.is_chatgpt_auth()) {
-        let token = auth
-            .get_token()
-            .map_err(RemotePluginFetchError::AuthToken)?;
-        request = request.bearer_auth(token);
-        if let Some(account_id) = auth.get_account_id() {
-            request = request.header("chatgpt-account-id", account_id);
-        }
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(|source| RemotePluginFetchError::Request {
-            url: url.clone(),
-            source,
-        })?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(RemotePluginFetchError::UnexpectedStatus { url, status, body });
-    }
-
-    serde_json::from_str(&body).map_err(|source| RemotePluginFetchError::Decode {
-        url: url.clone(),
-        source,
-    })
+    Ok(Vec::new())
 }
 
+// SANDBOX PATCH: reject mutation — no HTTP requests to /plugins/<id>/enable
 pub(crate) async fn enable_remote_plugin(
-    config: &Config,
-    auth: Option<&CodexAuth>,
-    plugin_id: &str,
+    _config: &Config,
+    _auth: Option<&CodexAuth>,
+    _plugin_id: &str,
 ) -> Result<(), RemotePluginMutationError> {
-    post_remote_plugin_mutation(config, auth, plugin_id, "enable").await?;
-    Ok(())
+    Err(RemotePluginMutationError::AuthRequired)
 }
 
+// SANDBOX PATCH: reject mutation — no HTTP requests to /plugins/<id>/uninstall
 pub(crate) async fn uninstall_remote_plugin(
-    config: &Config,
-    auth: Option<&CodexAuth>,
-    plugin_id: &str,
+    _config: &Config,
+    _auth: Option<&CodexAuth>,
+    _plugin_id: &str,
 ) -> Result<(), RemotePluginMutationError> {
-    post_remote_plugin_mutation(config, auth, plugin_id, "uninstall").await?;
-    Ok(())
+    Err(RemotePluginMutationError::AuthRequired)
 }
 
+#[allow(dead_code)]
 fn ensure_chatgpt_auth(auth: Option<&CodexAuth>) -> Result<&CodexAuth, RemotePluginMutationError> {
     let Some(auth) = auth else {
         return Err(RemotePluginMutationError::AuthRequired);
@@ -237,6 +175,7 @@ fn default_remote_marketplace_name() -> String {
     DEFAULT_REMOTE_MARKETPLACE_NAME.to_string()
 }
 
+#[allow(dead_code)]
 async fn post_remote_plugin_mutation(
     config: &Config,
     auth: Option<&CodexAuth>,
@@ -293,6 +232,7 @@ async fn post_remote_plugin_mutation(
     Ok(parsed)
 }
 
+#[allow(dead_code)]
 fn remote_plugin_mutation_url(
     config: &Config,
     plugin_id: &str,
