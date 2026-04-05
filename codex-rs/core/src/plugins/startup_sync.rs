@@ -1,52 +1,80 @@
 use std::path::Path;
 use std::path::PathBuf;
+// SANDBOX PATCH: process imports only used by dead-code network sync functions
+#[allow(unused_imports)]
 use std::process::Command;
+#[allow(unused_imports)]
 use std::process::Output;
+#[allow(unused_imports)]
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+// SANDBOX PATCH: metrics/network imports only used by dead-code network sync functions
+#[allow(unused_imports)]
 use codex_otel::metrics::names::CURATED_PLUGINS_STARTUP_SYNC_FINAL_METRIC;
+#[allow(unused_imports)]
 use codex_otel::metrics::names::CURATED_PLUGINS_STARTUP_SYNC_METRIC;
+#[allow(unused_imports)]
 use reqwest::Client;
+#[allow(unused_imports)]
 use serde::Deserialize;
+#[allow(unused_imports)]
 use tempfile::TempDir;
 use tracing::info;
 use tracing::warn;
+#[allow(unused_imports)]
 use zip::ZipArchive;
 
 use crate::config::Config;
 use codex_login::AuthManager;
+// SANDBOX PATCH: build_reqwest_client only used by dead-code HTTP sync functions
+#[allow(unused_imports)]
 use codex_login::default_client::build_reqwest_client;
 
 use super::PluginsManager;
 
+// SANDBOX PATCH: network constants unused since plugin sync is disabled
+#[allow(dead_code)]
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+#[allow(dead_code)]
 const GITHUB_API_ACCEPT_HEADER: &str = "application/vnd.github+json";
+#[allow(dead_code)]
 const GITHUB_API_VERSION_HEADER: &str = "2022-11-28";
+#[allow(dead_code)]
 const OPENAI_PLUGINS_OWNER: &str = "openai";
+#[allow(dead_code)]
 const OPENAI_PLUGINS_REPO: &str = "plugins";
 const CURATED_PLUGINS_RELATIVE_DIR: &str = ".tmp/plugins";
 const CURATED_PLUGINS_SHA_FILE: &str = ".tmp/plugins.sha";
+#[allow(dead_code)]
 const CURATED_PLUGINS_GIT_TIMEOUT: Duration = Duration::from_secs(30);
+#[allow(dead_code)]
 const CURATED_PLUGINS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 // Keep this comfortably above a normal sync attempt so we do not race another Codex process.
+#[allow(dead_code)]
 const CURATED_PLUGINS_STALE_TEMP_DIR_MAX_AGE: Duration = Duration::from_secs(10 * 60);
 const STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE: &str = ".tmp/app-server-remote-plugin-sync-v1";
 const STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct GitHubRepositorySummary {
+    #[allow(dead_code)]
     default_branch: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct GitHubGitRefSummary {
+    #[allow(dead_code)]
     object: GitHubGitRefObject,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct GitHubGitRefObject {
+    #[allow(dead_code)]
     sha: String,
 }
 
@@ -59,9 +87,12 @@ pub(crate) fn read_curated_plugins_sha(codex_home: &Path) -> Option<String> {
 }
 
 pub(crate) fn sync_openai_plugins_repo(codex_home: &Path) -> Result<String, String> {
-    sync_openai_plugins_repo_with_transport_overrides(codex_home, "git", GITHUB_API_BASE_URL)
+    // SANDBOX PATCH: Return locally cached SHA without making any network request.
+    // Plugins still load from the local disk cache if present.
+    Ok(read_curated_plugins_sha(codex_home).unwrap_or_default())
 }
 
+#[allow(dead_code)]
 fn sync_openai_plugins_repo_with_transport_overrides(
     codex_home: &Path,
     git_binary: &str,
@@ -89,6 +120,7 @@ fn sync_openai_plugins_repo_with_transport_overrides(
     }
 }
 
+#[allow(dead_code)]
 fn sync_openai_plugins_repo_via_git(codex_home: &Path, git_binary: &str) -> Result<String, String> {
     let repo_path = curated_plugins_repo_path(codex_home);
     let sha_path = codex_home.join(CURATED_PLUGINS_SHA_FILE);
@@ -126,6 +158,7 @@ fn sync_openai_plugins_repo_via_git(codex_home: &Path, git_binary: &str) -> Resu
     Ok(remote_sha)
 }
 
+#[allow(dead_code)]
 fn sync_openai_plugins_repo_via_http(
     codex_home: &Path,
     api_base_url: &str,
@@ -241,6 +274,7 @@ async fn write_startup_remote_plugin_sync_marker(codex_home: &Path) -> std::io::
     tokio::fs::write(marker_path, b"ok\n").await
 }
 
+#[allow(dead_code)]
 fn prepare_curated_repo_parent_and_temp_dir(repo_path: &Path) -> Result<TempDir, String> {
     let Some(parent) = repo_path.parent() else {
         return Err(format!(
@@ -268,6 +302,7 @@ fn prepare_curated_repo_parent_and_temp_dir(repo_path: &Path) -> Result<TempDir,
     Ok(clone_dir)
 }
 
+#[allow(dead_code)]
 fn remove_stale_curated_repo_temp_dirs(parent: &Path, max_age: Duration) {
     let entries = match std::fs::read_dir(parent) {
         Ok(entries) => entries,
@@ -353,6 +388,7 @@ fn remove_stale_curated_repo_temp_dirs(parent: &Path, max_age: Duration) {
     }
 }
 
+#[allow(dead_code)]
 fn emit_curated_plugins_startup_sync_metric(transport: &'static str, status: &'static str) {
     emit_curated_plugins_startup_sync_counter(
         CURATED_PLUGINS_STARTUP_SYNC_METRIC,
@@ -361,6 +397,7 @@ fn emit_curated_plugins_startup_sync_metric(transport: &'static str, status: &'s
     );
 }
 
+#[allow(dead_code)]
 fn emit_curated_plugins_startup_sync_final_metric(transport: &'static str, status: &'static str) {
     emit_curated_plugins_startup_sync_counter(
         CURATED_PLUGINS_STARTUP_SYNC_FINAL_METRIC,
@@ -369,6 +406,7 @@ fn emit_curated_plugins_startup_sync_final_metric(transport: &'static str, statu
     );
 }
 
+#[allow(dead_code)]
 fn emit_curated_plugins_startup_sync_counter(
     metric_name: &str,
     transport: &'static str,
@@ -381,6 +419,7 @@ fn emit_curated_plugins_startup_sync_counter(
     let _ = metrics.counter(metric_name, /*inc*/ 1, &tags);
 }
 
+#[allow(dead_code)]
 fn ensure_marketplace_manifest_exists(repo_path: &Path) -> Result<(), String> {
     if repo_path.join(".agents/plugins/marketplace.json").is_file() {
         return Ok(());
@@ -391,6 +430,7 @@ fn ensure_marketplace_manifest_exists(repo_path: &Path) -> Result<(), String> {
     ))
 }
 
+#[allow(dead_code)]
 fn activate_curated_repo(repo_path: &Path, staged_repo_dir: TempDir) -> Result<(), String> {
     let staged_repo_path = staged_repo_dir.path();
     if repo_path.exists() {
@@ -447,6 +487,7 @@ fn activate_curated_repo(repo_path: &Path, staged_repo_dir: TempDir) -> Result<(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn write_curated_plugins_sha(sha_path: &Path, remote_sha: &str) -> Result<(), String> {
     if let Some(parent) = sha_path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| {
@@ -464,6 +505,7 @@ fn write_curated_plugins_sha(sha_path: &Path, remote_sha: &str) -> Result<(), St
     })
 }
 
+#[allow(dead_code)]
 fn read_local_git_or_sha_file(
     repo_path: &Path,
     sha_path: &Path,
@@ -478,6 +520,7 @@ fn read_local_git_or_sha_file(
     read_sha_file(sha_path)
 }
 
+#[allow(dead_code)]
 fn git_ls_remote_head_sha(git_binary: &str) -> Result<String, String> {
     let output = run_git_command_with_timeout(
         Command::new(git_binary)
@@ -505,6 +548,7 @@ fn git_ls_remote_head_sha(git_binary: &str) -> Result<String, String> {
     Ok(sha.to_string())
 }
 
+#[allow(dead_code)]
 fn git_head_sha(repo_path: &Path, git_binary: &str) -> Result<String, String> {
     let output = Command::new(git_binary)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -531,6 +575,7 @@ fn git_head_sha(repo_path: &Path, git_binary: &str) -> Result<String, String> {
     Ok(sha)
 }
 
+#[allow(dead_code)]
 fn run_git_command_with_timeout(
     command: &mut Command,
     context: &str,
@@ -585,6 +630,7 @@ fn run_git_command_with_timeout(
     }
 }
 
+#[allow(dead_code)]
 fn ensure_git_success(output: &Output, context: &str) -> Result<(), String> {
     if output.status.success() {
         return Ok(());
@@ -600,6 +646,7 @@ fn ensure_git_success(output: &Output, context: &str) -> Result<(), String> {
     }
 }
 
+#[allow(dead_code)]
 async fn fetch_curated_repo_remote_sha(api_base_url: &str) -> Result<String, String> {
     let api_base_url = api_base_url.trim_end_matches('/');
     let repo_url = format!("{api_base_url}/repos/{OPENAI_PLUGINS_OWNER}/{OPENAI_PLUGINS_REPO}");
@@ -630,6 +677,7 @@ async fn fetch_curated_repo_remote_sha(api_base_url: &str) -> Result<String, Str
     Ok(git_ref.object.sha)
 }
 
+#[allow(dead_code)]
 async fn fetch_curated_repo_zipball(
     api_base_url: &str,
     remote_sha: &str,
@@ -641,6 +689,7 @@ async fn fetch_curated_repo_zipball(
     fetch_github_bytes(&client, &zipball_url, "download curated plugins archive").await
 }
 
+#[allow(dead_code)]
 async fn fetch_github_text(client: &Client, url: &str, context: &str) -> Result<String, String> {
     let response = github_request(client, url)
         .send()
@@ -656,6 +705,7 @@ async fn fetch_github_text(client: &Client, url: &str, context: &str) -> Result<
     Ok(body)
 }
 
+#[allow(dead_code)]
 async fn fetch_github_bytes(client: &Client, url: &str, context: &str) -> Result<Vec<u8>, String> {
     let response = github_request(client, url)
         .send()
@@ -675,6 +725,7 @@ async fn fetch_github_bytes(client: &Client, url: &str, context: &str) -> Result
     Ok(body.to_vec())
 }
 
+#[allow(dead_code)]
 fn github_request(client: &Client, url: &str) -> reqwest::RequestBuilder {
     client
         .get(url)
@@ -690,6 +741,7 @@ fn read_sha_file(sha_path: &Path) -> Option<String> {
         .filter(|sha| !sha.is_empty())
 }
 
+#[allow(dead_code)]
 fn extract_zipball_to_dir(bytes: &[u8], destination: &Path) -> Result<(), String> {
     std::fs::create_dir_all(destination).map_err(|err| {
         format!(
@@ -766,6 +818,7 @@ fn extract_zipball_to_dir(bytes: &[u8], destination: &Path) -> Result<(), String
 }
 
 #[cfg(unix)]
+#[allow(dead_code)]
 fn apply_zip_permissions(entry: &zip::read::ZipFile<'_>, output_path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -781,6 +834,7 @@ fn apply_zip_permissions(entry: &zip::read::ZipFile<'_>, output_path: &Path) -> 
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 fn apply_zip_permissions(
     _entry: &zip::read::ZipFile<'_>,
     _output_path: &Path,
