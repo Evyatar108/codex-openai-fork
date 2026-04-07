@@ -1,0 +1,86 @@
+mod config;
+mod copilot_api;
+mod discovery;
+
+use std::process::Command;
+
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("ERROR: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Passthrough commands: skip copilot-api startup, exec codex-core immediately
+    let is_passthrough = args.iter().any(|a| {
+        matches!(
+            a.as_str(),
+            "--version" | "-V" | "--help" | "-h" | "completion"
+        )
+    });
+
+    let codex_core = discovery::find_codex_core()?;
+
+    if is_passthrough {
+        return exec_codex_core(&codex_core, &args);
+    }
+
+    // Normal launch: config, conflict check, copilot-api, then codex-core
+    discovery::check_native_codex_conflict()?;
+
+    let cfg = config::load_config();
+    copilot_api::ensure_running(cfg.copilot_api_port)?;
+
+    // Build final args: provider -c flags first, then all user args verbatim
+    let provider_flags = config::provider_config_flags(cfg.copilot_api_port, &cfg.default_model);
+    let mut final_args: Vec<String> = Vec::new();
+    for flag in &provider_flags {
+        final_args.push("-c".to_string());
+        final_args.push(flag.clone());
+    }
+    final_args.extend(args);
+
+    // Set env — unsafe in Rust 2024 edition (single-threaded at this point, safe in practice)
+    unsafe {
+        std::env::set_var("OPENAI_API_KEY", "sk-sandbox-copilot-api-handles-auth");
+        std::env::remove_var("HTTP_PROXY");
+        std::env::remove_var("HTTPS_PROXY");
+        std::env::remove_var("http_proxy");
+        std::env::remove_var("https_proxy");
+    }
+
+    // Clean ~/.codex/.tmp/ (curated plugin cache)
+    if let Some(home) = dirs::home_dir() {
+        let tmp_dir = home.join(".codex").join(".tmp");
+        if tmp_dir.exists() {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+        }
+    }
+
+    exec_codex_core(&codex_core, &final_args)
+}
+
+fn exec_codex_core(codex_core: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = Command::new(codex_core).args(args).exec();
+        // exec() only returns on error
+        anyhow::bail!("failed to exec codex-core: {err}");
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = Command::new(codex_core)
+            .args(args)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .map_err(|e| anyhow::anyhow!("failed to run codex-core: {e}"))?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}

@@ -87,6 +87,7 @@ members = [
     "terminal-detection",
     "codex-experimental-api-macros",
     "plugin",
+    "sandbox-launcher",
 ]
 resolver = "2"
 
