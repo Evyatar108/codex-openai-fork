@@ -1,0 +1,16 @@
+[package]
+name = "codex-sandbox-launcher"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "codex"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+dirs = { workspace = true }
+toml = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
