@@ -468,6 +468,9 @@ pub struct Config {
     /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
     pub zsh_path: Option<PathBuf>,
 
+    /// Optional absolute path to the user's preferred default shell.
+    pub default_shell: Option<PathBuf>,
+
     /// Value to use for `reasoning.effort` when making a request using the
     /// Responses API.
     pub model_reasoning_effort: Option<ReasoningEffort>,
@@ -1281,6 +1284,11 @@ pub struct ConfigToml {
     /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
     pub zsh_path: Option<AbsolutePathBuf>,
 
+    /// Optional absolute path to the default shell executable.
+    /// When set, overrides the platform default shell (e.g., PowerShell on Windows).
+    /// The shell type is auto-detected from the executable name.
+    pub default_shell: Option<AbsolutePathBuf>,
+
     /// Profile to use from the `profiles` map.
     pub profile: Option<String>,
 
@@ -1878,6 +1886,7 @@ pub struct ConfigOverrides {
     pub js_repl_node_path: Option<PathBuf>,
     pub js_repl_node_module_dirs: Option<Vec<PathBuf>>,
     pub zsh_path: Option<PathBuf>,
+    pub default_shell: Option<PathBuf>,
     pub base_instructions: Option<String>,
     pub developer_instructions: Option<String>,
     pub personality: Option<Personality>,
@@ -2089,6 +2098,7 @@ impl Config {
             js_repl_node_path: js_repl_node_path_override,
             js_repl_node_module_dirs: js_repl_node_module_dirs_override,
             zsh_path: zsh_path_override,
+            default_shell: default_shell_override,
             base_instructions,
             developer_instructions,
             personality,
@@ -2520,6 +2530,9 @@ impl Config {
         let zsh_path = zsh_path_override
             .or(config_profile.zsh_path.map(Into::into))
             .or(cfg.zsh_path.map(Into::into));
+        let default_shell = default_shell_override
+            .or(config_profile.default_shell.map(Into::into))
+            .or(cfg.default_shell.map(Into::into));
 
         let review_model = override_review_model.or(cfg.review_model);
 
@@ -2598,6 +2611,7 @@ impl Config {
         let helper_readable_roots = get_readable_roots_required_for_codex_runtime(
             &codex_home,
             zsh_path.as_ref(),
+            default_shell.as_ref(),
             main_execve_wrapper_exe.as_ref(),
         );
         let effective_sandbox_policy = constrained_sandbox_policy.value.get().clone();
@@ -2694,6 +2708,7 @@ impl Config {
             js_repl_node_path,
             js_repl_node_module_dirs,
             zsh_path,
+            default_shell,
 
             hide_agent_reasoning: cfg.hide_agent_reasoning.unwrap_or(false),
             show_raw_agent_reasoning: cfg

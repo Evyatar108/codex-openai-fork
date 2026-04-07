@@ -345,6 +345,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         js_repl_node_path: None,
         js_repl_node_module_dirs: None,
         zsh_path: None,
+        default_shell: None,
         base_instructions: None,
         developer_instructions: None,
         personality: None,

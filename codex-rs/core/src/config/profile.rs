@@ -44,6 +44,8 @@ pub struct ConfigProfile {
     pub js_repl_node_module_dirs: Option<Vec<AbsolutePathBuf>>,
     /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
     pub zsh_path: Option<AbsolutePathBuf>,
+    /// Optional absolute path to the default shell executable.
+    pub default_shell: Option<AbsolutePathBuf>,
     /// Deprecated: ignored. Use `model_instructions_file`.
     #[schemars(skip)]
     pub experimental_instructions_file: Option<AbsolutePathBuf>,

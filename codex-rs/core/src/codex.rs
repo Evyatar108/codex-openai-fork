@@ -1790,6 +1790,22 @@ impl Session {
                     zsh_path.display()
                 )
             })?
+        } else if let Some(ref default_shell_path) = config.default_shell {
+            let path_buf = std::path::PathBuf::from(default_shell_path);
+            let shell_type =
+                crate::shell_detect::detect_shell_type(&path_buf).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "`default_shell` path `{}` is not a recognized shell type; \
+                         supported: bash, zsh, sh, powershell/pwsh, cmd",
+                        path_buf.display()
+                    )
+                })?;
+            shell::get_shell(shell_type, Some(&path_buf)).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "`default_shell` path `{}` does not exist or is not usable",
+                    path_buf.display()
+                )
+            })?
         } else {
             shell::default_user_shell()
         };

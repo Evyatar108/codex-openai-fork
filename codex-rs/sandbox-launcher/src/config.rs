@@ -6,6 +6,7 @@ pub const DEFAULT_MODEL: &str = "gpt-5.4";
 pub struct SandboxConfig {
     pub copilot_api_port: u16,
     pub default_model: String,
+    pub default_shell: Option<String>,
 }
 
 /// Load configuration from `~/.codex-sandbox/config.toml`.
@@ -14,6 +15,7 @@ pub fn load_config() -> SandboxConfig {
     let defaults = SandboxConfig {
         copilot_api_port: DEFAULT_PORT,
         default_model: DEFAULT_MODEL.to_string(),
+        default_shell: None,
     };
 
     let config_path = match config_path() {
@@ -42,13 +44,17 @@ pub fn load_config() -> SandboxConfig {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+        default_shell: table
+            .get("default_shell")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
     }
 }
 
 /// Build the list of `-c` flag values for configuring codex-core to use
 /// copilot-api as its provider.
-pub fn provider_config_flags(port: u16, model: &str) -> Vec<String> {
-    vec![
+pub fn provider_config_flags(port: u16, model: &str, default_shell: Option<&str>) -> Vec<String> {
+    let mut flags = vec![
         format!("model={model}"),
         "model_provider=copilot-sandbox".to_string(),
         "model_providers.copilot-sandbox.name=Copilot Sandbox".to_string(),
@@ -64,7 +70,11 @@ pub fn provider_config_flags(port: u16, model: &str) -> Vec<String> {
         "plugins.google-drive@openai-curated.enabled=false".to_string(),
         "plugins.linear@openai-curated.enabled=false".to_string(),
         "plugins.figma@openai-curated.enabled=false".to_string(),
-    ]
+    ];
+    if let Some(shell) = default_shell {
+        flags.push(format!("default_shell={shell}"));
+    }
+    flags
 }
 
 fn config_path() -> Option<PathBuf> {

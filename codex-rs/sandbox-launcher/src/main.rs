@@ -35,7 +35,8 @@ fn run() -> anyhow::Result<()> {
     copilot_api::ensure_running(cfg.copilot_api_port)?;
 
     // Build final args: provider -c flags first, then all user args verbatim
-    let provider_flags = config::provider_config_flags(cfg.copilot_api_port, &cfg.default_model);
+    let provider_flags =
+        config::provider_config_flags(cfg.copilot_api_port, &cfg.default_model, cfg.default_shell.as_deref());
     let mut final_args: Vec<String> = Vec::new();
     for flag in &provider_flags {
         final_args.push("-c".to_string());
