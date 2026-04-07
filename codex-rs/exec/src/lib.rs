@@ -1543,6 +1543,63 @@ fn decode_utf16(
     String::from_utf16(&units).map_err(|_| PromptDecodeError::InvalidUtf16 { encoding })
 }
 
+/// Check if stdin (as a pipe) has data available without blocking.
+fn stdin_has_data() -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = std::io::stdin().as_raw_fd();
+        let mut available: libc::c_int = 0;
+        // SAFETY: FIONREAD is a standard ioctl that writes an int.
+        let ret = unsafe { libc::ioctl(fd, libc::FIONREAD, &mut available) };
+        ret == 0 && available > 0
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        unsafe extern "system" {
+            fn PeekNamedPipe(
+                h: *mut std::ffi::c_void,
+                buf: *mut u8,
+                buf_size: u32,
+                bytes_read: *mut u32,
+                total_avail: *mut u32,
+                bytes_left: *mut u32,
+            ) -> i32;
+            fn GetFileType(h: *mut std::ffi::c_void) -> u32;
+        }
+        const FILE_TYPE_PIPE: u32 = 0x0003;
+        const FILE_TYPE_DISK: u32 = 0x0001;
+
+        let handle = std::io::stdin().as_raw_handle();
+        let file_type = unsafe { GetFileType(handle) };
+
+        // File redirects (< file.txt) always have data — read_to_end will EOF properly
+        if file_type == FILE_TYPE_DISK {
+            return true;
+        }
+
+        // For pipes, peek to check if data is available without blocking
+        if file_type == FILE_TYPE_PIPE {
+            let mut available: u32 = 0;
+            let ret = unsafe {
+                PeekNamedPipe(
+                    handle,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut available,
+                    std::ptr::null_mut(),
+                )
+            };
+            return ret != 0 && available > 0;
+        }
+
+        // Unknown handle type — skip to avoid blocking
+        false
+    }
+}
+
 fn read_prompt_from_stdin(behavior: StdinPromptBehavior) -> Option<String> {
     let stdin_is_terminal = std::io::stdin().is_terminal();
 
@@ -1559,6 +1616,13 @@ fn read_prompt_from_stdin(behavior: StdinPromptBehavior) -> Option<String> {
         StdinPromptBehavior::Forced => {}
         StdinPromptBehavior::OptionalAppend if stdin_is_terminal => return None,
         StdinPromptBehavior::OptionalAppend => {
+            // SANDBOX PATCH: Check if the pipe actually has data before blocking
+            // on read_to_end(). When stdin is a pipe with no data (e.g. launched
+            // from a tool or script), read_to_end() blocks forever waiting for
+            // EOF that never comes. Peek first — if the buffer is empty, skip.
+            if !stdin_has_data() {
+                return None;
+            }
             eprintln!("Reading additional input from stdin...");
         }
     }
