@@ -66,68 +66,99 @@ pub fn ensure_running(port: u16) -> anyhow::Result<()> {
     // Find copilot-api (source or binary)
     let location = discovery::find_copilot_api()?;
 
-    // Build the command based on source vs binary
-    let mut cmd = match &location {
+    // Build the executable path and args for copilot-api
+    let (exe_path, exe_args): (String, Vec<String>) = match &location {
         discovery::CopilotApiLocation::Source(source_path) => {
             let bun = discovery::find_bun()?;
-            let mut c = Command::new(&bun);
-            c.args([
-                "run",
-                &source_path.to_string_lossy(),
-                "start",
-                "--port",
-                &port.to_string(),
-            ]);
-            c
+            (
+                bun.to_string_lossy().into_owned(),
+                vec![
+                    "run".to_string(),
+                    source_path.to_string_lossy().into_owned(),
+                    "start".to_string(),
+                    "--port".to_string(),
+                    port.to_string(),
+                ],
+            )
         }
-        discovery::CopilotApiLocation::Binary(bin_path) => {
-            let mut c = Command::new(bin_path);
-            c.args(["start", "--port", &port.to_string()]);
-            c
-        }
+        discovery::CopilotApiLocation::Binary(bin_path) => (
+            bin_path.to_string_lossy().into_owned(),
+            vec!["start".to_string(), "--port".to_string(), port.to_string()],
+        ),
     };
 
-    // Redirect stdout/stderr to log file
-    let log_file = fs::File::create(&log_path)?;
-    let log_file_err = log_file.try_clone()?;
-    cmd.stdout(log_file);
-    cmd.stderr(log_file_err);
-
-    // Platform-specific detached process flags
+    // Spawn copilot-api as a fully detached background process.
+    //
+    // On Windows, Rust's Command::spawn() always sets bInheritHandles=TRUE
+    // in CreateProcessW, which means the child inherits the parent's
+    // stdout/stderr pipe handles. If the parent was launched by a tool that
+    // captures output (e.g. Claude Code's Bash tool), the tool waits for
+    // ALL holders of those pipes to close — including copilot-api. This
+    // causes the wrapper to appear to hang even after codex-core exits.
+    //
+    // Fix: On Windows, use `cmd /c start /b` which spawns a truly independent
+    // process that does not inherit the parent's handles. Output is redirected
+    // to a log file via shell redirection.
+    //
+    // On Unix, use pre_exec with setsid() to create a new session.
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+        let log_path_str = log_path.to_string_lossy();
+        // Build: cmd /c start /b "" <exe> <args> > <log> 2>&1
+        // The empty "" is the window title (required by start when exe is quoted)
+        let mut shell_cmd = format!("\"{}\"", exe_path);
+        for arg in &exe_args {
+            shell_cmd.push_str(&format!(" \"{}\"", arg));
+        }
+        shell_cmd.push_str(&format!(" > \"{}\" 2>&1", log_path_str));
+
+        let child = Command::new("cmd")
+            .args(["/c", "start", "/b", "", "cmd", "/c", &shell_cmd])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to start copilot-api via cmd: {e}\nCommand: {exe_path}"
+                )
+            })?;
+        // cmd /c exits immediately after launching; forget the handle
+        std::mem::forget(child);
     }
 
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: setsid() is async-signal-safe and has no preconditions
-        // that could be violated in a pre_exec context.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
+        let log_file = fs::File::create(&log_path)?;
+        let log_file_err = log_file.try_clone()?;
+        let mut cmd = Command::new(&exe_path);
+        cmd.args(&exe_args);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(log_file);
+        cmd.stderr(log_file_err);
 
-    let child = cmd.spawn().map_err(|e| {
-        anyhow::anyhow!(
-            "failed to start copilot-api: {e}\nLocation: {}",
-            match &location {
-                discovery::CopilotApiLocation::Source(p) => p.display().to_string(),
-                discovery::CopilotApiLocation::Binary(p) => p.display().to_string(),
+        {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: setsid() is async-signal-safe and has no preconditions
+            // that could be violated in a pre_exec context.
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
             }
-        )
-    })?;
+        }
 
-    // Write PID file
-    let pid_file = dir.join("copilot-api.pid");
-    let _ = fs::write(&pid_file, child.id().to_string());
+        let child = cmd.spawn().map_err(|e| {
+            anyhow::anyhow!(
+                "failed to start copilot-api: {e}\nLocation: {exe_path}"
+            )
+        })?;
+
+        let pid_file = dir.join("copilot-api.pid");
+        let _ = fs::write(&pid_file, child.id().to_string());
+        std::mem::forget(child);
+    }
 
     // Wait for port to be ready
     if !wait_for_port(port, Duration::from_secs(10)) {
