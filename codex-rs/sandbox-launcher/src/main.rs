@@ -25,7 +25,7 @@ fn run() -> anyhow::Result<()> {
     let codex_core = discovery::find_codex_core()?;
 
     if is_passthrough {
-        return exec_codex_core(&codex_core, &args);
+        return exec_codex_core(&codex_core, &args, None);
     }
 
     // Normal launch: config, conflict check, copilot-api, then codex-core
@@ -60,10 +60,14 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    exec_codex_core(&codex_core, &final_args)
+    exec_codex_core(&codex_core, &final_args, Some(cfg.copilot_api_port))
 }
 
-fn exec_codex_core(codex_core: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
+fn exec_codex_core(
+    codex_core: &std::path::Path,
+    args: &[String],
+    copilot_api_port: Option<u16>,
+) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -81,6 +85,14 @@ fn exec_codex_core(codex_core: &std::path::Path, args: &[String]) -> anyhow::Res
             .stderr(std::process::Stdio::inherit())
             .status()
             .map_err(|e| anyhow::anyhow!("failed to run codex-core: {e}"))?;
-        std::process::exit(status.code().unwrap_or(1));
+
+        let code = status.code().unwrap_or(1);
+        // On non-zero exit, check if copilot-api is still healthy
+        if code != 0 {
+            if let Some(port) = copilot_api_port {
+                copilot_api::check_health_or_print_log(port);
+            }
+        }
+        std::process::exit(code);
     }
 }

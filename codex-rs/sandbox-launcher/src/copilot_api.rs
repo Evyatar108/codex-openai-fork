@@ -52,6 +52,52 @@ fn print_log_tail(log_path: &Path, n: usize) {
     }
 }
 
+/// Health check: GET /v1/models and verify we get a 200 response.
+/// Returns Ok(()) on success, Err with details on failure.
+fn health_check(port: u16) -> anyhow::Result<()> {
+    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        .map_err(|e| anyhow::anyhow!("connection failed: {e}"))?;
+
+    // Send raw HTTP/1.1 GET request
+    use std::io::{Read, Write};
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    write!(stream, "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")?;
+
+    // Read response (just the status line is enough)
+    let mut buf = [0u8; 1024];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    let response = String::from_utf8_lossy(&buf[..n]);
+
+    if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") {
+        Ok(())
+    } else {
+        let status_line = response.lines().next().unwrap_or("(empty response)");
+        anyhow::bail!("unhealthy response: {status_line}")
+    }
+}
+
+/// Check copilot-api health after codex-core exits with an error.
+/// If copilot-api is down, prints the log and returns an error message.
+/// Call this from main.rs on Windows after codex-core exits non-zero.
+pub fn check_health_or_print_log(port: u16) {
+    if is_port_listening(port) {
+        if let Err(e) = health_check(port) {
+            eprintln!("[sandbox] copilot-api health check failed: {e}");
+            if let Ok(dir) = state_dir() {
+                eprintln!("[sandbox] copilot-api log:");
+                print_log_tail(&dir.join("copilot-api.log"), 20);
+            }
+        }
+    } else {
+        eprintln!("[sandbox] copilot-api is not running (port {} closed)", port);
+        if let Ok(dir) = state_dir() {
+            eprintln!("[sandbox] copilot-api log:");
+            print_log_tail(&dir.join("copilot-api.log"), 20);
+        }
+    }
+}
+
 /// Ensure copilot-api is running on the given port.
 /// If already listening, returns immediately. Otherwise starts it and waits.
 pub fn ensure_running(port: u16) -> anyhow::Result<()> {
@@ -180,6 +226,18 @@ pub fn ensure_running(port: u16) -> anyhow::Result<()> {
                 );
             }
         }
+    }
+
+    // Health check: verify copilot-api actually responds, not just port open
+    if let Err(e) = health_check(port) {
+        eprintln!("[sandbox] copilot-api health check failed: {e}");
+        eprintln!("[sandbox] copilot-api log:");
+        print_log_tail(&log_path, 20);
+        anyhow::bail!(
+            "copilot-api started but is not healthy. Check the log above.\n  \
+             Common causes: expired token, network issues.\n  \
+             Re-login: bun run <copilot-api-source>/src/main.ts start"
+        );
     }
 
     // Show login info from log if available
