@@ -135,41 +135,36 @@ pub fn ensure_running(port: u16) -> anyhow::Result<()> {
 
     // Spawn copilot-api as a fully detached background process.
     //
-    // On Windows, Rust's Command::spawn() always sets bInheritHandles=TRUE
-    // in CreateProcessW, which means the child inherits the parent's
-    // stdout/stderr pipe handles. If the parent was launched by a tool that
-    // captures output (e.g. Claude Code's Bash tool), the tool waits for
-    // ALL holders of those pipes to close — including copilot-api. This
-    // causes the wrapper to appear to hang even after codex-core exits.
-    //
-    // Fix: On Windows, use `cmd /c start /b` which spawns a truly independent
-    // process that does not inherit the parent's handles. Output is redirected
-    // to a log file via shell redirection.
+    // On Windows, use CREATE_NEW_PROCESS_GROUP to prevent Ctrl+C propagation,
+    // and redirect stdout/stderr to the log file via Rust's Stdio (not shell
+    // redirection). Previous approach using `cmd /c start /b` broke because
+    // Rust's Command escapes embedded quotes with backslashes, which cmd.exe
+    // does not understand.
     //
     // On Unix, use pre_exec with setsid() to create a new session.
     #[cfg(windows)]
     {
-        let log_path_str = log_path.to_string_lossy();
-        // Build: cmd /c start /b "" <exe> <args> > <log> 2>&1
-        // The empty "" is the window title (required by start when exe is quoted)
-        let mut shell_cmd = format!("\"{}\"", exe_path);
-        for arg in &exe_args {
-            shell_cmd.push_str(&format!(" \"{}\"", arg));
-        }
-        shell_cmd.push_str(&format!(" > \"{}\" 2>&1", log_path_str));
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
-        let child = Command::new("cmd")
-            .args(["/c", "start", "/b", "", "cmd", "/c", &shell_cmd])
+        let log_file = fs::File::create(&log_path)?;
+        let log_file_err = log_file.try_clone()?;
+
+        let child = Command::new(&exe_path)
+            .args(&exe_args)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(log_file)
+            .stderr(log_file_err)
+            .creation_flags(CREATE_NEW_PROCESS_GROUP)
             .spawn()
             .map_err(|e| {
                 anyhow::anyhow!(
-                    "failed to start copilot-api via cmd: {e}\nCommand: {exe_path}"
+                    "failed to start copilot-api: {e}\nCommand: {exe_path}"
                 )
             })?;
-        // cmd /c exits immediately after launching; forget the handle
+
+        let pid_file = dir.join("copilot-api.pid");
+        let _ = fs::write(&pid_file, child.id().to_string());
         std::mem::forget(child);
     }
 
