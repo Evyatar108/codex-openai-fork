@@ -34,15 +34,18 @@ fn run() -> anyhow::Result<()> {
     let cfg = config::load_config();
     copilot_api::ensure_running(cfg.copilot_api_port)?;
 
-    // Build final args: provider -c flags first, then all user args verbatim
+    // Build final args: user args first, then provider -c flags last.
+    // Provider flags MUST come last so they always win — later -c values
+    // override earlier ones for the same key, ensuring the sandbox endpoint
+    // can never be overridden by user-supplied flags (which would leak data
+    // to the official OpenAI API).
     let provider_flags =
         config::provider_config_flags(cfg.copilot_api_port, &cfg.default_model, cfg.default_shell.as_deref());
-    let mut final_args: Vec<String> = Vec::new();
+    let mut final_args: Vec<String> = args;
     for flag in &provider_flags {
         final_args.push("-c".to_string());
         final_args.push(flag.clone());
     }
-    final_args.extend(args);
 
     // Set env — unsafe in Rust 2024 edition (single-threaded at this point, safe in practice)
     unsafe {

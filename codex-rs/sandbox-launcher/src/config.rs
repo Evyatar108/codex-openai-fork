@@ -73,8 +73,26 @@ pub fn provider_config_flags(port: u16, model: &str, default_shell: Option<&str>
     ];
     if let Some(shell) = default_shell {
         flags.push(format!("default_shell={shell}"));
+        // Cygwin/MSYS2-based shells (Git Bash, MSYS2 bash) crash under ConPTY
+        // with "CreateFileMapping ... Win32 error 5" during shared memory init.
+        // Disable the ConPTY-based UnifiedExec path and fall back to the classic
+        // ShellCommand path which uses tokio::process::Command (pipe-based I/O).
+        if is_cygwin_shell(shell) {
+            flags.push("features.unified_exec=false".to_string());
+        }
     }
     flags
+}
+
+/// Returns true if the shell path points to a Cygwin/MSYS2-based executable.
+/// On Windows, bash/sh/zsh are always Cygwin-based (Git for Windows, MSYS2).
+fn is_cygwin_shell(shell_path: &str) -> bool {
+    let lower = shell_path.to_ascii_lowercase();
+    let name = std::path::Path::new(&lower)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    matches!(name, "bash" | "sh" | "zsh")
 }
 
 fn config_path() -> Option<PathBuf> {
