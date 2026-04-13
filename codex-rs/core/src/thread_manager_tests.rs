@@ -164,6 +164,7 @@ fn out_of_range_truncation_drops_pre_user_active_turn_prefix() {
         RolloutItem::ResponseItem(assistant_msg("a1")),
         RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-2".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
         })),
@@ -298,6 +299,7 @@ async fn new_uses_configured_openai_provider_for_model_refresh() {
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        /*analytics_events_client*/ None,
     );
 
     let _ = manager.list_models(RefreshStrategy::Online).await;
@@ -320,6 +322,8 @@ fn interrupted_fork_snapshot_appends_interrupt_boundary() {
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected interrupted fork history"),
@@ -334,6 +338,8 @@ fn interrupted_fork_snapshot_appends_interrupt_boundary() {
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: None,
                 reason: TurnAbortReason::Interrupted,
+                completed_at: None,
+                duration_ms: None,
             })),
         ])
         .expect("serialize expected interrupted empty history"),
@@ -349,6 +355,8 @@ fn interrupted_snapshot_is_not_mid_turn() {
         RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         })),
     ]);
 
@@ -428,6 +436,7 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        /*analytics_events_client*/ None,
     );
 
     let source = manager
@@ -485,6 +494,8 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
         EventMsg::TurnAborted(TurnAbortedEvent {
             turn_id: expected_turn_id,
             reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
         }),
     ))
     .expect("serialize interrupted abort event");
@@ -528,6 +539,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        /*analytics_events_client*/ None,
     );
 
     let source = manager
@@ -536,6 +548,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
             InitialHistory::Forked(vec![
                 RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                     turn_id: "turn-explicit".to_string(),
+                    started_at: None,
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
                 })),
@@ -594,6 +607,8 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
             RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some(turn_id),
                 reason: TurnAbortReason::Interrupted,
+            completed_at: None,
+            duration_ms: None,
             })) if turn_id == "turn-explicit"
         )
     }));
@@ -617,6 +632,7 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        /*analytics_events_client*/ None,
     );
 
     let source = manager

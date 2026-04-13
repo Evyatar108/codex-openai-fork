@@ -48,6 +48,7 @@ members = [
     "ollama",
     "process-hardening",
     "protocol",
+    "realtime-webrtc",
     "rollout",
     "rmcp-client",
     "responses-api-proxy",
@@ -92,7 +93,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.118.0-sandbox.2"
+version = "0.120.0-sandbox.1"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -150,6 +151,7 @@ codex-otel = { path = "otel" }
 codex-plugin = { path = "plugin" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
+codex-realtime-webrtc = { path = "realtime-webrtc" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-response-debug-context = { path = "response-debug-context" }
 codex-rmcp-client = { path = "rmcp-client" }
@@ -351,6 +353,7 @@ vt100 = "0.16.2"
 walkdir = "2.5.0"
 webbrowser = "1.0"
 which = "8"
+whoami = "1.6.1"
 wildmatch = "2.6.1"
 zip = "2.4.2"
 zstd = "0.13"

@@ -15,12 +15,12 @@ use chrono::DateTime;
 use chrono::Duration as ChronoDuration;
 use chrono::Utc;
 use codex_backend_client::Client as BackendClient;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config_loader::CloudRequirementsLoadError;
 use codex_core::config_loader::CloudRequirementsLoadErrorCode;
 use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::ConfigRequirementsToml;
 use codex_core::util::backoff;
-use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
@@ -776,7 +776,7 @@ fn status_code_tag(status_code: Option<u16>) -> String {
 }
 
 fn emit_metric(metric_name: &str, tags: Vec<(&str, String)>) {
-    if let Some(metrics) = codex_otel::metrics::global() {
+    if let Some(metrics) = codex_otel::global() {
         let tag_refs = tags
             .iter()
             .map(|(key, value)| (*key, value.as_str()))
@@ -790,7 +790,7 @@ mod tests {
     use super::*;
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use codex_login::AuthCredentialsStoreMode;
+    use codex_config::types::AuthCredentialsStoreMode;
     use codex_protocol::protocol::AskForApproval;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1124,9 +1124,10 @@ mod tests {
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1152,9 +1153,10 @@ mod tests {
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1180,9 +1182,10 @@ mod tests {
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1225,9 +1228,10 @@ mod tests {
             result,
             Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1306,9 +1310,10 @@ enabled = false
             handle.await.expect("cloud requirements task"),
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1377,9 +1382,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1446,9 +1452,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1609,9 +1616,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1643,9 +1651,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1697,9 +1706,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::OnRequest]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1746,9 +1756,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::OnRequest]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1799,9 +1810,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1853,9 +1865,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1907,9 +1920,10 @@ enabled = false
                 .and_then(|contents| parse_cloud_requirements(contents).ok().flatten()),
             Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -1994,9 +2008,10 @@ enabled = false
             service.fetch().await,
             Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,
@@ -2020,9 +2035,10 @@ enabled = false
                 .and_then(|contents| parse_cloud_requirements(contents).ok().flatten()),
             Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::OnRequest]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
-                guardian_developer_instructions: None,
+                guardian_policy_config: None,
                 feature_requirements: None,
                 mcp_servers: None,
                 apps: None,

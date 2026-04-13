@@ -9,6 +9,7 @@ use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::approvals::ExecPolicyAmendment as CoreExecPolicyAmendment;
 use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
+use codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianAssessmentDecisionSource;
 use codex_protocol::approvals::GuardianCommandSource as CoreGuardianCommandSource;
 use codex_protocol::approvals::NetworkApprovalContext as CoreNetworkApprovalContext;
 use codex_protocol::approvals::NetworkApprovalProtocol as CoreNetworkApprovalProtocol;
@@ -29,6 +30,7 @@ use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::mcp::Resource as McpResource;
+pub use codex_protocol::mcp::ResourceContent as McpResourceContent;
 use codex_protocol::mcp::ResourceTemplate as McpResourceTemplate;
 use codex_protocol::mcp::Tool as McpTool;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
@@ -53,6 +55,7 @@ use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
+use codex_protocol::protocol::GuardianUserAuthorization as CoreGuardianUserAuthorization;
 use codex_protocol::protocol::HookEventName as CoreHookEventName;
 use codex_protocol::protocol::HookExecutionMode as CoreHookExecutionMode;
 use codex_protocol::protocol::HookHandlerType as CoreHookHandlerType;
@@ -70,6 +73,8 @@ use codex_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 use codex_protocol::protocol::ReadOnlyAccess as CoreReadOnlyAccess;
 use codex_protocol::protocol::RealtimeAudioFrame as CoreRealtimeAudioFrame;
 use codex_protocol::protocol::RealtimeConversationVersion;
+use codex_protocol::protocol::RealtimeVoice;
+use codex_protocol::protocol::RealtimeVoicesList;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SkillDependencies as CoreSkillDependencies;
@@ -407,6 +412,14 @@ v2_enum_from_core!(
         Warning, Stop, Feedback, Context, Error
     }
 );
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadStartSource {
+    Startup,
+    Clear,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -850,6 +863,8 @@ pub struct ConfigReadResponse {
 pub struct ConfigRequirements {
     #[experimental(nested)]
     pub allowed_approval_policies: Option<Vec<AskForApproval>>,
+    #[experimental("configRequirements/read.allowedApprovalsReviewers")]
+    pub allowed_approvals_reviewers: Option<Vec<ApprovalsReviewer>>,
     pub allowed_sandbox_modes: Option<Vec<SandboxMode>>,
     pub allowed_web_search_modes: Option<Vec<WebSearchMode>>,
     pub feature_requirements: Option<BTreeMap<String, bool>>,
@@ -882,6 +897,7 @@ pub struct NetworkRequirements {
     /// Legacy compatibility view derived from `unix_sockets`.
     pub allow_unix_sockets: Option<Vec<String>>,
     pub allow_local_binding: Option<bool>,
+    pub danger_full_access_denylist_only: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -1787,6 +1803,8 @@ pub struct Model {
     pub input_modalities: Vec<InputModality>,
     #[serde(default)]
     pub supports_personality: bool,
+    #[serde(default)]
+    pub additional_speed_tiers: Vec<String>,
     // Only one model should be marked as default.
     pub is_default: bool,
 }
@@ -1947,6 +1965,18 @@ pub struct ListMcpServerStatusParams {
     /// Optional page size; defaults to a server-defined value.
     #[ts(optional = nullable)]
     pub limit: Option<u32>,
+    /// Controls how much MCP inventory data to fetch for each server.
+    /// Defaults to `Full` when omitted.
+    #[ts(optional = nullable)]
+    pub detail: Option<McpServerStatusDetail>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum McpServerStatusDetail {
+    Full,
+    ToolsAndAuthOnly,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1968,6 +1998,22 @@ pub struct ListMcpServerStatusResponse {
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// If None, there are no more items to return.
     pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpResourceReadParams {
+    pub thread_id: String,
+    pub server: String,
+    pub uri: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpResourceReadResponse {
+    pub contents: Vec<McpResourceContent>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
@@ -2317,17 +2363,17 @@ pub struct FsCopyResponse {}
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct FsWatchParams {
+    /// Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.
+    pub watch_id: String,
     /// Absolute file or directory path to watch.
     pub path: AbsolutePathBuf,
 }
 
-/// Created watch handle returned by `fs/watch`.
+/// Successful response for `fs/watch`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct FsWatchResponse {
-    /// Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.
-    pub watch_id: String,
     /// Canonicalized path associated with the watch.
     pub path: AbsolutePathBuf,
 }
@@ -2337,7 +2383,7 @@ pub struct FsWatchResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct FsUnwatchParams {
-    /// Watch identifier returned by `fs/watch`.
+    /// Watch identifier previously provided to `fs/watch`.
     pub watch_id: String,
 }
 
@@ -2352,7 +2398,7 @@ pub struct FsUnwatchResponse {}
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct FsChangedNotification {
-    /// Watch identifier returned by `fs/watch`.
+    /// Watch identifier previously provided to `fs/watch`.
     pub watch_id: String,
     /// File or directory paths associated with this event.
     pub changed_paths: Vec<AbsolutePathBuf>,
@@ -2579,6 +2625,8 @@ pub struct ThreadStartParams {
     pub personality: Option<Personality>,
     #[ts(optional = nullable)]
     pub ephemeral: Option<bool>,
+    #[ts(optional = nullable)]
+    pub session_start_source: Option<ThreadStartSource>,
     #[experimental("thread/start.dynamicTools")]
     #[ts(optional = nullable)]
     pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
@@ -3691,6 +3739,15 @@ pub struct Turn {
     pub status: TurnStatus,
     /// Only populated when the Turn's status is failed.
     pub error: Option<TurnError>,
+    /// Unix timestamp (in seconds) when the turn started.
+    #[ts(type = "number | null")]
+    pub started_at: Option<i64>,
+    /// Unix timestamp (in seconds) when the turn completed.
+    #[ts(type = "number | null")]
+    pub completed_at: Option<i64>,
+    /// Duration between turn start and completion in milliseconds, if known.
+    #[ts(type = "number | null")]
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -3810,9 +3867,33 @@ impl From<ThreadRealtimeAudioChunk> for CoreRealtimeAudioFrame {
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeStartParams {
     pub thread_id: String,
-    pub prompt: String,
+    #[serde(
+        default,
+        deserialize_with = "super::serde_helpers::deserialize_double_option",
+        serialize_with = "super::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub prompt: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub session_id: Option<String>,
+    #[ts(optional = nullable)]
+    pub transport: Option<ThreadRealtimeStartTransport>,
+    #[ts(optional = nullable)]
+    pub voice: Option<RealtimeVoice>,
+}
+
+/// EXPERIMENTAL - transport used by thread realtime.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(export_to = "v2/", tag = "type")]
+pub enum ThreadRealtimeStartTransport {
+    Websocket,
+    Webrtc {
+        /// SDP offer generated by a WebRTC RTCPeerConnection after configuring audio and the
+        /// realtime events data channel.
+        sdp: String,
+    },
 }
 
 /// EXPERIMENTAL - response for starting thread realtime.
@@ -3865,6 +3946,20 @@ pub struct ThreadRealtimeStopParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeStopResponse {}
 
+/// EXPERIMENTAL - list voices supported by thread realtime.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeListVoicesParams {}
+
+/// EXPERIMENTAL - response for listing supported realtime voices.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeListVoicesResponse {
+    pub voices: RealtimeVoicesList,
+}
+
 /// EXPERIMENTAL - emitted when thread realtime startup is accepted.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -3904,6 +3999,15 @@ pub struct ThreadRealtimeOutputAudioDeltaNotification {
     pub audio: ThreadRealtimeAudioChunk,
 }
 
+/// EXPERIMENTAL - emitted with the remote SDP for a WebRTC realtime session.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeSdpNotification {
+    pub thread_id: String,
+    pub sdp: String,
+}
+
 /// EXPERIMENTAL - emitted when thread realtime encounters an error.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -3941,6 +4045,10 @@ pub enum TurnStatus {
 pub struct TurnStartParams {
     pub thread_id: String,
     pub input: Vec<UserInput>,
+    /// Optional turn-scoped Responses API client metadata.
+    #[experimental("turn/start.responsesapiClientMetadata")]
+    #[ts(optional = nullable)]
+    pub responsesapi_client_metadata: Option<HashMap<String, String>>,
     /// Override the working directory for this turn and subsequent turns.
     #[ts(optional = nullable)]
     pub cwd: Option<PathBuf>,
@@ -4051,12 +4159,18 @@ pub struct TurnStartResponse {
     pub turn: Turn,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+#[derive(
+    Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS, ExperimentalApi,
+)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct TurnSteerParams {
     pub thread_id: String,
     pub input: Vec<UserInput>,
+    /// Optional turn-scoped Responses API client metadata.
+    #[experimental("turn/steer.responsesapiClientMetadata")]
+    #[ts(optional = nullable)]
+    pub responsesapi_client_metadata: Option<HashMap<String, String>>,
     /// Required active turn id precondition. The request fails when it does not
     /// match the currently active turn.
     pub expected_turn_id: String,
@@ -4422,6 +4536,22 @@ pub enum GuardianApprovalReviewStatus {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+/// [UNSTABLE] Source that produced a terminal guardian approval review decision.
+pub enum AutoReviewDecisionSource {
+    Agent,
+}
+
+impl From<CoreGuardianAssessmentDecisionSource> for AutoReviewDecisionSource {
+    fn from(value: CoreGuardianAssessmentDecisionSource) -> Self {
+        match value {
+            CoreGuardianAssessmentDecisionSource::Agent => Self::Agent,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export_to = "v2/")]
 /// [UNSTABLE] Risk level assigned by guardian approval review.
@@ -4429,6 +4559,7 @@ pub enum GuardianRiskLevel {
     Low,
     Medium,
     High,
+    Critical,
 }
 
 impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
@@ -4437,6 +4568,29 @@ impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
             CoreGuardianRiskLevel::Low => Self::Low,
             CoreGuardianRiskLevel::Medium => Self::Medium,
             CoreGuardianRiskLevel::High => Self::High,
+            CoreGuardianRiskLevel::Critical => Self::Critical,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export_to = "v2/")]
+/// [UNSTABLE] Authorization level assigned by guardian approval review.
+pub enum GuardianUserAuthorization {
+    Unknown,
+    Low,
+    Medium,
+    High,
+}
+
+impl From<CoreGuardianUserAuthorization> for GuardianUserAuthorization {
+    fn from(value: CoreGuardianUserAuthorization) -> Self {
+        match value {
+            CoreGuardianUserAuthorization::Unknown => Self::Unknown,
+            CoreGuardianUserAuthorization::Low => Self::Low,
+            CoreGuardianUserAuthorization::Medium => Self::Medium,
+            CoreGuardianUserAuthorization::High => Self::High,
         }
     }
 }
@@ -4449,9 +4603,8 @@ impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
 #[ts(export_to = "v2/")]
 pub struct GuardianApprovalReview {
     pub status: GuardianApprovalReviewStatus,
-    #[ts(type = "number | null")]
-    pub risk_score: Option<u8>,
     pub risk_level: Option<GuardianRiskLevel>,
+    pub user_authorization: Option<GuardianUserAuthorization>,
     pub rationale: Option<String>,
 }
 
@@ -4971,6 +5124,9 @@ pub struct McpToolCallResult {
     // representations). Using `JsonValue` keeps the payload wire-shaped and easy to export.
     pub content: Vec<JsonValue>,
     pub structured_content: Option<JsonValue>,
+    #[serde(rename = "_meta")]
+    #[ts(rename = "_meta")]
+    pub meta: Option<JsonValue>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -5151,14 +5307,23 @@ pub struct ItemStartedNotification {
 #[ts(export_to = "v2/")]
 /// [UNSTABLE] Temporary notification payload for guardian automatic approval
 /// review. This shape is expected to change soon.
-///
-/// TODO(ccunningham): Attach guardian review state to the reviewed tool item's
-/// lifecycle instead of sending separate standalone review notifications so the
-/// app-server API can persist and replay review state via `thread/read`.
 pub struct ItemGuardianApprovalReviewStartedNotification {
     pub thread_id: String,
     pub turn_id: String,
-    pub target_item_id: String,
+    /// Stable identifier for this review.
+    pub review_id: String,
+    /// Identifier for the reviewed item or tool call when one exists.
+    ///
+    /// In most cases, one review maps to one target item. The exceptions are
+    /// - execve reviews, where a single command may contain multiple execve
+    ///   calls to review (only possible when using the shell_zsh_fork feature)
+    /// - network policy reviews, where there is no target item
+    ///
+    /// A network call is triggered by a CommandExecution item, so having a
+    /// target_item_id set to the CommandExecution item would be misleading
+    /// because the review is about the network call, not the command execution.
+    /// Therefore, target_item_id is set to None for network policy reviews.
+    pub target_item_id: Option<String>,
     pub review: GuardianApprovalReview,
     pub action: GuardianApprovalReviewAction,
 }
@@ -5168,14 +5333,24 @@ pub struct ItemGuardianApprovalReviewStartedNotification {
 #[ts(export_to = "v2/")]
 /// [UNSTABLE] Temporary notification payload for guardian automatic approval
 /// review. This shape is expected to change soon.
-///
-/// TODO(ccunningham): Attach guardian review state to the reviewed tool item's
-/// lifecycle instead of sending separate standalone review notifications so the
-/// app-server API can persist and replay review state via `thread/read`.
 pub struct ItemGuardianApprovalReviewCompletedNotification {
     pub thread_id: String,
     pub turn_id: String,
-    pub target_item_id: String,
+    /// Stable identifier for this review.
+    pub review_id: String,
+    /// Identifier for the reviewed item or tool call when one exists.
+    ///
+    /// In most cases, one review maps to one target item. The exceptions are
+    /// - execve reviews, where a single command may contain multiple execve
+    ///   calls to review (only possible when using the shell_zsh_fork feature)
+    /// - network policy reviews, where there is no target item
+    ///
+    /// A network call is triggered by a CommandExecution item, so having a
+    /// target_item_id set to the CommandExecution item would be misleading
+    /// because the review is about the network call, not the command execution.
+    /// Therefore, target_item_id is set to None for network policy reviews.
+    pub target_item_id: Option<String>,
+    pub decision_source: AutoReviewDecisionSource,
     pub review: GuardianApprovalReview,
     pub action: GuardianApprovalReviewAction,
 }
@@ -7315,6 +7490,7 @@ mod tests {
                     request_permissions: false,
                     mcp_elicitations: false,
                 }]),
+                allowed_approvals_reviewers: None,
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
                 feature_requirements: None,
@@ -7718,8 +7894,8 @@ mod tests {
     fn automatic_approval_review_deserializes_aborted_status() {
         let review: GuardianApprovalReview = serde_json::from_value(json!({
             "status": "aborted",
-            "riskScore": null,
             "riskLevel": null,
+            "userAuthorization": null,
             "rationale": null
         }))
         .expect("aborted automatic review should deserialize");
@@ -7727,8 +7903,8 @@ mod tests {
             review,
             GuardianApprovalReview {
                 status: GuardianApprovalReviewStatus::Aborted,
-                risk_score: None,
                 risk_level: None,
+                user_authorization: None,
                 rationale: None,
             }
         );
@@ -7779,6 +7955,7 @@ mod tests {
                 dangerously_allow_all_unix_sockets: None,
                 domains: None,
                 managed_allowed_domains_only: None,
+                danger_full_access_denylist_only: None,
                 allowed_domains: Some(vec!["api.openai.com".to_string()]),
                 denied_domains: Some(vec!["blocked.example.com".to_string()]),
                 unix_sockets: None,
@@ -7805,6 +7982,7 @@ mod tests {
                 ),
             ])),
             managed_allowed_domains_only: Some(true),
+            danger_full_access_denylist_only: Some(true),
             allowed_domains: Some(vec!["api.openai.com".to_string()]),
             denied_domains: Some(vec!["blocked.example.com".to_string()]),
             unix_sockets: Some(BTreeMap::from([
@@ -7835,6 +8013,7 @@ mod tests {
                     "blocked.example.com": "deny"
                 },
                 "managedAllowedDomainsOnly": true,
+                "dangerFullAccessDenylistOnly": true,
                 "allowedDomains": ["api.openai.com"],
                 "deniedDomains": ["blocked.example.com"],
                 "unixSockets": {
@@ -8299,6 +8478,7 @@ mod tests {
         let without_override = TurnStartParams {
             thread_id: "thread_123".to_string(),
             input: vec![],
+            responsesapi_client_metadata: None,
             cwd: None,
             approval_policy: None,
             approvals_reviewer: None,
