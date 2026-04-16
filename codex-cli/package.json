@@ -1,5 +1,5 @@
 {
-  "name": "@openai/codex",
+  "name": "@gim-home/codex",
   "version": "0.0.0-dev",
   "license": "Apache-2.0",
   "bin": {
@@ -15,8 +15,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openai/codex.git",
-    "directory": "codex-cli"
+    "url": "git+https://github.com/gim-home/codex.git",
+    "directory": "external/repos/codex-patched/codex-cli"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   },
   "packageManager": "pnpm@10.29.3+sha512.498e1fb4cca5aa06c1dcf2611e6fafc50972ffe7189998c409e90de74566444298ffe43e6cd2acdc775ba1aa7cc5e092a8b7054c811ba8c5770f84693d33d2dc"
 }
