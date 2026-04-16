@@ -1,5 +1,5 @@
 {
-  "name": "@openai/codex-sdk",
+  "name": "@gim-home/codex-sdk",
   "version": "0.0.0-dev",
   "description": "TypeScript SDK for Codex APIs.",
   "repository": {
