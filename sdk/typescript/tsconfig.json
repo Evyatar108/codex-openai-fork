@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
@@ -17,6 +18,7 @@
     "declarationMap": true,
     "noImplicitAny": true,
     "outDir": "dist",
+    "rootDir": ".",
     "stripInternal": true
   },
   "include": ["src", "tests", "tsup.config.ts", "samples"],
