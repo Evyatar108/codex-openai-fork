@@ -61,6 +61,9 @@ pub fn provider_config_flags(port: u16, model: &str, default_shell: Option<&str>
         format!("model_providers.copilot-sandbox.base_url=http://127.0.0.1:{port}/v1"),
         "model_providers.copilot-sandbox.wire_api=responses".to_string(),
         "model_providers.copilot-sandbox.supports_websockets=true".to_string(),
+        // Source-level network patching handles isolation; disable codex-core's
+        // built-in sandbox so it doesn't retry on sandbox-related errors.
+        "sandbox_mode=\"danger-full-access\"".to_string(),
         // Disable OpenAI Curated plugins -- not available through copilot-api
         "plugins.github@openai-curated.enabled=false".to_string(),
         "plugins.notion@openai-curated.enabled=false".to_string(),
@@ -97,4 +100,43 @@ fn is_cygwin_shell(shell_path: &str) -> bool {
 
 fn config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".codex-sandbox").join("config.toml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_flags_always_emit_sandbox_mode() {
+        let flags = provider_config_flags(4141, "gpt-5.4", None);
+        assert!(
+            flags.iter().any(|f| f == "sandbox_mode=\"danger-full-access\""),
+            "expected sandbox_mode flag in {flags:?}"
+        );
+    }
+
+    #[test]
+    fn provider_flags_emit_sandbox_mode_with_shell() {
+        let flags = provider_config_flags(
+            4141,
+            "gpt-5.4",
+            Some(r"C:\Program Files\Git\bin\bash.exe"),
+        );
+        assert!(
+            flags.iter().any(|f| f == "sandbox_mode=\"danger-full-access\""),
+            "expected sandbox_mode flag in {flags:?}"
+        );
+        assert!(
+            flags.iter().any(|f| f == "features.unified_exec=false"),
+            "expected unified_exec=false for bash in {flags:?}"
+        );
+    }
+
+    #[test]
+    fn is_cygwin_shell_detects_bash() {
+        assert!(is_cygwin_shell(r"C:\Program Files\Git\bin\bash.exe"));
+        assert!(is_cygwin_shell("/usr/bin/bash"));
+        assert!(is_cygwin_shell("/usr/bin/zsh"));
+        assert!(!is_cygwin_shell(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"));
+    }
 }

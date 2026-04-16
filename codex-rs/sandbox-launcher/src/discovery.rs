@@ -170,28 +170,41 @@ pub fn find_copilot_api() -> anyhow::Result<CopilotApiLocation> {
     )
 }
 
-/// Check if a native @openai/codex is installed in PATH and would conflict.
-pub fn check_native_codex_conflict() -> anyhow::Result<()> {
-    let names: &[&str] = if cfg!(windows) {
-        &["codex.cmd", "codex"]
+/// Find the codex-copilot-gateway binary.
+///
+/// Search order:
+/// 1. `CODEX_COPILOT_GATEWAY_PATH` env var
+/// 2. Same directory as the current executable
+pub fn find_codex_copilot_gateway() -> anyhow::Result<PathBuf> {
+    let bin_name = if cfg!(windows) {
+        "codex-copilot-gateway.exe"
     } else {
-        &["codex"]
+        "codex-copilot-gateway"
     };
 
-    if let Some(path) = search_path(names) {
-        let path_str = path.to_string_lossy();
-        // Check if this is the npm-installed @openai/codex
-        if path_str.contains("node_modules/@openai")
-            || path_str.contains("node_modules\\@openai")
-        {
-            anyhow::bail!(
-                "Native @openai/codex detected in PATH at: {path_str}\n  \
-                 This will conflict with the sandbox launcher.\n  \
-                 Uninstall it: npm uninstall -g @openai/codex"
-            );
+    if let Ok(p) = std::env::var("CODEX_COPILOT_GATEWAY_PATH") {
+        let path = PathBuf::from(&p);
+        if path.exists() {
+            return Ok(path);
+        }
+        anyhow::bail!(
+            "CODEX_COPILOT_GATEWAY_PATH is set to {p} but the file does not exist"
+        );
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(bin_name);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
         }
     }
-    Ok(())
+
+    anyhow::bail!(
+        "codex-copilot-gateway not found. Expected {bin_name} next to the sandbox-launcher binary, \
+         or set CODEX_COPILOT_GATEWAY_PATH env var."
+    )
 }
 
 /// Search PATH for any of the given binary names. Returns the first match.

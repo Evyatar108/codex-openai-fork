@@ -1,6 +1,7 @@
 mod config;
 mod copilot_api;
 mod discovery;
+mod setup;
 
 use std::process::Command;
 
@@ -28,8 +29,8 @@ fn run() -> anyhow::Result<()> {
         return exec_codex_core(&codex_core, &args, None);
     }
 
-    // Normal launch: config, conflict check, copilot-api, then codex-core
-    discovery::check_native_codex_conflict()?;
+    // Normal launch: first-run bootstrap, config, copilot-api, then codex-core
+    setup::first_run_bootstrap()?;
 
     let cfg = config::load_config();
     copilot_api::ensure_running(cfg.copilot_api_port)?;
