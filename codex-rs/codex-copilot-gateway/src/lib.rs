@@ -100,7 +100,10 @@ async fn responses(
             .text()
             .await
             .unwrap_or_else(|_| "(unable to read body)".to_string());
-        return error_response(status, body);
+        eprintln!(
+            "codex-copilot-gateway: upstream responses call failed with status {status}: {body}"
+        );
+        return upstream_error_response(status);
     }
 
     if stream_requested {
@@ -176,6 +179,19 @@ fn error_response(status: StatusCode, message: String) -> Response {
         Json(serde_json::json!({
             "error": {
                 "message": message,
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn upstream_error_response(status: StatusCode) -> Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "error": {
+                "message": "upstream request failed",
+                "code": status.as_u16(),
             }
         })),
     )
