@@ -52,19 +52,20 @@ fn print_log_tail(log_path: &Path, n: usize) {
     }
 }
 
-/// Health check: GET /v1/models and verify we get a 200 response.
+/// Health check: GET /healthz and verify we get a 200 response.
 /// Returns Ok(()) on success, Err with details on failure.
 fn health_check(port: u16) -> anyhow::Result<()> {
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
         .map_err(|e| anyhow::anyhow!("connection failed: {e}"))?;
 
-    // Send raw HTTP/1.1 GET request
     use std::io::{Read, Write};
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    write!(stream, "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")?;
+    write!(
+        stream,
+        "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )?;
 
-    // Read response (just the status line is enough)
     let mut buf = [0u8; 1024];
     let n = stream.read(&mut buf).unwrap_or(0);
     let response = String::from_utf8_lossy(&buf[..n]);
@@ -77,71 +78,48 @@ fn health_check(port: u16) -> anyhow::Result<()> {
     }
 }
 
-/// Check copilot-api health after codex-core exits with an error.
-/// If copilot-api is down, prints the log and returns an error message.
+/// Check gateway health after codex-core exits with an error.
+/// If the gateway is down, prints the log and returns an error message.
 /// Call this from main.rs on Windows after codex-core exits non-zero.
 pub fn check_health_or_print_log(port: u16) {
     if is_port_listening(port) {
         if let Err(e) = health_check(port) {
-            eprintln!("[sandbox] copilot-api health check failed: {e}");
+            eprintln!("[sandbox] codex-copilot-gateway health check failed: {e}");
             if let Ok(dir) = state_dir() {
-                eprintln!("[sandbox] copilot-api log:");
-                print_log_tail(&dir.join("copilot-api.log"), 20);
+                eprintln!("[sandbox] codex-copilot-gateway log:");
+                print_log_tail(&dir.join("codex-copilot-gateway.log"), 20);
             }
         }
     } else {
-        eprintln!("[sandbox] copilot-api is not running (port {} closed)", port);
+        eprintln!(
+            "[sandbox] codex-copilot-gateway is not running (port {} closed)",
+            port
+        );
         if let Ok(dir) = state_dir() {
-            eprintln!("[sandbox] copilot-api log:");
-            print_log_tail(&dir.join("copilot-api.log"), 20);
+            eprintln!("[sandbox] codex-copilot-gateway log:");
+            print_log_tail(&dir.join("codex-copilot-gateway.log"), 20);
         }
     }
 }
 
-/// Ensure copilot-api is running on the given port.
+/// Ensure codex-copilot-gateway is running on the given port.
 /// If already listening, returns immediately. Otherwise starts it and waits.
 pub fn ensure_running(port: u16) -> anyhow::Result<()> {
-    // Quick check: if port is already listening, copilot-api is running
     if is_port_listening(port) {
         return Ok(());
     }
 
     let dir = state_dir()?;
-    let log_path = dir.join("copilot-api.log");
+    let log_path = dir.join("codex-copilot-gateway.log");
 
-    // Find copilot-api (source or binary)
-    let location = discovery::find_copilot_api()?;
+    let gateway = discovery::find_codex_copilot_gateway()?;
+    let exe_path = gateway.to_string_lossy().into_owned();
+    let exe_args = vec![
+        "start".to_string(),
+        "--port".to_string(),
+        port.to_string(),
+    ];
 
-    // Build the executable path and args for copilot-api
-    let (exe_path, exe_args): (String, Vec<String>) = match &location {
-        discovery::CopilotApiLocation::Source(source_path) => {
-            let bun = discovery::find_bun()?;
-            (
-                bun.to_string_lossy().into_owned(),
-                vec![
-                    "run".to_string(),
-                    source_path.to_string_lossy().into_owned(),
-                    "start".to_string(),
-                    "--port".to_string(),
-                    port.to_string(),
-                ],
-            )
-        }
-        discovery::CopilotApiLocation::Binary(bin_path) => (
-            bin_path.to_string_lossy().into_owned(),
-            vec!["start".to_string(), "--port".to_string(), port.to_string()],
-        ),
-    };
-
-    // Spawn copilot-api as a fully detached background process.
-    //
-    // On Windows, use CREATE_NEW_PROCESS_GROUP to prevent Ctrl+C propagation,
-    // and redirect stdout/stderr to the log file via Rust's Stdio (not shell
-    // redirection). Previous approach using `cmd /c start /b` broke because
-    // Rust's Command escapes embedded quotes with backslashes, which cmd.exe
-    // does not understand.
-    //
-    // On Unix, use pre_exec with setsid() to create a new session.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -158,12 +136,10 @@ pub fn ensure_running(port: u16) -> anyhow::Result<()> {
             .creation_flags(CREATE_NEW_PROCESS_GROUP)
             .spawn()
             .map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to start copilot-api: {e}\nCommand: {exe_path}"
-                )
+                anyhow::anyhow!("failed to start codex-copilot-gateway: {e}\nCommand: {exe_path}")
             })?;
 
-        let pid_file = dir.join("copilot-api.pid");
+        let pid_file = dir.join("codex-copilot-gateway.pid");
         let _ = fs::write(&pid_file, child.id().to_string());
         std::mem::forget(child);
     }
@@ -192,50 +168,35 @@ pub fn ensure_running(port: u16) -> anyhow::Result<()> {
 
         let child = cmd.spawn().map_err(|e| {
             anyhow::anyhow!(
-                "failed to start copilot-api: {e}\nLocation: {exe_path}"
+                "failed to start codex-copilot-gateway: {e}\nPath: {exe_path}"
             )
         })?;
 
-        let pid_file = dir.join("copilot-api.pid");
+        let pid_file = dir.join("codex-copilot-gateway.pid");
         let _ = fs::write(&pid_file, child.id().to_string());
         std::mem::forget(child);
     }
 
-    // Wait for port to be ready
     if !wait_for_port(port, Duration::from_secs(10)) {
-        eprintln!("[sandbox] copilot-api failed to start. Log:");
+        eprintln!("[sandbox] codex-copilot-gateway failed to start. Log:");
         print_log_tail(&log_path, 10);
-
-        // Provide helpful error message based on source type
-        match &location {
-            discovery::CopilotApiLocation::Source(p) => {
-                anyhow::bail!(
-                    "copilot-api did not start in time. Have you logged in?\n  \
-                     Run: bun run {} start",
-                    p.display()
-                );
-            }
-            discovery::CopilotApiLocation::Binary(_) => {
-                anyhow::bail!(
-                    "copilot-api did not start in time. Check the log above for details."
-                );
-            }
-        }
-    }
-
-    // Health check: verify copilot-api actually responds, not just port open
-    if let Err(e) = health_check(port) {
-        eprintln!("[sandbox] copilot-api health check failed: {e}");
-        eprintln!("[sandbox] copilot-api log:");
-        print_log_tail(&log_path, 20);
         anyhow::bail!(
-            "copilot-api started but is not healthy. Check the log above.\n  \
-             Common causes: expired token, network issues.\n  \
-             Re-login: bun run <copilot-api-source>/src/main.ts start"
+            "codex-copilot-gateway did not start in time. Have you logged in?\n  \
+             Run: codex-copilot-gateway login"
         );
     }
 
-    // Show login info from log if available
+    if let Err(e) = health_check(port) {
+        eprintln!("[sandbox] codex-copilot-gateway health check failed: {e}");
+        eprintln!("[sandbox] codex-copilot-gateway log:");
+        print_log_tail(&log_path, 20);
+        anyhow::bail!(
+            "codex-copilot-gateway started but is not healthy. Check the log above.\n  \
+             Common causes: expired token, network issues.\n  \
+             Re-login: codex-copilot-gateway login"
+        );
+    }
+
     if let Ok(content) = fs::read_to_string(&log_path) {
         let reader = BufReader::new(content.as_bytes());
         for line in reader.lines().map_while(Result::ok) {
