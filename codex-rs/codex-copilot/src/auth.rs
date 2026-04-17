@@ -409,7 +409,11 @@ impl CopilotAuth {
     }
 
     fn write_github_token(&self, token: &str) -> anyhow::Result<()> {
-        fs::write(&self.paths.github_token_path, format!("{token}\n")).with_context(|| {
+        write_secret_file(
+            &self.paths.github_token_path,
+            format!("{token}\n").as_bytes(),
+        )
+        .with_context(|| {
             format!(
                 "writing GitHub token to {}",
                 self.paths.github_token_path.display()
@@ -426,17 +430,29 @@ impl CopilotAuth {
     }
 
     fn write_cached_copilot_token(&self, token: &CachedCopilotToken) -> anyhow::Result<()> {
-        fs::write(
-            &self.paths.copilot_token_path,
-            serde_json::to_vec(token).context("encoding cached Copilot token")?,
-        )
-        .with_context(|| {
+        let encoded = serde_json::to_vec(token).context("encoding cached Copilot token")?;
+        write_secret_file(&self.paths.copilot_token_path, &encoded).with_context(|| {
             format!(
                 "writing cached Copilot token to {}",
                 self.paths.copilot_token_path.display()
             )
         })
     }
+}
+
+fn write_secret_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(contents)?;
+    Ok(())
 }
 
 fn load_or_create_uuid(path: &std::path::Path) -> anyhow::Result<String> {
