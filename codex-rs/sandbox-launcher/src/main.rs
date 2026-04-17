@@ -1,6 +1,6 @@
 mod config;
-mod copilot_api;
 mod discovery;
+mod gateway;
 mod setup;
 
 use std::process::Command;
@@ -33,7 +33,7 @@ fn run() -> anyhow::Result<()> {
     setup::first_run_bootstrap()?;
 
     let cfg = config::load_config();
-    copilot_api::ensure_running(cfg.copilot_api_port)?;
+    gateway::ensure_running(cfg.copilot_api_port)?;
 
     // Build final args: user args first, then provider -c flags last.
     // Provider flags MUST come last so they always win — later -c values
@@ -95,7 +95,7 @@ fn exec_codex_core(
         // On non-zero exit, check if copilot-api is still healthy
         if code != 0 {
             if let Some(port) = copilot_api_port {
-                copilot_api::check_health_or_print_log(port);
+                gateway::check_health_or_print_log(port);
             }
         }
         std::process::exit(code);
