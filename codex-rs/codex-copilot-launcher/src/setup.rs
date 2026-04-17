@@ -16,6 +16,8 @@ pub fn first_run_bootstrap() -> Result<()> {
     let token_path =
         copilot_token_path().context("unable to resolve home directory for copilot token")?;
 
+    migrate_legacy_sandbox_dir(&config_path);
+
     let config_exists = config_path.exists();
     let token_exists = token_path.exists();
 
@@ -51,7 +53,52 @@ pub fn first_run_bootstrap() -> Result<()> {
 }
 
 fn sandbox_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".codex-copilot").join("config.toml"))
+}
+
+/// Legacy config path (`~/.codex-sandbox/config.toml`) used before the
+/// `codex-copilot` rename. Detected at first-run so we can migrate.
+fn legacy_sandbox_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".codex-sandbox").join("config.toml"))
+}
+
+/// One-shot migration from `~/.codex-sandbox/` to `~/.codex-copilot/`.
+///
+/// If the new config path already exists, or the legacy path does not, this
+/// is a no-op. Otherwise it renames the legacy directory to the new name and
+/// emits a stderr notice so the user knows the migration ran.
+fn migrate_legacy_sandbox_dir(new_config_path: &Path) {
+    if new_config_path.exists() {
+        return;
+    }
+    let Some(legacy) = legacy_sandbox_config_path() else {
+        return;
+    };
+    if !legacy.exists() {
+        return;
+    }
+    let Some(new_dir) = new_config_path.parent() else {
+        return;
+    };
+    let Some(legacy_dir) = legacy.parent() else {
+        return;
+    };
+    match std::fs::rename(legacy_dir, new_dir) {
+        Ok(()) => {
+            eprintln!(
+                "Migrated configuration directory: {} -> {}",
+                legacy_dir.display(),
+                new_dir.display(),
+            );
+        }
+        Err(err) => {
+            eprintln!(
+                "Warning: failed to migrate {} to {}: {err}",
+                legacy_dir.display(),
+                new_dir.display(),
+            );
+        }
+    }
 }
 
 fn copilot_token_path() -> Option<PathBuf> {

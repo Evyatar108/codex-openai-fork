@@ -17,7 +17,7 @@ fn state_dir() -> anyhow::Result<PathBuf> {
     } else {
         std::env::temp_dir()
     };
-    let dir = base.join("codex-sandbox");
+    let dir = base.join("codex-copilot");
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -84,19 +84,19 @@ fn health_check(port: u16) -> anyhow::Result<()> {
 pub fn check_health_or_print_log(port: u16) {
     if is_port_listening(port) {
         if let Err(e) = health_check(port) {
-            eprintln!("[sandbox] codex-copilot-gateway health check failed: {e}");
+            eprintln!("[codex-copilot] codex-copilot-gateway health check failed: {e}");
             if let Ok(dir) = state_dir() {
-                eprintln!("[sandbox] codex-copilot-gateway log:");
+                eprintln!("[codex-copilot] codex-copilot-gateway log:");
                 print_log_tail(&dir.join("codex-copilot-gateway.log"), 20);
             }
         }
     } else {
         eprintln!(
-            "[sandbox] codex-copilot-gateway is not running (port {} closed)",
+            "[codex-copilot] codex-copilot-gateway is not running (port {} closed)",
             port
         );
         if let Ok(dir) = state_dir() {
-            eprintln!("[sandbox] codex-copilot-gateway log:");
+            eprintln!("[codex-copilot] codex-copilot-gateway log:");
             print_log_tail(&dir.join("codex-copilot-gateway.log"), 20);
         }
     }
@@ -178,7 +178,7 @@ pub fn ensure_running(port: u16) -> anyhow::Result<()> {
     }
 
     if !wait_for_port(port, Duration::from_secs(10)) {
-        eprintln!("[sandbox] codex-copilot-gateway failed to start. Log:");
+        eprintln!("[codex-copilot] codex-copilot-gateway failed to start. Log:");
         print_log_tail(&log_path, 10);
         anyhow::bail!(
             "codex-copilot-gateway did not start in time. Have you logged in?\n  \
@@ -187,8 +187,8 @@ pub fn ensure_running(port: u16) -> anyhow::Result<()> {
     }
 
     if let Err(e) = health_check(port) {
-        eprintln!("[sandbox] codex-copilot-gateway health check failed: {e}");
-        eprintln!("[sandbox] codex-copilot-gateway log:");
+        eprintln!("[codex-copilot] codex-copilot-gateway health check failed: {e}");
+        eprintln!("[codex-copilot] codex-copilot-gateway log:");
         print_log_tail(&log_path, 20);
         anyhow::bail!(
             "codex-copilot-gateway started but is not healthy. Check the log above.\n  \
@@ -201,7 +201,7 @@ pub fn ensure_running(port: u16) -> anyhow::Result<()> {
         let reader = BufReader::new(content.as_bytes());
         for line in reader.lines().map_while(Result::ok) {
             if line.contains("Logged in as") {
-                eprintln!("[sandbox] {}", line.trim());
+                eprintln!("[codex-copilot] {}", line.trim());
             }
         }
     }

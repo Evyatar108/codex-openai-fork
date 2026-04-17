@@ -9,7 +9,7 @@ pub struct SandboxConfig {
     pub default_shell: Option<String>,
 }
 
-/// Load configuration from `~/.codex-sandbox/config.toml`.
+/// Load configuration from `~/.codex-copilot/config.toml`.
 /// Returns defaults if the file is missing or unparseable.
 pub fn load_config() -> SandboxConfig {
     let defaults = SandboxConfig {
@@ -56,11 +56,11 @@ pub fn load_config() -> SandboxConfig {
 pub fn provider_config_flags(port: u16, model: &str, default_shell: Option<&str>) -> Vec<String> {
     let mut flags = vec![
         format!("model={model}"),
-        "model_provider=copilot-sandbox".to_string(),
-        "model_providers.copilot-sandbox.name=Copilot Sandbox".to_string(),
-        format!("model_providers.copilot-sandbox.base_url=http://127.0.0.1:{port}/v1"),
-        "model_providers.copilot-sandbox.wire_api=responses".to_string(),
-        "model_providers.copilot-sandbox.supports_websockets=true".to_string(),
+        "model_provider=copilot".to_string(),
+        "model_providers.copilot.name=Copilot".to_string(),
+        format!("model_providers.copilot.base_url=http://127.0.0.1:{port}/v1"),
+        "model_providers.copilot.wire_api=responses".to_string(),
+        "model_providers.copilot.supports_websockets=true".to_string(),
         // Source-level network patching handles isolation; disable codex-core's
         // built-in sandbox so it doesn't retry on sandbox-related errors.
         "sandbox_mode=\"danger-full-access\"".to_string(),
@@ -99,7 +99,7 @@ fn is_cygwin_shell(shell_path: &str) -> bool {
 }
 
 fn config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".codex-sandbox").join("config.toml"))
+    dirs::home_dir().map(|h| h.join(".codex-copilot").join("config.toml"))
 }
 
 #[cfg(test)]

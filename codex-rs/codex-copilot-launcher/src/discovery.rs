@@ -32,7 +32,7 @@ pub fn find_codex_core() -> anyhow::Result<PathBuf> {
     }
 
     anyhow::bail!(
-        "codex-core not found. Expected {bin_name} next to the sandbox-launcher binary, \
+        "codex-core not found. Expected {bin_name} next to the codex-copilot-launcher binary, \
          or set CODEX_CORE_PATH env var."
     )
 }
@@ -69,7 +69,7 @@ pub fn find_codex_copilot_gateway() -> anyhow::Result<PathBuf> {
     }
 
     anyhow::bail!(
-        "codex-copilot-gateway not found. Expected {bin_name} next to the sandbox-launcher binary, \
+        "codex-copilot-gateway not found. Expected {bin_name} next to the codex-copilot-launcher binary, \
          or set CODEX_COPILOT_GATEWAY_PATH env var."
     )
 }

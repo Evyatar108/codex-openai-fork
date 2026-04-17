@@ -400,8 +400,10 @@ def run_npm_pack(staging_dir: Path, output_path: Path) -> Path:
 
     with tempfile.TemporaryDirectory(prefix="codex-npm-pack-") as pack_dir_str:
         pack_dir = Path(pack_dir_str)
+        import shutil as _shutil
+        npm_bin = _shutil.which("npm") or "npm"
         stdout = subprocess.check_output(
-            ["npm", "pack", "--json", "--pack-destination", str(pack_dir)],
+            [npm_bin, "pack", "--json", "--pack-destination", str(pack_dir)],
             cwd=staging_dir,
             text=True,
         )

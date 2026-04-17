@@ -1,5 +1,5 @@
 [package]
-name = "codex-sandbox-launcher"
+name = "codex-copilot-launcher"
 version.workspace = true
 edition.workspace = true
 
