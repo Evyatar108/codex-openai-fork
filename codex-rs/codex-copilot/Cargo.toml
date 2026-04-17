@@ -1,0 +1,28 @@
+[package]
+name = "codex-copilot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_copilot"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+codex-client = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+wiremock = { workspace = true }

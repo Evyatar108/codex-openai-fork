@@ -89,6 +89,8 @@ members = [
     "codex-experimental-api-macros",
     "plugin",
     "sandbox-launcher",
+    "codex-copilot",
+    "codex-copilot-gateway",
 ]
 resolver = "2"
 

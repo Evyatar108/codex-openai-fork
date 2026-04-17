@@ -1885,6 +1885,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-copilot"
+version = "0.120.0-sandbox.1"
+dependencies = [
+ "anyhow",
+ "codex-client",
+ "dirs",
+ "pretty_assertions",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
+name = "codex-copilot-gateway"
+version = "0.120.0-sandbox.1"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum",
+ "bytes",
+ "clap",
+ "codex-copilot",
+ "eventsource-stream",
+ "futures",
+ "pretty_assertions",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "codex-core"
 version = "0.120.0-sandbox.1"
 dependencies = [
