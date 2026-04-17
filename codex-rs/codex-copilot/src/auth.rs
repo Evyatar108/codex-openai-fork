@@ -53,6 +53,8 @@ pub struct DeviceCodeResponse {
 #[derive(Debug, Deserialize)]
 struct AccessTokenResponse {
     access_token: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,7 +323,7 @@ impl CopilotAuth {
 
     async fn poll_access_token(&self, device_code: &DeviceCodeResponse) -> anyhow::Result<String> {
         let deadline = now_epoch_seconds() + device_code.expires_in;
-        let interval = std::cmp::max(device_code.interval, 1) + 1;
+        let mut interval = std::cmp::max(device_code.interval, 1) + 1;
 
         loop {
             if now_epoch_seconds() >= deadline {
@@ -343,13 +345,39 @@ impl CopilotAuth {
                 .await
                 .context("polling GitHub access token")?;
 
-            if response.status().is_success() {
-                let body = response
-                    .json::<AccessTokenResponse>()
-                    .await
-                    .context("decoding GitHub access token response")?;
-                if let Some(token) = body.access_token {
-                    return Ok(token);
+            let body = response
+                .json::<AccessTokenResponse>()
+                .await
+                .context("decoding GitHub access token response")?;
+
+            if let Some(token) = body.access_token {
+                return Ok(token);
+            }
+
+            match body.error.as_deref() {
+                Some("authorization_pending") => {}
+                Some("slow_down") => {
+                    interval += 5;
+                }
+                Some("expired_token") => {
+                    return Err(anyhow!(
+                        "GitHub device login expired before authorization completed"
+                    ));
+                }
+                Some("access_denied") => {
+                    return Err(anyhow!("GitHub device login was denied by the user"));
+                }
+                Some(other) => {
+                    let description = body.error_description.unwrap_or_default();
+                    return Err(anyhow!(
+                        "GitHub device login failed: {other}{}{description}",
+                        if description.is_empty() { "" } else { ": " }
+                    ));
+                }
+                None => {
+                    eprintln!(
+                        "codex-copilot: unexpected access token response with no error field; retrying"
+                    );
                 }
             }
 
