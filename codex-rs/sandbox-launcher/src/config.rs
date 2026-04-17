@@ -52,7 +52,7 @@ pub fn load_config() -> SandboxConfig {
 }
 
 /// Build the list of `-c` flag values for configuring codex-core to use
-/// copilot-api as its provider.
+/// codex-copilot-gateway as its provider.
 pub fn provider_config_flags(port: u16, model: &str, default_shell: Option<&str>) -> Vec<String> {
     let mut flags = vec![
         format!("model={model}"),
@@ -64,7 +64,7 @@ pub fn provider_config_flags(port: u16, model: &str, default_shell: Option<&str>
         // Source-level network patching handles isolation; disable codex-core's
         // built-in sandbox so it doesn't retry on sandbox-related errors.
         "sandbox_mode=\"danger-full-access\"".to_string(),
-        // Disable OpenAI Curated plugins -- not available through copilot-api
+        // Disable OpenAI Curated plugins -- not available through codex-copilot-gateway
         "plugins.github@openai-curated.enabled=false".to_string(),
         "plugins.notion@openai-curated.enabled=false".to_string(),
         "plugins.slack@openai-curated.enabled=false".to_string(),
