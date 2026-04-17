@@ -72,8 +72,8 @@ PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     "codex-linux-arm64": ["codex", "codex-core", "rg"],
     "codex-darwin-x64": ["codex", "codex-core", "rg"],
     "codex-darwin-arm64": ["codex", "codex-core", "rg"],
-    "codex-win32-x64": ["codex", "codex-core", "rg", "codex-windows-sandbox-setup", "codex-command-runner"],
-    "codex-win32-arm64": ["codex", "codex-core", "rg", "codex-windows-sandbox-setup", "codex-command-runner"],
+    "codex-win32-x64": ["codex", "codex-core", "rg"],
+    "codex-win32-arm64": ["codex", "codex-core", "rg"],
     "codex-sdk": [],
 }
 
@@ -87,8 +87,6 @@ PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
 COMPONENT_DEST_DIR: dict[str, str] = {
     "codex": "codex",
     "codex-core": "codex",
-    "codex-windows-sandbox-setup": "codex",
-    "codex-command-runner": "codex",
     "rg": "path",
 }
 
