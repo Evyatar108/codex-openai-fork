@@ -259,69 +259,128 @@ async fn pump_bidirectional(
     mut client_ws: WebSocket,
     mut upstream_ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
 ) {
+    // Phase 1: intercept codex-core's startup WebSocket prewarm. The prewarm sends
+    // `response.create` with `generate=false` and no input/previous_response_id.
+    // OpenAI accepts this; Copilot rejects it with
+    // `bad_request: One of "input" or ... must be provided`. That error is a
+    // non-terminal event in codex-core's parser, so the prewarm stream_request
+    // blocks on the idle timeout (~5 min) before the first real turn can run.
+    //
+    // We stay in this serial loop ONLY while the client keeps sending warmup frames.
+    // As soon as a real frame arrives, we forward it to upstream and fall through to
+    // the full-duplex split pump below so that backpressure on one direction cannot
+    // block the other.
     loop {
-        tokio::select! {
-            client_msg = client_ws.recv() => {
-                let Some(Ok(msg)) = client_msg else { break };
+        let Some(Ok(msg)) = client_ws.recv().await else {
+            let _ = client_ws.close().await;
+            let _ = upstream_ws.close(None).await;
+            return;
+        };
 
-                // Intercept codex-core's startup WebSocket prewarm. The prewarm sends
-                // `response.create` with `generate=false` and no input/prompt/conversation_id.
-                // OpenAI accepts this; Copilot rejects it with
-                // `bad_request: One of "input" or ... must be provided.` That error is a
-                // non-terminal event in codex-core's parser, so the prewarm stream_request
-                // blocks on the idle timeout (~5 min) before the first real turn can run.
-                // Ack the warmup locally and keep the upstream WS idle for the real turn.
-                if let AxumWsMessage::Text(ref text) = msg
-                    && is_warmup_request(text.as_str())
-                {
-                    // Use an empty `id` so codex-core's `prepare_websocket_request` falls
-                    // through its "no previous response id" guard
-                    // (core/src/client.rs: `if last_response.response_id.is_empty()`)
-                    // and does NOT chain the next turn with
-                    // `previous_response_id`, which would fail Copilot's ID prefix check.
-                    let synthetic = "{\"type\":\"response.completed\",\"response\":{\"id\":\"\"}}";
-                    if client_ws
-                        .send(AxumWsMessage::Text(synthetic.into()))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                    continue;
-                }
-
-                let Some(forwarded) = axum_to_tungstenite(msg) else { continue };
-                let is_close = matches!(forwarded, TungsteniteMessage::Close(_));
-                if upstream_ws.send(forwarded).await.is_err() { break; }
-                if is_close { break; }
+        if let AxumWsMessage::Text(ref text) = msg
+            && is_warmup_request(text.as_str())
+        {
+            // Use an empty `id` so codex-core's `prepare_websocket_request` falls
+            // through its "no previous response id" guard
+            // (core/src/client.rs: `if last_response.response_id.is_empty()`) and
+            // does NOT chain the next turn with `previous_response_id`, which would
+            // fail Copilot's `resp*` prefix check.
+            let synthetic = "{\"type\":\"response.completed\",\"response\":{\"id\":\"\"}}";
+            if client_ws
+                .send(AxumWsMessage::Text(synthetic.into()))
+                .await
+                .is_err()
+            {
+                let _ = upstream_ws.close(None).await;
+                return;
             }
-            upstream_msg = upstream_ws.next() => {
-                let Some(Ok(msg)) = upstream_msg else { break };
-                let Some(forwarded) = tungstenite_to_axum(msg) else { continue };
-                let is_close = matches!(forwarded, AxumWsMessage::Close(_));
-                if client_ws.send(forwarded).await.is_err() { break; }
-                if is_close { break; }
-            }
+            continue;
         }
+
+        let Some(forwarded) = axum_to_tungstenite(msg) else { continue };
+        let is_close = matches!(forwarded, TungsteniteMessage::Close(_));
+        if upstream_ws.send(forwarded).await.is_err() {
+            let _ = client_ws.close().await;
+            return;
+        }
+        if is_close {
+            // Client shut down before a real turn; drain any in-flight upstream
+            // frames to the client until upstream closes too.
+            drain_upstream_until_close(&mut client_ws, &mut upstream_ws).await;
+            let _ = client_ws.close().await;
+            let _ = upstream_ws.close(None).await;
+            return;
+        }
+        break;
     }
 
-    let _ = client_ws.close().await;
-    let _ = upstream_ws.close(None).await;
+    // Phase 2: full-duplex pump. Split each socket into independent sink/stream halves
+    // so reads in one direction never wait on writes in the other.
+    let (mut client_tx, mut client_rx) = client_ws.split();
+    let (mut upstream_tx, mut upstream_rx) = upstream_ws.split();
+
+    let client_to_upstream = async {
+        while let Some(Ok(msg)) = client_rx.next().await {
+            let Some(forwarded) = axum_to_tungstenite(msg) else { continue };
+            let is_close = matches!(forwarded, TungsteniteMessage::Close(_));
+            if upstream_tx.send(forwarded).await.is_err() { break; }
+            if is_close { break; }
+        }
+        let _ = upstream_tx.close().await;
+    };
+
+    let upstream_to_client = async {
+        while let Some(Ok(msg)) = upstream_rx.next().await {
+            let Some(forwarded) = tungstenite_to_axum(msg) else { continue };
+            let is_close = matches!(forwarded, AxumWsMessage::Close(_));
+            if client_tx.send(forwarded).await.is_err() { break; }
+            if is_close { break; }
+        }
+        let _ = client_tx.close().await;
+    };
+
+    // Each half runs to EOF independently so that a close frame in one direction
+    // still gets its reply drained through the proxy rather than dropped.
+    tokio::join!(client_to_upstream, upstream_to_client);
+}
+
+async fn drain_upstream_until_close(
+    client_ws: &mut WebSocket,
+    upstream_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+) {
+    while let Some(Ok(msg)) = upstream_ws.next().await {
+        let Some(forwarded) = tungstenite_to_axum(msg) else { continue };
+        let is_close = matches!(forwarded, AxumWsMessage::Close(_));
+        if client_ws.send(forwarded).await.is_err() {
+            break;
+        }
+        if is_close {
+            break;
+        }
+    }
 }
 
 fn is_warmup_request(text: &str) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(text) else {
         return false;
     };
-    let is_response_create = value
-        .get("type")
-        .and_then(|v| v.as_str())
-        .is_some_and(|t| t == "response.create");
-    let generate_disabled = value
-        .get("generate")
-        .and_then(|v| v.as_bool())
-        .is_some_and(|b| !b);
-    is_response_create && generate_disabled
+    if value.get("type").and_then(Value::as_str) != Some("response.create") {
+        return false;
+    }
+    if value.get("generate").and_then(Value::as_bool) != Some(false) {
+        return false;
+    }
+    // Any of these fields indicates a real turn, not the startup prewarm.
+    let input_empty = match value.get("input") {
+        None => true,
+        Some(v) => v.as_array().is_some_and(|a| a.is_empty()),
+    };
+    let no_previous_response_id = value
+        .get("previous_response_id")
+        .is_none_or(Value::is_null);
+    let no_prompt = value.get("prompt").is_none_or(Value::is_null);
+    let no_conversation_id = value.get("conversation_id").is_none_or(Value::is_null);
+    input_empty && no_previous_response_id && no_prompt && no_conversation_id
 }
 
 fn axum_to_tungstenite(message: AxumWsMessage) -> Option<TungsteniteMessage> {
@@ -605,14 +664,43 @@ mod tests {
     #[test]
     fn is_warmup_request_rejects_non_warmup() {
         use super::is_warmup_request;
+        // generate=true — real turn
         assert!(!is_warmup_request(
             r#"{"type":"response.create","generate":true,"model":"gpt-5.4"}"#
         ));
+        // no `generate` field — standard real turn
         assert!(!is_warmup_request(
             r#"{"type":"response.create","model":"gpt-5.4","input":[]}"#
         ));
+        // wrong top-level type
         assert!(!is_warmup_request(r#"{"type":"response.cancel"}"#));
+        // garbage
         assert!(!is_warmup_request("not json"));
+        // generate=false but carries real input — NOT the prewarm, must not intercept
+        assert!(!is_warmup_request(
+            r#"{"type":"response.create","generate":false,"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#
+        ));
+        // generate=false but continues a prior response — real turn chained to a previous id
+        assert!(!is_warmup_request(
+            r#"{"type":"response.create","generate":false,"model":"gpt-5.4","previous_response_id":"resp_123"}"#
+        ));
+        // generate=false with a non-null prompt field
+        assert!(!is_warmup_request(
+            r#"{"type":"response.create","generate":false,"model":"gpt-5.4","prompt":"hi"}"#
+        ));
+        // generate=false with a non-null conversation_id
+        assert!(!is_warmup_request(
+            r#"{"type":"response.create","generate":false,"model":"gpt-5.4","conversation_id":"conv_1"}"#
+        ));
+    }
+
+    #[test]
+    fn is_warmup_request_accepts_explicit_empty_input() {
+        use super::is_warmup_request;
+        // Explicit input=[] with generate=false is still the prewarm.
+        assert!(is_warmup_request(
+            r#"{"type":"response.create","generate":false,"model":"gpt-5.4","input":[]}"#
+        ));
     }
 
     #[tokio::test]
@@ -686,6 +774,230 @@ mod tests {
         // Give the pump a moment so we can assert upstream never saw the warmup.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(upstream_frames.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn responses_endpoint_forwards_non_warmup_response_create() {
+        // Regression: a `response.create` with `generate=false` but a real `input`
+        // array must be forwarded to upstream verbatim (not intercepted as a warmup).
+        use futures::SinkExt;
+        use futures::StreamExt;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+        use tokio_tungstenite::accept_async;
+        use tokio_tungstenite::connect_async;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream listener");
+        let upstream_addr = upstream_listener.local_addr().expect("upstream addr");
+        let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = Arc::clone(&captured);
+        tokio::spawn(async move {
+            let (stream, _) = upstream_listener
+                .accept()
+                .await
+                .expect("accept upstream connection");
+            let mut ws = accept_async(stream).await.expect("ws handshake");
+            while let Some(Ok(message)) = ws.next().await {
+                match message {
+                    WsMessage::Text(text) => {
+                        captured_clone.lock().await.push(text.as_str().to_string());
+                        let _ = ws
+                            .send(WsMessage::Text("{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}".into()))
+                            .await;
+                    }
+                    WsMessage::Close(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        let upstream_url = format!("http://{upstream_addr}");
+        let state = GatewayState {
+            client: CopilotClient::new(test_auth_with_upstream(&upstream_url))
+                .expect("test client"),
+        };
+        let gateway_addr = spawn_gateway(state).await;
+
+        let ws_url = format!("ws://{gateway_addr}/v1/responses");
+        let (mut client_ws, _) = connect_async(&ws_url)
+            .await
+            .expect("client handshake against gateway");
+        let payload = r#"{"type":"response.create","generate":false,"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#;
+        client_ws
+            .send(WsMessage::Text(payload.into()))
+            .await
+            .expect("send real response.create frame");
+
+        let reply = client_ws
+            .next()
+            .await
+            .expect("receive reply frame")
+            .expect("frame ok");
+        match reply {
+            WsMessage::Text(text) => {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(text.as_str()).expect("valid json");
+                assert_eq!(
+                    parsed.get("type").and_then(serde_json::Value::as_str),
+                    Some("response.completed"),
+                );
+                // The upstream, not the gateway, produced this response_id. Intercept
+                // would have replaced it with an empty id.
+                assert_eq!(
+                    parsed
+                        .pointer("/response/id")
+                        .and_then(serde_json::Value::as_str),
+                    Some("resp_1"),
+                );
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+        let captured_frames = captured.lock().await;
+        assert_eq!(captured_frames.len(), 1);
+        assert_eq!(captured_frames[0], payload);
+    }
+
+    #[tokio::test]
+    async fn responses_endpoint_drains_upstream_frames_before_client_close() {
+        // Regression for codex review finding #2: when the client sends Close, the
+        // pump must drain any in-flight upstream frames back to the client before
+        // tearing down. A naive implementation broke out of the loop on first close.
+        use futures::SinkExt;
+        use futures::StreamExt;
+        use tokio_tungstenite::accept_async;
+        use tokio_tungstenite::connect_async;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream listener");
+        let upstream_addr = upstream_listener.local_addr().expect("upstream addr");
+        tokio::spawn(async move {
+            let (stream, _) = upstream_listener
+                .accept()
+                .await
+                .expect("accept upstream connection");
+            let mut ws = accept_async(stream).await.expect("ws handshake");
+            // Accept one turn-starting frame, then emit two events + close.
+            if let Some(Ok(_)) = ws.next().await {
+                let _ = ws
+                    .send(WsMessage::Text("{\"type\":\"response.created\"}".into()))
+                    .await;
+                let _ = ws
+                    .send(WsMessage::Text(
+                        "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}".into(),
+                    ))
+                    .await;
+                let _ = ws.close(None).await;
+            }
+        });
+
+        let upstream_url = format!("http://{upstream_addr}");
+        let state = GatewayState {
+            client: CopilotClient::new(test_auth_with_upstream(&upstream_url))
+                .expect("test client"),
+        };
+        let gateway_addr = spawn_gateway(state).await;
+
+        let ws_url = format!("ws://{gateway_addr}/v1/responses");
+        let (mut client_ws, _) = connect_async(&ws_url)
+            .await
+            .expect("client handshake against gateway");
+        client_ws
+            .send(WsMessage::Text(
+                r#"{"type":"response.create","generate":true,"model":"gpt-5.4","input":[]}"#.into(),
+            ))
+            .await
+            .expect("send turn frame");
+
+        // Collect every frame the gateway forwards until the client-side stream ends.
+        let mut events = Vec::new();
+        let mut saw_close = false;
+        while let Some(Ok(msg)) = client_ws.next().await {
+            match msg {
+                WsMessage::Text(t) => events.push(t.as_str().to_string()),
+                WsMessage::Close(_) => {
+                    saw_close = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(events.len(), 2, "expected both upstream events relayed");
+        assert!(events[0].contains("response.created"));
+        assert!(events[1].contains("response.completed"));
+        assert!(saw_close, "upstream close frame should be relayed to client");
+    }
+
+    #[tokio::test]
+    async fn responses_endpoint_does_not_offer_permessage_deflate_to_upstream() {
+        // Regression for the .3 fix: the gateway must strip
+        // `Sec-WebSocket-Extensions: permessage-deflate` when dialing upstream, even
+        // when the inbound client offers it. Otherwise upstream enables deflate and
+        // our tungstenite client receives compressed frames it cannot decode.
+        use futures::StreamExt;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream listener");
+        let upstream_addr = upstream_listener.local_addr().expect("upstream addr");
+        let captured_headers: Arc<Mutex<Option<http::HeaderMap>>> = Arc::new(Mutex::new(None));
+        let captured_clone = Arc::clone(&captured_headers);
+        tokio::spawn(async move {
+            let (stream, _) = upstream_listener
+                .accept()
+                .await
+                .expect("accept upstream connection");
+            let callback = |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                            resp: tokio_tungstenite::tungstenite::handshake::server::Response|
+             -> std::result::Result<
+                tokio_tungstenite::tungstenite::handshake::server::Response,
+                tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+            > {
+                let headers = req.headers().clone();
+                let captured = Arc::clone(&captured_clone);
+                tokio::spawn(async move {
+                    *captured.lock().await = Some(headers);
+                });
+                Ok(resp)
+            };
+            let mut ws = tokio_tungstenite::accept_hdr_async(stream, callback)
+                .await
+                .expect("ws handshake");
+            while let Some(Ok(_)) = ws.next().await {}
+        });
+
+        let upstream_url = format!("http://{upstream_addr}");
+        let state = GatewayState {
+            client: CopilotClient::new(test_auth_with_upstream(&upstream_url))
+                .expect("test client"),
+        };
+        let gateway_addr = spawn_gateway(state).await;
+
+        // Build a client handshake request that explicitly offers permessage-deflate.
+        use tokio_tungstenite::connect_async;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+        let ws_url = format!("ws://{gateway_addr}/v1/responses");
+        let mut request = ws_url.into_client_request().expect("client request");
+        request
+            .headers_mut()
+            .insert("Sec-WebSocket-Extensions", "permessage-deflate".parse().unwrap());
+        let _ = connect_async(request).await.expect("client handshake");
+
+        // Give the upstream listener a moment to record headers.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let captured = captured_headers.lock().await;
+        let headers = captured.as_ref().expect("upstream received handshake");
+        assert!(
+            !headers.contains_key("sec-websocket-extensions"),
+            "gateway must not forward `Sec-WebSocket-Extensions` to upstream, saw: {:?}",
+            headers.get("sec-websocket-extensions"),
+        );
     }
 
     #[tokio::test]
