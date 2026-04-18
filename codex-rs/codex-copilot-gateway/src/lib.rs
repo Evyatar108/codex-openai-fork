@@ -224,12 +224,12 @@ async fn connect_upstream_ws(
         }
         headers_mut.insert(name.clone(), value.clone());
     }
-    for forwarded in [
-        "openai-beta",
-        "x-codex-turn-state",
-        "sec-websocket-extensions",
-        "sec-websocket-protocol",
-    ] {
+    // Forward Responses-protocol headers only. Do NOT forward
+    // `Sec-WebSocket-Extensions` — axum's server leg doesn't negotiate
+    // `permessage-deflate`, so if we let upstream turn it on we'd receive
+    // compressed frames our tungstenite client can't decode, and the stream
+    // hangs until codex-core's idle timeout retries over HTTP (~5 min).
+    for forwarded in ["openai-beta", "x-codex-turn-state", "sec-websocket-protocol"] {
         if let Some(value) = client_headers.get(forwarded) {
             headers_mut.insert(forwarded, value.clone());
         }
