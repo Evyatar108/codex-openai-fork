@@ -256,47 +256,72 @@ async fn connect_upstream_ws(
 }
 
 async fn pump_bidirectional(
-    client_ws: WebSocket,
-    upstream_ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    mut client_ws: WebSocket,
+    mut upstream_ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
 ) {
-    let (mut client_tx, mut client_rx) = client_ws.split();
-    let (mut upstream_tx, mut upstream_rx) = upstream_ws.split();
+    loop {
+        tokio::select! {
+            client_msg = client_ws.recv() => {
+                let Some(Ok(msg)) = client_msg else { break };
 
-    let client_to_upstream = async {
-        while let Some(message) = client_rx.next().await {
-            let Ok(message) = message else { break };
-            let Some(forwarded) = axum_to_tungstenite(message) else {
-                continue;
-            };
-            let is_close = matches!(forwarded, TungsteniteMessage::Close(_));
-            if upstream_tx.send(forwarded).await.is_err() {
-                break;
+                // Intercept codex-core's startup WebSocket prewarm. The prewarm sends
+                // `response.create` with `generate=false` and no input/prompt/conversation_id.
+                // OpenAI accepts this; Copilot rejects it with
+                // `bad_request: One of "input" or ... must be provided.` That error is a
+                // non-terminal event in codex-core's parser, so the prewarm stream_request
+                // blocks on the idle timeout (~5 min) before the first real turn can run.
+                // Ack the warmup locally and keep the upstream WS idle for the real turn.
+                if let AxumWsMessage::Text(ref text) = msg
+                    && is_warmup_request(text.as_str())
+                {
+                    // Use an empty `id` so codex-core's `prepare_websocket_request` falls
+                    // through its "no previous response id" guard
+                    // (core/src/client.rs: `if last_response.response_id.is_empty()`)
+                    // and does NOT chain the next turn with
+                    // `previous_response_id`, which would fail Copilot's ID prefix check.
+                    let synthetic = "{\"type\":\"response.completed\",\"response\":{\"id\":\"\"}}";
+                    if client_ws
+                        .send(AxumWsMessage::Text(synthetic.into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+
+                let Some(forwarded) = axum_to_tungstenite(msg) else { continue };
+                let is_close = matches!(forwarded, TungsteniteMessage::Close(_));
+                if upstream_ws.send(forwarded).await.is_err() { break; }
+                if is_close { break; }
             }
-            if is_close {
-                break;
+            upstream_msg = upstream_ws.next() => {
+                let Some(Ok(msg)) = upstream_msg else { break };
+                let Some(forwarded) = tungstenite_to_axum(msg) else { continue };
+                let is_close = matches!(forwarded, AxumWsMessage::Close(_));
+                if client_ws.send(forwarded).await.is_err() { break; }
+                if is_close { break; }
             }
         }
-        let _ = upstream_tx.close().await;
-    };
+    }
 
-    let upstream_to_client = async {
-        while let Some(message) = upstream_rx.next().await {
-            let Ok(message) = message else { break };
-            let Some(forwarded) = tungstenite_to_axum(message) else {
-                continue;
-            };
-            let is_close = matches!(forwarded, AxumWsMessage::Close(_));
-            if client_tx.send(forwarded).await.is_err() {
-                break;
-            }
-            if is_close {
-                break;
-            }
-        }
-        let _ = client_tx.close().await;
-    };
+    let _ = client_ws.close().await;
+    let _ = upstream_ws.close(None).await;
+}
 
-    tokio::join!(client_to_upstream, upstream_to_client);
+fn is_warmup_request(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    let is_response_create = value
+        .get("type")
+        .and_then(|v| v.as_str())
+        .is_some_and(|t| t == "response.create");
+    let generate_disabled = value
+        .get("generate")
+        .and_then(|v| v.as_bool())
+        .is_some_and(|b| !b);
+    is_response_create && generate_disabled
 }
 
 fn axum_to_tungstenite(message: AxumWsMessage) -> Option<TungsteniteMessage> {
@@ -567,6 +592,100 @@ mod tests {
         let body = response.text().await.expect("stream body");
         assert!(body.contains("event: response.created"));
         assert!(body.contains("event: response.completed"));
+    }
+
+    #[test]
+    fn is_warmup_request_matches_generate_false() {
+        use super::is_warmup_request;
+        assert!(is_warmup_request(
+            r#"{"type":"response.create","generate":false,"model":"gpt-5.4"}"#
+        ));
+    }
+
+    #[test]
+    fn is_warmup_request_rejects_non_warmup() {
+        use super::is_warmup_request;
+        assert!(!is_warmup_request(
+            r#"{"type":"response.create","generate":true,"model":"gpt-5.4"}"#
+        ));
+        assert!(!is_warmup_request(
+            r#"{"type":"response.create","model":"gpt-5.4","input":[]}"#
+        ));
+        assert!(!is_warmup_request(r#"{"type":"response.cancel"}"#));
+        assert!(!is_warmup_request("not json"));
+    }
+
+    #[tokio::test]
+    async fn responses_endpoint_intercepts_warmup_without_calling_upstream() {
+        use futures::SinkExt;
+        use futures::StreamExt;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        use tokio_tungstenite::accept_async;
+        use tokio_tungstenite::connect_async;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream listener");
+        let upstream_addr = upstream_listener.local_addr().expect("upstream addr");
+        let upstream_frames = Arc::new(AtomicUsize::new(0));
+        let upstream_frames_clone = Arc::clone(&upstream_frames);
+        tokio::spawn(async move {
+            let (stream, _) = upstream_listener
+                .accept()
+                .await
+                .expect("accept upstream connection");
+            let mut ws = accept_async(stream).await.expect("ws handshake");
+            while let Some(Ok(message)) = ws.next().await {
+                match message {
+                    WsMessage::Text(_) | WsMessage::Binary(_) => {
+                        upstream_frames_clone.fetch_add(1, Ordering::SeqCst);
+                    }
+                    WsMessage::Close(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        let upstream_url = format!("http://{upstream_addr}");
+        let state = GatewayState {
+            client: CopilotClient::new(test_auth_with_upstream(&upstream_url))
+                .expect("test client"),
+        };
+        let gateway_addr = spawn_gateway(state).await;
+
+        let ws_url = format!("ws://{gateway_addr}/v1/responses");
+        let (mut client_ws, _) = connect_async(&ws_url)
+            .await
+            .expect("client handshake against gateway");
+        client_ws
+            .send(WsMessage::Text(
+                r#"{"type":"response.create","generate":false,"model":"gpt-5.4"}"#.into(),
+            ))
+            .await
+            .expect("send warmup frame");
+
+        let reply = client_ws
+            .next()
+            .await
+            .expect("receive synthetic frame")
+            .expect("frame ok");
+        match reply {
+            WsMessage::Text(text) => {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(text.as_str()).expect("valid json");
+                assert_eq!(
+                    parsed.get("type").and_then(serde_json::Value::as_str),
+                    Some("response.completed"),
+                );
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+        // Give the pump a moment so we can assert upstream never saw the warmup.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(upstream_frames.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
