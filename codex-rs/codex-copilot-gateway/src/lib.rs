@@ -6,25 +6,39 @@ use axum::Json;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
+use axum::extract::ws::Message as AxumWsMessage;
+use axum::extract::ws::WebSocket;
+use axum::extract::ws::WebSocketUpgrade;
+use axum::http::HeaderMap;
 use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::http::header::CONTENT_TYPE;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::get;
-use axum::routing::post;
 use bytes::Bytes;
+use codex_client::maybe_build_rustls_client_config_with_custom_ca;
 use codex_copilot::CopilotAuth;
 use codex_copilot::CopilotClient;
 use codex_copilot::RequestContext;
+use codex_copilot::payload::Initiator;
 use codex_copilot::payload::is_probe_request;
 use codex_copilot::payload::normalize_payload;
 use codex_copilot::payload::request_initiator;
 use codex_copilot::payload::request_vision;
 use codex_copilot::payload::synthetic_empty_response;
+use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use eventsource_stream::Eventsource;
+use futures::SinkExt;
 use futures::StreamExt;
 use serde_json::Value;
+use tokio::net::TcpStream;
+use tokio_tungstenite::Connector;
+use tokio_tungstenite::MaybeTlsStream;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::connect_async_tls_with_config;
+use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 #[derive(Clone)]
 struct GatewayState {
@@ -52,8 +66,8 @@ fn app(state: GatewayState) -> Router {
         .route("/healthz", get(healthz))
         .route("/models", get(models))
         .route("/v1/models", get(models))
-        .route("/responses", post(responses))
-        .route("/v1/responses", post(responses))
+        .route("/responses", get(responses_ws).post(responses_http))
+        .route("/v1/responses", get(responses_ws).post(responses_http))
         .with_state(Arc::new(state))
 }
 
@@ -68,7 +82,7 @@ async fn models(State(state): State<Arc<GatewayState>>) -> Response {
     }
 }
 
-async fn responses(
+async fn responses_http(
     State(state): State<Arc<GatewayState>>,
     Json(mut payload): Json<Value>,
 ) -> Response {
@@ -114,6 +128,216 @@ async fn responses(
         Ok(value) => Json(value).into_response(),
         Err(error) => error_response(StatusCode::BAD_GATEWAY, error.to_string()),
     }
+}
+
+async fn responses_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<GatewayState>>,
+    client_headers: HeaderMap,
+) -> Response {
+    let auth = state.client.auth().clone();
+
+    let (upstream_stream, _resp) = match connect_upstream_ws(&auth, &client_headers, false).await {
+        Ok(value) => value,
+        Err(WsConnectError::Unauthorized) => {
+            if let Err(error) = auth.invalidate_cached_copilot_token() {
+                return error_response(StatusCode::BAD_GATEWAY, error.to_string());
+            }
+            match connect_upstream_ws(&auth, &client_headers, true).await {
+                Ok(value) => value,
+                Err(WsConnectError::Unauthorized) => {
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "upstream rejected websocket handshake".to_string(),
+                    );
+                }
+                Err(WsConnectError::Other(error)) => {
+                    return error_response(StatusCode::BAD_GATEWAY, error.to_string());
+                }
+            }
+        }
+        Err(WsConnectError::Other(error)) => {
+            return error_response(StatusCode::BAD_GATEWAY, error.to_string());
+        }
+    };
+
+    ws.on_upgrade(move |client_ws| async move {
+        pump_bidirectional(client_ws, upstream_stream).await;
+    })
+}
+
+enum WsConnectError {
+    Unauthorized,
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for WsConnectError {
+    fn from(value: anyhow::Error) -> Self {
+        WsConnectError::Other(value)
+    }
+}
+
+async fn connect_upstream_ws(
+    auth: &CopilotAuth,
+    client_headers: &HeaderMap,
+    force_token_refresh: bool,
+) -> Result<
+    (
+        WebSocketStream<MaybeTlsStream<TcpStream>>,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    WsConnectError,
+> {
+    ensure_rustls_crypto_provider();
+
+    let context = RequestContext::new(Initiator::Agent, /*vision*/ false);
+    let auth_headers = auth
+        .request_headers(
+            context.initiator.clone(),
+            &context.request_id,
+            context.interaction_id.as_deref(),
+            /*vision*/ false,
+            force_token_refresh,
+        )
+        .await
+        .context("building Copilot auth headers for websocket")?;
+
+    let base = auth.copilot_base_url();
+    let ws_url = if let Some(host) = base.strip_prefix("https://") {
+        format!("wss://{host}/responses")
+    } else if let Some(host) = base.strip_prefix("http://") {
+        format!("ws://{host}/responses")
+    } else {
+        format!("{base}/responses")
+    };
+
+    let mut request = ws_url
+        .as_str()
+        .into_client_request()
+        .context("building websocket client request")?;
+
+    let headers_mut = request.headers_mut();
+    for (name, value) in &auth_headers {
+        // Skip JSON content-negotiation headers; they belong to HTTP body, not the WS handshake.
+        if name == axum::http::header::CONTENT_TYPE || name == axum::http::header::ACCEPT {
+            continue;
+        }
+        headers_mut.insert(name.clone(), value.clone());
+    }
+    for forwarded in [
+        "openai-beta",
+        "x-codex-turn-state",
+        "sec-websocket-extensions",
+        "sec-websocket-protocol",
+    ] {
+        if let Some(value) = client_headers.get(forwarded) {
+            headers_mut.insert(forwarded, value.clone());
+        }
+    }
+
+    let connector = maybe_build_rustls_client_config_with_custom_ca()
+        .context("configuring websocket TLS")?
+        .map(Connector::Rustls);
+
+    match connect_async_tls_with_config(request, None, false, connector).await {
+        Ok(value) => Ok(value),
+        Err(tokio_tungstenite::tungstenite::Error::Http(response))
+            if response.status() == StatusCode::UNAUTHORIZED && !force_token_refresh =>
+        {
+            Err(WsConnectError::Unauthorized)
+        }
+        Err(error) => {
+            eprintln!("codex-copilot-gateway: upstream websocket connect failed: {error}");
+            Err(WsConnectError::Other(anyhow::anyhow!(
+                "upstream websocket connect failed: {error}"
+            )))
+        }
+    }
+}
+
+async fn pump_bidirectional(
+    client_ws: WebSocket,
+    upstream_ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+) {
+    let (mut client_tx, mut client_rx) = client_ws.split();
+    let (mut upstream_tx, mut upstream_rx) = upstream_ws.split();
+
+    let client_to_upstream = async {
+        while let Some(message) = client_rx.next().await {
+            let Ok(message) = message else { break };
+            let Some(forwarded) = axum_to_tungstenite(message) else {
+                continue;
+            };
+            let is_close = matches!(forwarded, TungsteniteMessage::Close(_));
+            if upstream_tx.send(forwarded).await.is_err() {
+                break;
+            }
+            if is_close {
+                break;
+            }
+        }
+        let _ = upstream_tx.close().await;
+    };
+
+    let upstream_to_client = async {
+        while let Some(message) = upstream_rx.next().await {
+            let Ok(message) = message else { break };
+            let Some(forwarded) = tungstenite_to_axum(message) else {
+                continue;
+            };
+            let is_close = matches!(forwarded, AxumWsMessage::Close(_));
+            if client_tx.send(forwarded).await.is_err() {
+                break;
+            }
+            if is_close {
+                break;
+            }
+        }
+        let _ = client_tx.close().await;
+    };
+
+    tokio::join!(client_to_upstream, upstream_to_client);
+}
+
+fn axum_to_tungstenite(message: AxumWsMessage) -> Option<TungsteniteMessage> {
+    use tokio_tungstenite::tungstenite::Utf8Bytes as TsUtf8Bytes;
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame as TsCloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as TsCloseCode;
+
+    Some(match message {
+        AxumWsMessage::Text(text) => {
+            let bytes: Bytes = text.into();
+            let utf8 = TsUtf8Bytes::try_from(bytes).ok()?;
+            TungsteniteMessage::Text(utf8)
+        }
+        AxumWsMessage::Binary(bytes) => TungsteniteMessage::Binary(bytes),
+        AxumWsMessage::Ping(bytes) => TungsteniteMessage::Ping(bytes),
+        AxumWsMessage::Pong(bytes) => TungsteniteMessage::Pong(bytes),
+        AxumWsMessage::Close(frame) => TungsteniteMessage::Close(frame.map(|f| {
+            let reason_bytes: Bytes = f.reason.into();
+            TsCloseFrame {
+                code: TsCloseCode::from(f.code),
+                reason: TsUtf8Bytes::try_from(reason_bytes).unwrap_or_default(),
+            }
+        })),
+    })
+}
+
+fn tungstenite_to_axum(message: TungsteniteMessage) -> Option<AxumWsMessage> {
+    use axum::extract::ws::CloseFrame as AxCloseFrame;
+    use axum::extract::ws::Utf8Bytes as AxUtf8Bytes;
+
+    Some(match message {
+        TungsteniteMessage::Text(text) => AxumWsMessage::Text(AxUtf8Bytes::from(text.as_str())),
+        TungsteniteMessage::Binary(bytes) => AxumWsMessage::Binary(bytes),
+        TungsteniteMessage::Ping(bytes) => AxumWsMessage::Ping(bytes),
+        TungsteniteMessage::Pong(bytes) => AxumWsMessage::Pong(bytes),
+        TungsteniteMessage::Close(frame) => AxumWsMessage::Close(frame.map(|f| AxCloseFrame {
+            code: u16::from(f.code),
+            reason: AxUtf8Bytes::from(f.reason.as_str()),
+        })),
+        TungsteniteMessage::Frame(_) => return None,
+    })
 }
 
 fn streaming_response(response: reqwest::Response) -> Response {
@@ -343,6 +567,95 @@ mod tests {
         let body = response.text().await.expect("stream body");
         assert!(body.contains("event: response.created"));
         assert!(body.contains("event: response.completed"));
+    }
+
+    #[tokio::test]
+    async fn responses_endpoint_forwards_websocket_frames() {
+        use futures::SinkExt;
+        use futures::StreamExt;
+        use tokio_tungstenite::accept_async;
+        use tokio_tungstenite::connect_async;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind upstream listener");
+        let upstream_addr = upstream_listener.local_addr().expect("upstream addr");
+        tokio::spawn(async move {
+            let (stream, _) = upstream_listener
+                .accept()
+                .await
+                .expect("accept upstream connection");
+            let mut ws = accept_async(stream).await.expect("ws handshake");
+            while let Some(Ok(message)) = ws.next().await {
+                match message {
+                    WsMessage::Text(text) => {
+                        let reply = format!("echo:{text}");
+                        if ws.send(WsMessage::Text(reply.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    WsMessage::Close(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        let upstream_url = format!("http://{upstream_addr}");
+        let state = GatewayState {
+            client: CopilotClient::new(test_auth_with_upstream(&upstream_url))
+                .expect("test client"),
+        };
+        let gateway_addr = spawn_gateway(state).await;
+
+        let ws_url = format!("ws://{gateway_addr}/v1/responses");
+        let (mut client_ws, _response) = connect_async(&ws_url)
+            .await
+            .expect("client handshake against gateway");
+        client_ws
+            .send(WsMessage::Text("hello".into()))
+            .await
+            .expect("send text frame");
+        let reply = client_ws
+            .next()
+            .await
+            .expect("receive frame")
+            .expect("frame ok");
+        match reply {
+            WsMessage::Text(text) => assert_eq!(text.as_str(), "echo:hello"),
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+
+    fn test_auth_with_upstream(upstream_url: &str) -> CopilotAuth {
+        let temp = tempdir().expect("temp dir");
+        let app_dir = temp.keep().join("copilot-home");
+        fs::create_dir_all(&app_dir).expect("create app dir");
+        fs::write(app_dir.join("github_token"), "github-token\n").expect("write github token");
+        fs::write(
+            app_dir.join("copilot_token"),
+            serde_json::to_vec(&json!({
+                "token": "copilot-token",
+                "expires_at": 4_102_444_800u64,
+                "refresh_in": 3600u64
+            }))
+            .expect("encode cached token"),
+        )
+        .expect("write cached token");
+        let paths = AppPaths {
+            app_dir: app_dir.clone(),
+            github_token_path: app_dir.join("github_token"),
+            copilot_token_path: app_dir.join("copilot_token"),
+            device_id_path: app_dir.join("device_id"),
+            machine_id_path: app_dir.join("machine_id"),
+        };
+        CopilotAuth::new_for_tests(
+            paths,
+            upstream_url.to_string(),
+            upstream_url.to_string(),
+            upstream_url.to_string(),
+        )
+        .expect("test auth")
     }
 
     async fn spawn_gateway(state: GatewayState) -> SocketAddr {
