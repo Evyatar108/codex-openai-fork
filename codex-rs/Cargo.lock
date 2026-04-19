@@ -1897,6 +1897,7 @@ dependencies = [
  "anyhow",
  "codex-client",
  "dirs",
+ "http 1.4.0",
  "pretty_assertions",
  "reqwest",
  "serde",
@@ -1930,6 +1931,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tungstenite",
+ "uuid",
  "wiremock",
 ]
 

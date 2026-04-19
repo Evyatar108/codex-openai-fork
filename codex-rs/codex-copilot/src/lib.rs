@@ -1,9 +1,7 @@
 pub mod auth;
-pub mod client;
-pub mod models;
+pub mod header_source;
 pub mod paths;
 pub mod payload;
 
 pub use auth::CopilotAuth;
-pub use client::CopilotClient;
-pub use client::RequestContext;
+pub use header_source::CopilotHeaderSource;

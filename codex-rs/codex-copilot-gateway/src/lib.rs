@@ -19,8 +19,6 @@ use axum::routing::get;
 use bytes::Bytes;
 use codex_client::maybe_build_rustls_client_config_with_custom_ca;
 use codex_copilot::CopilotAuth;
-use codex_copilot::CopilotClient;
-use codex_copilot::RequestContext;
 use codex_copilot::payload::Initiator;
 use codex_copilot::payload::is_probe_request;
 use codex_copilot::payload::normalize_payload;
@@ -31,6 +29,7 @@ use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use eventsource_stream::Eventsource;
 use futures::SinkExt;
 use futures::StreamExt;
+use reqwest::StatusCode as ReqwestStatusCode;
 use serde_json::Value;
 use tokio::net::TcpStream;
 use tokio_tungstenite::Connector;
@@ -39,6 +38,141 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use uuid::Uuid;
+
+#[derive(Clone)]
+struct CopilotClient {
+    auth: CopilotAuth,
+    client: reqwest::Client,
+}
+
+#[derive(Clone, Debug)]
+struct RequestContext {
+    initiator: Initiator,
+    request_id: String,
+    interaction_id: Option<String>,
+    vision: bool,
+}
+
+impl RequestContext {
+    fn new(initiator: Initiator, vision: bool) -> Self {
+        let request_id = Uuid::new_v4().to_string();
+        Self {
+            initiator,
+            request_id: request_id.clone(),
+            interaction_id: Some(request_id),
+            vision,
+        }
+    }
+}
+
+impl CopilotClient {
+    fn new(auth: CopilotAuth) -> anyhow::Result<Self> {
+        let client = codex_client::build_reqwest_client_with_custom_ca(reqwest::Client::builder())
+            .context("building Copilot client")?;
+        Ok(Self { auth, client })
+    }
+
+    fn auth(&self) -> &CopilotAuth {
+        &self.auth
+    }
+
+    async fn get_models(&self) -> anyhow::Result<Value> {
+        for attempt in 0..2 {
+            let force_refresh = attempt > 0;
+            let request_id = Uuid::new_v4().to_string();
+            let headers = self
+                .auth
+                .request_headers(
+                    Initiator::User,
+                    &request_id,
+                    Some(&request_id),
+                    /* vision */ false,
+                    force_refresh,
+                )
+                .await?;
+            let response = self
+                .client
+                .get(format!("{}/models", self.auth.copilot_base_url()))
+                .headers(headers)
+                .send()
+                .await
+                .context("requesting Copilot models")?;
+            if should_retry_with_fresh_token(response.status(), force_refresh) {
+                self.auth.invalidate_cached_copilot_token()?;
+                continue;
+            }
+            let value = response
+                .json::<Value>()
+                .await
+                .context("decoding Copilot models response")?;
+            return Ok(filter_models_response(value));
+        }
+
+        unreachable!("token refresh loop should return on success or final failure")
+    }
+
+    async fn create_response(
+        &self,
+        payload: &Value,
+        request_context: &RequestContext,
+    ) -> anyhow::Result<reqwest::Response> {
+        for attempt in 0..2 {
+            let force_refresh = attempt > 0;
+            let headers = self
+                .auth
+                .request_headers(
+                    request_context.initiator.clone(),
+                    &request_context.request_id,
+                    request_context.interaction_id.as_deref(),
+                    request_context.vision,
+                    force_refresh,
+                )
+                .await?;
+            let response = self
+                .client
+                .post(format!("{}/responses", self.auth.copilot_base_url()))
+                .headers(headers)
+                .json(payload)
+                .send()
+                .await
+                .context("sending Copilot responses request")?;
+            if should_retry_with_fresh_token(response.status(), force_refresh) {
+                self.auth.invalidate_cached_copilot_token()?;
+                continue;
+            }
+            return Ok(response);
+        }
+
+        unreachable!("token refresh loop should return on success or final failure")
+    }
+}
+
+fn should_retry_with_fresh_token(status: ReqwestStatusCode, force_refresh: bool) -> bool {
+    !force_refresh
+        && matches!(
+            status,
+            ReqwestStatusCode::UNAUTHORIZED | ReqwestStatusCode::FORBIDDEN
+        )
+}
+
+fn filter_models_response(mut value: Value) -> Value {
+    let Some(data) = value.get_mut("data").and_then(Value::as_array_mut) else {
+        return value;
+    };
+
+    data.retain(|model| {
+        model
+            .get("model_picker_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || model
+                .pointer("/capabilities/type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == "embeddings")
+    });
+    value
+}
 
 #[derive(Clone)]
 struct GatewayState {
@@ -229,7 +363,11 @@ async fn connect_upstream_ws(
     // `permessage-deflate`, so if we let upstream turn it on we'd receive
     // compressed frames our tungstenite client can't decode, and the stream
     // hangs until codex-core's idle timeout retries over HTTP (~5 min).
-    for forwarded in ["openai-beta", "x-codex-turn-state", "sec-websocket-protocol"] {
+    for forwarded in [
+        "openai-beta",
+        "x-codex-turn-state",
+        "sec-websocket-protocol",
+    ] {
         if let Some(value) = client_headers.get(forwarded) {
             headers_mut.insert(forwarded, value.clone());
         }
@@ -297,7 +435,9 @@ async fn pump_bidirectional(
             continue;
         }
 
-        let Some(forwarded) = axum_to_tungstenite(msg) else { continue };
+        let Some(forwarded) = axum_to_tungstenite(msg) else {
+            continue;
+        };
         let is_close = matches!(forwarded, TungsteniteMessage::Close(_));
         if upstream_ws.send(forwarded).await.is_err() {
             let _ = client_ws.close().await;
@@ -321,20 +461,32 @@ async fn pump_bidirectional(
 
     let client_to_upstream = async {
         while let Some(Ok(msg)) = client_rx.next().await {
-            let Some(forwarded) = axum_to_tungstenite(msg) else { continue };
+            let Some(forwarded) = axum_to_tungstenite(msg) else {
+                continue;
+            };
             let is_close = matches!(forwarded, TungsteniteMessage::Close(_));
-            if upstream_tx.send(forwarded).await.is_err() { break; }
-            if is_close { break; }
+            if upstream_tx.send(forwarded).await.is_err() {
+                break;
+            }
+            if is_close {
+                break;
+            }
         }
         let _ = upstream_tx.close().await;
     };
 
     let upstream_to_client = async {
         while let Some(Ok(msg)) = upstream_rx.next().await {
-            let Some(forwarded) = tungstenite_to_axum(msg) else { continue };
+            let Some(forwarded) = tungstenite_to_axum(msg) else {
+                continue;
+            };
             let is_close = matches!(forwarded, AxumWsMessage::Close(_));
-            if client_tx.send(forwarded).await.is_err() { break; }
-            if is_close { break; }
+            if client_tx.send(forwarded).await.is_err() {
+                break;
+            }
+            if is_close {
+                break;
+            }
         }
         let _ = client_tx.close().await;
     };
@@ -349,7 +501,9 @@ async fn drain_upstream_until_close(
     upstream_ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
 ) {
     while let Some(Ok(msg)) = upstream_ws.next().await {
-        let Some(forwarded) = tungstenite_to_axum(msg) else { continue };
+        let Some(forwarded) = tungstenite_to_axum(msg) else {
+            continue;
+        };
         let is_close = matches!(forwarded, AxumWsMessage::Close(_));
         if client_ws.send(forwarded).await.is_err() {
             break;
@@ -375,9 +529,7 @@ fn is_warmup_request(text: &str) -> bool {
         None => true,
         Some(v) => v.as_array().is_some_and(|a| a.is_empty()),
     };
-    let no_previous_response_id = value
-        .get("previous_response_id")
-        .is_none_or(Value::is_null);
+    let no_previous_response_id = value.get("previous_response_id").is_none_or(Value::is_null);
     let no_prompt = value.get("prompt").is_none_or(Value::is_null);
     let no_conversation_id = value.get("conversation_id").is_none_or(Value::is_null);
     input_empty && no_previous_response_id && no_prompt && no_conversation_id
@@ -520,11 +672,11 @@ mod tests {
     use wiremock::matchers::method;
     use wiremock::matchers::path;
 
+    use super::CopilotClient;
     use super::GatewayState;
     use super::app;
     use super::encode_sse_event;
     use codex_copilot::CopilotAuth;
-    use codex_copilot::CopilotClient;
     use codex_copilot::paths::AppPaths;
 
     #[test]
@@ -929,7 +1081,10 @@ mod tests {
         assert_eq!(events.len(), 2, "expected both upstream events relayed");
         assert!(events[0].contains("response.created"));
         assert!(events[1].contains("response.completed"));
-        assert!(saw_close, "upstream close frame should be relayed to client");
+        assert!(
+            saw_close,
+            "upstream close frame should be relayed to client"
+        );
     }
 
     #[tokio::test]
@@ -984,9 +1139,10 @@ mod tests {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
         let ws_url = format!("ws://{gateway_addr}/v1/responses");
         let mut request = ws_url.into_client_request().expect("client request");
-        request
-            .headers_mut()
-            .insert("Sec-WebSocket-Extensions", "permessage-deflate".parse().unwrap());
+        request.headers_mut().insert(
+            "Sec-WebSocket-Extensions",
+            "permessage-deflate".parse().unwrap(),
+        );
         let _ = connect_async(request).await.expect("client handshake");
 
         // Give the upstream listener a moment to record headers.
