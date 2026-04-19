@@ -30,6 +30,7 @@ use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
 use codex_features::FeaturesToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
+use codex_model_provider_info::COPILOT_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -56,7 +57,8 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 
-const RESERVED_MODEL_PROVIDER_IDS: [&str; 3] = [
+const RESERVED_MODEL_PROVIDER_IDS: [&str; 4] = [
+    COPILOT_PROVIDER_ID,
     OPENAI_PROVIDER_ID,
     OLLAMA_OSS_PROVIDER_ID,
     LMSTUDIO_OSS_PROVIDER_ID,
@@ -779,7 +781,10 @@ fn deserialize_model_providers<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    let model_providers = HashMap::<String, ModelProviderInfo>::deserialize(deserializer)?;
+    let mut model_providers = HashMap::<String, ModelProviderInfo>::deserialize(deserializer)?;
+    for (key, info) in &mut model_providers {
+        info.id = key.clone();
+    }
     validate_model_providers(&model_providers).map_err(serde::de::Error::custom)?;
     Ok(model_providers)
 }
@@ -797,5 +802,27 @@ pub fn validate_oss_provider(provider: &str) -> std::io::Result<()> {
                 "Invalid OSS provider '{provider}'. Must be one of: {LMSTUDIO_OSS_PROVIDER_ID}, {OLLAMA_OSS_PROVIDER_ID}"
             ),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigToml;
+
+    #[test]
+    fn reserved_copilot_provider_id_rejected() {
+        let err = toml::from_str::<ConfigToml>(
+            r#"
+[model_providers.copilot]
+name = "Copilot"
+base_url = "https://example.com"
+"#,
+        )
+        .expect_err("reserved built-in provider id should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("model_providers contains reserved built-in provider IDs: `copilot`")
+        );
     }
 }

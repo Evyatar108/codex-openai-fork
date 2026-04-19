@@ -4487,6 +4487,7 @@ model_verbosity = "high"
     let codex_home_temp_dir = TempDir::new().unwrap();
 
     let openai_custom_provider = ModelProviderInfo {
+        id: Default::default(),
         name: "OpenAI custom".to_string(),
         base_url: Some("https://api.openai.com/v1".to_string()),
         env_key: Some("OPENAI_API_KEY".to_string()),
