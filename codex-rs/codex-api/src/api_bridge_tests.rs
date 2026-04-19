@@ -1,6 +1,12 @@
 use super::*;
 use base64::Engine;
+use codex_copilot::CopilotAuth;
+use codex_copilot::CopilotHeaderSource;
+use codex_copilot::paths::AppPaths;
 use pretty_assertions::assert_eq;
+use std::fs;
+use std::sync::Arc;
+use tempfile::tempdir;
 
 #[test]
 fn map_api_error_maps_server_overloaded() {
@@ -133,10 +139,7 @@ fn map_api_error_extracts_identity_auth_details_from_headers() {
 
 #[test]
 fn core_auth_provider_reports_when_auth_header_will_attach() {
-    let auth = CoreAuthProvider {
-        token: Some("access-token".to_string()),
-        account_id: None,
-    };
+    let auth = CoreAuthProvider::new_legacy(Some("access-token".to_string()), None);
 
     assert!(auth.auth_header_attached());
     assert_eq!(auth.auth_header_name(), Some("authorization"));
@@ -161,4 +164,110 @@ fn core_auth_provider_adds_auth_headers() {
             .and_then(|value| value.to_str().ok()),
         Some("workspace-123")
     );
+}
+
+#[allow(non_snake_case)]
+#[tokio::test]
+async fn CoreAuthProvider_with_copilot_injects_session_headers() {
+    let (paths, source) = test_copilot_source().await;
+    let auth = CoreAuthProvider::new_legacy(None, None).with_copilot(source);
+    let mut headers = HeaderMap::new();
+
+    crate::AuthProvider::add_auth_headers(&auth, &mut headers);
+
+    assert!(auth.auth_header_attached());
+    assert_eq!(auth.auth_header_name(), Some("authorization"));
+    assert_eq!(
+        headers
+            .get(http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer copilot-token")
+    );
+    assert_eq!(
+        headers
+            .get("copilot-integration-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("vscode-chat")
+    );
+    assert_eq!(
+        headers
+            .get("openai-intent")
+            .and_then(|value| value.to_str().ok()),
+        Some("conversation-agent")
+    );
+    assert!(
+        headers
+            .get("vscode-sessionid")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| !value.is_empty())
+    );
+
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("x-request-id");
+    assert_eq!(
+        headers
+            .get("x-interaction-id")
+            .and_then(|value| value.to_str().ok()),
+        Some(request_id)
+    );
+    assert_eq!(
+        headers
+            .get("x-agent-task-id")
+            .and_then(|value| value.to_str().ok()),
+        Some(request_id)
+    );
+    assert!(paths.copilot_token_path.exists());
+}
+
+#[tokio::test]
+async fn on_unauthorized_clears_copilot_token_file() {
+    let (paths, source) = test_copilot_source().await;
+    let auth = CoreAuthProvider::new_legacy(None, None).with_copilot(source);
+
+    assert!(paths.copilot_token_path.exists());
+
+    auth.on_unauthorized();
+
+    assert!(!paths.copilot_token_path.exists());
+}
+
+async fn test_copilot_source() -> (AppPaths, Arc<CopilotHeaderSource>) {
+    let paths = test_copilot_paths();
+    fs::write(
+        &paths.copilot_token_path,
+        r#"{"token":"copilot-token","expires_at":4102444800,"refresh_in":3600}"#,
+    )
+    .expect("write cached copilot token");
+
+    let auth = Arc::new(
+        CopilotAuth::new_for_tests(
+            paths.clone(),
+            "http://unused.example".to_string(),
+            "http://unused.example".to_string(),
+            "http://unused.example".to_string(),
+        )
+        .expect("test copilot auth"),
+    );
+    let source = Arc::new(
+        CopilotHeaderSource::new(auth)
+            .await
+            .expect("test copilot source"),
+    );
+
+    (paths, source)
+}
+
+fn test_copilot_paths() -> AppPaths {
+    let temp = tempdir().expect("temp dir");
+    let app_dir = temp.keep().join("copilot-home");
+    fs::create_dir_all(&app_dir).expect("create app dir");
+    AppPaths {
+        app_dir: app_dir.clone(),
+        github_token_path: app_dir.join("github_token"),
+        copilot_token_path: app_dir.join("copilot_token"),
+        device_id_path: app_dir.join("device_id"),
+        machine_id_path: app_dir.join("machine_id"),
+    }
 }

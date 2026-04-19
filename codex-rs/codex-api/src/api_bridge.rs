@@ -15,6 +15,7 @@ use http::HeaderMap;
 use http::HeaderValue;
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Arc;
 
 pub fn map_api_error(err: ApiError) -> CodexErr {
     match err {
@@ -179,29 +180,59 @@ struct UsageErrorBody {
 pub struct CoreAuthProvider {
     pub token: Option<String>,
     pub account_id: Option<String>,
+    pub copilot: Option<Arc<codex_copilot::CopilotHeaderSource>>,
 }
 
 impl CoreAuthProvider {
+    pub fn new_legacy(token: Option<String>, account_id: Option<String>) -> Self {
+        Self {
+            token,
+            account_id,
+            copilot: None,
+        }
+    }
+
+    pub fn with_copilot(mut self, source: Arc<codex_copilot::CopilotHeaderSource>) -> Self {
+        self.copilot = Some(source);
+        self
+    }
+
     pub fn auth_header_attached(&self) -> bool {
+        if self.copilot.is_some() {
+            return true;
+        }
+
         self.token
             .as_ref()
             .is_some_and(|token| http::HeaderValue::from_str(&format!("Bearer {token}")).is_ok())
     }
 
     pub fn auth_header_name(&self) -> Option<&'static str> {
+        if self.copilot.is_some() {
+            return Some("authorization");
+        }
+
         self.auth_header_attached().then_some("authorization")
     }
 
     pub fn for_test(token: Option<&str>, account_id: Option<&str>) -> Self {
-        Self {
-            token: token.map(str::to_string),
-            account_id: account_id.map(str::to_string),
+        Self::new_legacy(token.map(str::to_string), account_id.map(str::to_string))
+    }
+
+    pub fn on_unauthorized(&self) {
+        if let Some(source) = self.copilot.as_ref() {
+            source.invalidate();
         }
     }
 }
 
 impl ApiAuthProvider for CoreAuthProvider {
     fn add_auth_headers(&self, headers: &mut HeaderMap) {
+        if let Some(source) = self.copilot.as_ref() {
+            source.inject(headers);
+            return;
+        }
+
         if let Some(token) = self.token.as_ref()
             && let Ok(header) = HeaderValue::from_str(&format!("Bearer {token}"))
         {

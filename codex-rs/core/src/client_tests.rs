@@ -156,7 +156,10 @@ async fn summarize_memories_returns_empty_for_empty_input() {
 fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
     let auth_context = AuthRequestTelemetryContext::new(
         Some(AuthMode::Chatgpt),
-        &CoreAuthProvider::for_test(Some("access-token"), Some("workspace-123")),
+        &CoreAuthProvider::new_legacy(
+            Some("access-token".to_string()),
+            Some("workspace-123".to_string()),
+        ),
         PendingUnauthorizedRetry::from_recovery(UnauthorizedRecoveryExecution {
             mode: "managed",
             phase: "refresh_token",

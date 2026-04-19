@@ -292,7 +292,7 @@ mod tests {
     use wiremock::matchers::path;
 
     fn chatgpt_auth() -> CoreAuthProvider {
-        CoreAuthProvider::for_test(Some("token"), Some("account_id"))
+        CoreAuthProvider::new_legacy(Some("token".to_string()), Some("account_id".to_string()))
     }
 
     fn base_url_for(server: &MockServer) -> String {
