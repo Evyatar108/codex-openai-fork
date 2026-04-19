@@ -26,6 +26,7 @@ use tracing::instrument;
 pub struct ResponsesClient<T: HttpTransport, A: AuthProvider> {
     session: EndpointSession<T, A>,
     sse_telemetry: Option<Arc<dyn SseTelemetry>>,
+    pre_send_hook: Option<Arc<dyn Fn(&mut Value, &mut HeaderMap) + Send + Sync>>,
 }
 
 #[derive(Default)]
@@ -42,7 +43,16 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
         Self {
             session: EndpointSession::new(transport, provider, auth),
             sse_telemetry: None,
+            pre_send_hook: None,
         }
+    }
+
+    pub fn with_pre_send_hook(
+        mut self,
+        f: Arc<dyn Fn(&mut Value, &mut HeaderMap) + Send + Sync>,
+    ) -> Self {
+        self.pre_send_hook = Some(f);
+        self
     }
 
     pub fn with_telemetry(
@@ -53,6 +63,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
         Self {
             session: self.session.with_request_telemetry(request),
             sse_telemetry: sse,
+            pre_send_hook: self.pre_send_hook,
         }
     }
 
@@ -119,6 +130,12 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
         compression: Compression,
         turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
+        let mut body = body;
+        let mut extra_headers = extra_headers;
+        if let Some(pre_send_hook) = self.pre_send_hook.as_ref() {
+            pre_send_hook(&mut body, &mut extra_headers);
+        }
+
         let request_compression = match compression {
             Compression::None => RequestCompression::None,
             Compression::Zstd => RequestCompression::Zstd,
