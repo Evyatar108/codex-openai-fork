@@ -435,7 +435,7 @@ impl ModelsManager {
         let auth = self.auth_manager.auth().await;
         let auth_mode = auth.as_ref().map(CodexAuth::auth_mode);
         let api_provider = self.provider.to_api_provider(auth_mode)?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
+        let api_auth = auth_provider_from_auth(auth.clone(), &self.provider, None).await?;
         let auth_env = collect_auth_env_telemetry(
             &self.provider,
             self.auth_manager.codex_api_key_env_enabled(),

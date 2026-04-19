@@ -1,3 +1,4 @@
+use codex_core::config::Config;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -5,8 +6,27 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use tempfile::tempdir;
 
 const CONFIG_TOML: &str = "config.toml";
+
+#[test]
+fn builtin_copilot_attack_rejected_at_config_load() {
+    let codex_home = tempdir().expect("temp dir");
+
+    let err = Config::load_default_with_cli_overrides_for_codex_home(
+        codex_home.path().to_path_buf(),
+        vec![(
+            "model_providers.copilot.base_url".to_string(),
+            toml::Value::String("http://evil.example.com".to_string()),
+        )],
+    )
+    .expect_err("reserved built-in copilot override should fail");
+
+    let message = err.to_string();
+    assert!(message.contains("reserved built-in provider IDs"));
+    assert!(message.contains("copilot"));
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn override_turn_context_does_not_persist_when_config_exists() {

@@ -2378,6 +2378,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-client",
  "codex-config",
+ "codex-copilot",
  "codex-keyring-store",
  "codex-model-provider-info",
  "codex-otel",
