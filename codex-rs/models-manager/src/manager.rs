@@ -300,7 +300,7 @@ impl ModelsManager {
         if let Some(model) = model.as_ref() {
             return model.to_string();
         }
-        if self.provider.is_copilot() {
+        if self.provider.is_copilot() && matches!(self.catalog_mode, CatalogMode::Default) {
             return COPILOT_DEFAULT_MODEL.to_string();
         }
         if let Err(err) = self.refresh_available_models(refresh_strategy).await {
