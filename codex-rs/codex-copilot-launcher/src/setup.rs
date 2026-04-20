@@ -8,8 +8,8 @@ use toml::{Table, Value};
 use crate::discovery;
 
 /// First-run bootstrap: TTY-gated shell prompt, sandbox config write, and
-/// copilot-api login trigger. Idempotent — returns `Ok(())` immediately when
-/// both the sandbox config and the copilot-api token already exist.
+/// Copilot login trigger. Idempotent — returns `Ok(())` immediately when
+/// both the sandbox config and the Copilot token already exist.
 pub fn first_run_bootstrap() -> Result<()> {
     let config_path =
         sandbox_config_path().context("unable to resolve home directory for sandbox config")?;
@@ -30,7 +30,7 @@ pub fn first_run_bootstrap() -> Result<()> {
     if !is_tty {
         if !token_exists {
             eprintln!(
-                "First-time setup requires an interactive terminal.\n  Run manually: codex-copilot-gateway login\n  Then re-run codex."
+                "First-time setup requires an interactive terminal.\n  Run manually: codex login --provider copilot\n  Then re-run codex."
             );
             std::process::exit(1);
         }
@@ -122,8 +122,7 @@ fn write_sandbox_config(path: &Path, default_shell: Option<&str>) -> Result<()> 
         table.insert("default_shell".into(), Value::String(shell.to_string()));
     }
     let content = toml::to_string(&table).context("failed to serialize sandbox config")?;
-    std::fs::write(path, content)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    std::fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -152,9 +151,7 @@ fn prompt_for_shell() -> Result<Option<String>> {
     }
 
     if choice == "2" && git_bash.is_some() {
-        return Ok(Some(
-            git_bash.unwrap().to_string_lossy().into_owned(),
-        ));
+        return Ok(Some(git_bash.unwrap().to_string_lossy().into_owned()));
     }
 
     if choice == other_index.to_string() {
@@ -228,16 +225,25 @@ fn where_bash() -> Option<PathBuf> {
 }
 
 fn run_login() -> Result<()> {
-    let gateway = discovery::find_codex_copilot_gateway()?;
-    let status = Command::new(&gateway)
-        .arg("login")
+    let codex_core = discovery::find_codex_core()?;
+    run_login_with(&codex_core, false)
+}
+
+fn run_login_with(codex_core: &Path, force: bool) -> Result<()> {
+    let mut cmd = Command::new(codex_core);
+    cmd.arg("login").arg("--provider").arg("copilot");
+    if force {
+        cmd.arg("--force");
+    }
+
+    let status = cmd
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()
-        .map_err(|e| anyhow::anyhow!("failed to run codex-copilot-gateway login: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to run codex-core login --provider copilot: {e}"))?;
     if !status.success() {
-        bail!("Login failed. Retry with: codex-copilot-gateway login");
+        bail!("Login failed. Retry with: codex login --provider copilot");
     }
     Ok(())
 }
@@ -327,5 +333,56 @@ mod tests {
         assert!(content.contains("copilot_api_port = 4141"));
         assert!(content.contains("default_model = \"gpt-5.4\""));
         assert!(!content.contains("default_shell"));
+    }
+
+    #[test]
+    fn run_login_invokes_codex_core_not_launcher() {
+        let dir = tempdir().unwrap();
+        let marker_path = dir.path().join("marker.txt");
+        let args_path = dir.path().join("args.txt");
+
+        #[cfg(windows)]
+        let codex_core = {
+            let script = dir.path().join("codex-core.cmd");
+            std::fs::write(
+                &script,
+                format!(
+                    "@echo off\r\necho invoked>\"{}\"\r\necho %* > \"{}\"\r\n",
+                    marker_path.display(),
+                    args_path.display()
+                ),
+            )
+            .unwrap();
+            script
+        };
+
+        #[cfg(unix)]
+        let codex_core = {
+            use std::os::unix::fs::PermissionsExt;
+
+            let script = dir.path().join("codex-core");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\nprintf 'invoked\n' > '{}'\nprintf '%s\n' \"$*\" > '{}'\n",
+                    marker_path.display(),
+                    args_path.display()
+                ),
+            )
+            .unwrap();
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+            script
+        };
+
+        run_login_with(&codex_core, false).unwrap();
+
+        assert!(marker_path.exists(), "expected {}", marker_path.display());
+        let args = std::fs::read_to_string(&args_path).unwrap();
+        assert!(
+            args.contains("login --provider copilot"),
+            "expected forwarded login args in {args:?}"
+        );
     }
 }

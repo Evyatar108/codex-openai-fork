@@ -42,6 +42,7 @@ pub fn find_codex_core() -> anyhow::Result<PathBuf> {
 /// Search order:
 /// 1. `CODEX_COPILOT_GATEWAY_PATH` env var
 /// 2. Same directory as the current executable
+#[allow(dead_code)]
 pub fn find_codex_copilot_gateway() -> anyhow::Result<PathBuf> {
     let bin_name = if cfg!(windows) {
         "codex-copilot-gateway.exe"
@@ -54,9 +55,7 @@ pub fn find_codex_copilot_gateway() -> anyhow::Result<PathBuf> {
         if path.exists() {
             return Ok(path);
         }
-        anyhow::bail!(
-            "CODEX_COPILOT_GATEWAY_PATH is set to {p} but the file does not exist"
-        );
+        anyhow::bail!("CODEX_COPILOT_GATEWAY_PATH is set to {p} but the file does not exist");
     }
 
     if let Ok(exe) = std::env::current_exe() {

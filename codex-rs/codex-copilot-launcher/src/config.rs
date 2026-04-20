@@ -4,6 +4,7 @@ pub const DEFAULT_PORT: u16 = 4141;
 pub const DEFAULT_MODEL: &str = "gpt-5.4";
 
 pub struct SandboxConfig {
+    #[allow(dead_code)]
     pub copilot_api_port: u16,
     pub default_model: String,
     pub default_shell: Option<String>,
@@ -52,19 +53,15 @@ pub fn load_config() -> SandboxConfig {
 }
 
 /// Build the list of `-c` flag values for configuring codex-core to use
-/// codex-copilot-gateway as its provider.
-pub fn provider_config_flags(port: u16, model: &str, default_shell: Option<&str>) -> Vec<String> {
+/// the built-in Copilot provider.
+pub fn provider_config_flags(model: &str, default_shell: Option<&str>) -> Vec<String> {
     let mut flags = vec![
         format!("model={model}"),
         "model_provider=copilot".to_string(),
-        "model_providers.copilot.name=Copilot".to_string(),
-        format!("model_providers.copilot.base_url=http://127.0.0.1:{port}/v1"),
-        "model_providers.copilot.wire_api=responses".to_string(),
-        "model_providers.copilot.supports_websockets=true".to_string(),
         // Source-level network patching handles isolation; disable codex-core's
         // built-in sandbox so it doesn't retry on sandbox-related errors.
         "sandbox_mode=\"danger-full-access\"".to_string(),
-        // Disable OpenAI Curated plugins -- not available through codex-copilot-gateway
+        // Disable OpenAI Curated plugins in the sandboxed Copilot bundle.
         "plugins.github@openai-curated.enabled=false".to_string(),
         "plugins.notion@openai-curated.enabled=false".to_string(),
         "plugins.slack@openai-curated.enabled=false".to_string(),
@@ -108,22 +105,22 @@ mod tests {
 
     #[test]
     fn provider_flags_always_emit_sandbox_mode() {
-        let flags = provider_config_flags(4141, "gpt-5.4", None);
+        let flags = provider_config_flags("gpt-5.4", None);
         assert!(
-            flags.iter().any(|f| f == "sandbox_mode=\"danger-full-access\""),
+            flags
+                .iter()
+                .any(|f| f == "sandbox_mode=\"danger-full-access\""),
             "expected sandbox_mode flag in {flags:?}"
         );
     }
 
     #[test]
     fn provider_flags_emit_sandbox_mode_with_shell() {
-        let flags = provider_config_flags(
-            4141,
-            "gpt-5.4",
-            Some(r"C:\Program Files\Git\bin\bash.exe"),
-        );
+        let flags = provider_config_flags("gpt-5.4", Some(r"C:\Program Files\Git\bin\bash.exe"));
         assert!(
-            flags.iter().any(|f| f == "sandbox_mode=\"danger-full-access\""),
+            flags
+                .iter()
+                .any(|f| f == "sandbox_mode=\"danger-full-access\""),
             "expected sandbox_mode flag in {flags:?}"
         );
         assert!(
@@ -133,10 +130,29 @@ mod tests {
     }
 
     #[test]
+    fn provider_flags_do_not_emit_gateway_era_overrides() {
+        let flags = provider_config_flags("gpt-5.4", None);
+
+        for forbidden in [
+            "model_providers.copilot.base_url",
+            "model_providers.copilot.supports_websockets",
+            "model_providers.copilot.wire_api",
+            "model_providers.copilot.name",
+        ] {
+            assert!(
+                flags.iter().all(|flag| !flag.contains(forbidden)),
+                "unexpected gateway-era override {forbidden} in {flags:?}"
+            );
+        }
+    }
+
+    #[test]
     fn is_cygwin_shell_detects_bash() {
         assert!(is_cygwin_shell(r"C:\Program Files\Git\bin\bash.exe"));
         assert!(is_cygwin_shell("/usr/bin/bash"));
         assert!(is_cygwin_shell("/usr/bin/zsh"));
-        assert!(!is_cygwin_shell(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"));
+        assert!(!is_cygwin_shell(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        ));
     }
 }
