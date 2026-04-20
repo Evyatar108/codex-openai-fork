@@ -441,12 +441,21 @@ mv tokens.next tokens.txt
                 r#"@echo off
 setlocal EnableExtensions DisableDelayedExpansion
 set "first_line="
-<tokens.txt set /p "first_line="
-if not defined first_line exit /b 1
-setlocal EnableDelayedExpansion
-echo(!first_line!
-endlocal
-more +1 tokens.txt > tokens.next
+set "seen_first="
+break > tokens.next
+for /f "usebackq delims=" %%A in ("tokens.txt") do (
+    if not defined seen_first (
+        set "first_line=%%A"
+        set "seen_first=1"
+    ) else (
+        >>tokens.next echo(%%A
+    )
+)
+if not defined first_line (
+    del /q tokens.next >nul 2>nul
+    exit /b 1
+)
+echo(%first_line%
 move /y tokens.next tokens.txt >nul
 "#,
             )?;
