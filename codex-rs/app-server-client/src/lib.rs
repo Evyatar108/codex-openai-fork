@@ -129,6 +129,7 @@ pub mod legacy_core {
         pub use codex_core::skills::*;
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub mod test_support {
         pub use codex_core::test_support::*;
     }

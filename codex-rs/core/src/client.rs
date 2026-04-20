@@ -154,6 +154,7 @@ struct ModelClientState {
     copilot_auth_init_lock: StdMutex<()>,
     // Integration tests seed this so Copilot requests can stay on wiremock without weakening the
     // production F-170 trusted-base-url guard.
+    #[cfg(any(test, feature = "test-support"))]
     copilot_api_base_url_override_for_tests: OnceLock<String>,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
@@ -339,6 +340,7 @@ impl ModelClient {
                 provider,
                 copilot_auth: OnceLock::new(),
                 copilot_auth_init_lock: StdMutex::new(()),
+                #[cfg(any(test, feature = "test-support"))]
                 copilot_api_base_url_override_for_tests: OnceLock::new(),
                 auth_env_telemetry,
                 session_source,
@@ -380,6 +382,7 @@ impl ModelClient {
         self.store_cached_websocket_session(WebsocketSession::default());
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn configure_copilot_session_for_tests(
         &self,
         auth: Arc<CopilotAuth>,
@@ -715,6 +718,7 @@ impl ModelClient {
             .state
             .provider
             .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;
+        #[cfg(any(test, feature = "test-support"))]
         if self.is_copilot()
             && let Some(base_url) = self.state.copilot_api_base_url_override_for_tests.get()
         {
