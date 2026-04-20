@@ -1,4 +1,6 @@
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_copilot::CopilotAuth;
+use codex_copilot::paths::AppPaths;
 use codex_core::ModelClient;
 use codex_core::NewThread;
 use codex_core::Prompt;
@@ -11,6 +13,7 @@ use codex_login::default_client::originator;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::built_in_model_providers;
+use codex_model_provider_info::create_copilot_provider;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_otel::SessionTelemetry;
@@ -919,6 +922,176 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
             break;
         }
     }
+}
+
+fn test_copilot_auth(server: &MockServer) -> (TempDir, Arc<CopilotAuth>) {
+    let temp = TempDir::new().expect("temp dir");
+    let app_dir = temp.path().join("copilot-home");
+    std::fs::create_dir_all(&app_dir).expect("create app dir");
+    std::fs::write(app_dir.join("github_token"), "github-token\n").expect("write github token");
+
+    let paths = AppPaths {
+        app_dir: app_dir.clone(),
+        github_token_path: app_dir.join("github_token"),
+        copilot_token_path: app_dir.join("copilot_token"),
+        device_id_path: app_dir.join("device_id"),
+        machine_id_path: app_dir.join("machine_id"),
+    };
+    let auth = CopilotAuth::new_for_tests(paths, server.uri(), server.uri(), server.uri())
+        .expect("test copilot auth");
+
+    (temp, Arc::new(auth))
+}
+
+async fn complete_model_client_turn(
+    client: &ModelClient,
+    model_info: &codex_protocol::openai_models::ModelInfo,
+    session_telemetry: &SessionTelemetry,
+    effort: Option<ReasoningEffort>,
+    summary: ReasoningSummary,
+    text: &str,
+) {
+    let mut client_session = client.new_session();
+    let mut prompt = Prompt::default();
+    prompt.input.push(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: text.to_string(),
+        }],
+        end_turn: None,
+        phase: None,
+    });
+
+    let mut stream = client_session
+        .stream(
+            &prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
+        )
+        .await
+        .expect("responses stream to start");
+
+    while let Some(event) = stream.next().await {
+        if let Ok(ResponseEvent::Completed { .. }) = event {
+            return;
+        }
+    }
+
+    panic!("expected completed event");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copilot_session_id_stable_across_turns() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/copilot_internal/v2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token": "copilot-token",
+            "expires_at": 4_102_444_800u64,
+            "refresh_in": 3600u64
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let responses_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+            sse(vec![ev_response_created("resp2"), ev_completed("resp2")]),
+        ],
+    )
+    .await;
+
+    let provider = create_copilot_provider();
+    let codex_home = TempDir::new().expect("temp dir");
+    let mut config = load_default_config_for_test(&codex_home).await;
+    config.model_provider_id = provider.id.clone();
+    config.model_provider = provider.clone();
+    let effort = config.model_reasoning_effort;
+    let summary = config
+        .model_reasoning_summary
+        .unwrap_or(ReasoningSummary::Auto);
+    let model = codex_core::test_support::get_model_offline(config.model.as_deref());
+    config.model = Some(model.clone());
+    let config = Arc::new(config);
+    let model_info =
+        codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let conversation_id = ThreadId::new();
+    let session_telemetry = SessionTelemetry::new(
+        conversation_id,
+        model.as_str(),
+        model_info.slug.as_str(),
+        /*account_id*/ None,
+        Some("test@test.com".to_string()),
+        /*auth_mode*/ None,
+        "test_originator".to_string(),
+        /*log_user_prompts*/ false,
+        "test".to_string(),
+        SessionSource::Exec,
+    );
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        conversation_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider,
+        SessionSource::Exec,
+        config.model_verbosity,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+    );
+    let (_copilot_home, copilot_auth) = test_copilot_auth(&server);
+    codex_core::test_support::configure_copilot_session_for_tests(
+        &client,
+        copilot_auth,
+        format!("{}/v1", server.uri()),
+    );
+
+    complete_model_client_turn(
+        &client,
+        &model_info,
+        &session_telemetry,
+        effort,
+        summary,
+        "first turn",
+    )
+    .await;
+    complete_model_client_turn(
+        &client,
+        &model_info,
+        &session_telemetry,
+        effort,
+        summary,
+        "second turn",
+    )
+    .await;
+
+    let requests = responses_mock.requests();
+    assert_eq!(requests.len(), 2);
+
+    let first_session_id = requests[0]
+        .header("vscode-sessionid")
+        .expect("first vscode-sessionid header");
+    let second_session_id = requests[1]
+        .header("vscode-sessionid")
+        .expect("second vscode-sessionid header");
+    assert!(!first_session_id.is_empty());
+    assert_eq!(first_session_id, second_session_id);
+
+    let first_request_id = requests[0]
+        .header("x-request-id")
+        .expect("first x-request-id header");
+    let second_request_id = requests[1]
+        .header("x-request-id")
+        .expect("second x-request-id header");
+    assert_ne!(first_request_id, second_request_id);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

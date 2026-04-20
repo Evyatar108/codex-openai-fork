@@ -59,6 +59,7 @@ use codex_api::build_conversation_headers;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
 use codex_app_server_protocol::AuthMode;
+use codex_copilot::CopilotAuth;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
@@ -148,6 +149,11 @@ struct ModelClientState {
     window_generation: AtomicU64,
     installation_id: String,
     provider: ModelProviderInfo,
+    copilot_auth: OnceLock<Arc<CopilotAuth>>,
+    copilot_auth_init_lock: StdMutex<()>,
+    // Integration tests seed this so Copilot requests can stay on wiremock without weakening the
+    // production F-170 trusted-base-url guard.
+    copilot_api_base_url_override_for_tests: OnceLock<String>,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
     model_verbosity: Option<VerbosityConfig>,
@@ -166,6 +172,26 @@ struct CurrentClientSetup {
     auth: Option<CodexAuth>,
     api_provider: codex_api::Provider,
     api_auth: CoreAuthProvider,
+}
+
+impl ModelClientState {
+    fn get_or_init_copilot_auth(&self) -> anyhow::Result<Arc<CopilotAuth>> {
+        if let Some(auth) = self.copilot_auth.get() {
+            return Ok(auth.clone());
+        }
+
+        let _lock = self
+            .copilot_auth_init_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(auth) = self.copilot_auth.get() {
+            return Ok(auth.clone());
+        }
+
+        let auth = Arc::new(CopilotAuth::new()?);
+        let _ = self.copilot_auth.set(auth.clone());
+        Ok(auth)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -310,6 +336,9 @@ impl ModelClient {
                 window_generation: AtomicU64::new(0),
                 installation_id,
                 provider,
+                copilot_auth: OnceLock::new(),
+                copilot_auth_init_lock: StdMutex::new(()),
+                copilot_api_base_url_override_for_tests: OnceLock::new(),
                 auth_env_telemetry,
                 session_source,
                 model_verbosity,
@@ -348,6 +377,27 @@ impl ModelClient {
     pub(crate) fn advance_window_generation(&self) {
         self.state.window_generation.fetch_add(1, Ordering::Relaxed);
         self.store_cached_websocket_session(WebsocketSession::default());
+    }
+
+    pub(crate) fn configure_copilot_session_for_tests(
+        &self,
+        auth: Arc<CopilotAuth>,
+        responses_base_url: String,
+    ) {
+        self.state
+            .copilot_auth
+            .set(auth)
+            .unwrap_or_else(|_| panic!("copilot auth should only be configured once in tests"));
+        self.state
+            .copilot_api_base_url_override_for_tests
+            .set(responses_base_url)
+            .unwrap_or_else(|_| {
+                panic!("copilot responses base URL should only be configured once in tests")
+            });
+    }
+
+    pub fn is_copilot(&self) -> bool {
+        self.state.provider.is_copilot()
     }
 
     fn current_window_id(&self) -> String {
@@ -655,11 +705,26 @@ impl ModelClient {
             Some(manager) => manager.auth().await,
             None => None,
         };
-        let api_provider = self
+        let mut api_provider = self
             .state
             .provider
             .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.state.provider, None).await?;
+        if self.is_copilot()
+            && let Some(base_url) = self.state.copilot_api_base_url_override_for_tests.get()
+        {
+            api_provider.base_url = base_url.clone();
+        }
+        let copilot_auth = if self.is_copilot() {
+            Some(
+                self.state
+                    .get_or_init_copilot_auth()
+                    .map_err(|err| CodexErr::Fatal(err.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let api_auth =
+            auth_provider_from_auth(auth.clone(), &self.state.provider, copilot_auth).await?;
         Ok(CurrentClientSetup {
             auth,
             api_provider,
