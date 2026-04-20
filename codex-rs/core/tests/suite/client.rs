@@ -167,7 +167,7 @@ struct ProviderAuthCommandFixture {
     args: Vec<String>,
 }
 
-struct CopilotClientFixture {
+struct CopilotSessionFixture {
     _copilot_home: TempDir,
     client: ModelClient,
     model_info: codex_protocol::openai_models::ModelInfo,
@@ -956,7 +956,7 @@ fn test_copilot_auth(server: &MockServer) -> (TempDir, Arc<CopilotAuth>) {
 async fn copilot_client_fixture(
     responses_server: &MockServer,
     token_server: &MockServer,
-) -> CopilotClientFixture {
+) -> CopilotSessionFixture {
     let provider = create_copilot_provider();
     let codex_home = TempDir::new().expect("temp dir");
     let mut config = load_default_config_for_test(&codex_home).await;
@@ -1002,7 +1002,7 @@ async fn copilot_client_fixture(
         format!("{}/v1", responses_server.uri()),
     );
 
-    CopilotClientFixture {
+    CopilotSessionFixture {
         _copilot_home: copilot_home,
         client,
         model_info,
