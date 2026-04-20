@@ -60,6 +60,26 @@ impl CopilotHeaderSource {
         headers.entry("x-agent-task-id").or_insert(request_id);
     }
 
+    /// Clears the on-disk cached Copilot token so the next token fetch refreshes against GitHub.
+    ///
+    /// # Single-use-after-invalidate contract
+    ///
+    /// This method does NOT clear the in-memory [`CachedHeaders`] owned by this instance.
+    /// The cached `base` [`http::HeaderMap`] (populated once in async [`Self::new`]) is immutable
+    /// thereafter by design (see F-228: no locks, no background refresh task). As a result, any
+    /// caller retaining a reference to this `CopilotHeaderSource` after calling `invalidate()`
+    /// will continue to inject the stale `Authorization: Bearer <old-token>` header on subsequent
+    /// `inject()` calls.
+    ///
+    /// Callers MUST drop this instance (and the enclosing `CoreAuthProvider`) after `invalidate()`
+    /// and rebuild a fresh one so the new instance's async `new()` repopulates `CachedHeaders`
+    /// from the now-cleared disk cache, forcing a fresh token fetch.
+    ///
+    /// The current unauthorized-retry flow in
+    /// `core/src/client.rs::stream_responses_api` relies on `current_client_setup()` ->
+    /// `auth_provider_from_auth()` -> `CopilotHeaderSource::new()` to rebuild the provider on
+    /// every retry, which satisfies this contract. Do not introduce a retry path that reuses an
+    /// older `CopilotHeaderSource` after `invalidate()`.
     pub fn invalidate(&self) {
         let _ = self.inner.auth.invalidate_cached_copilot_token();
     }
