@@ -318,6 +318,14 @@
         "chatgpt_base_url": {
           "type": "string"
         },
+        "default_shell": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            }
+          ],
+          "description": "Optional absolute path to the default shell executable."
+        },
         "experimental_compact_prompt_file": {
           "$ref": "#/definitions/AbsolutePathBuf"
         },
@@ -2148,6 +2156,14 @@
     "default_permissions": {
       "description": "Default named permissions profile to apply from the `[permissions]` table.",
       "type": "string"
+    },
+    "default_shell": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        }
+      ],
+      "description": "COPILOT PATCH: Optional absolute path to default shell executable. Set by codex-copilot-launcher config; overrides platform default shell selection."
     },
     "developer_instructions": {
       "default": null,

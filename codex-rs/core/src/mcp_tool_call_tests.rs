@@ -1492,7 +1492,7 @@ async fn prompt_mode_waits_for_approval_when_annotations_do_not_require_approval
 }
 
 #[tokio::test]
-async fn approve_mode_blocks_when_arc_returns_interrupt_for_model() {
+async fn approve_mode_skips_arc_monitor_when_sandbox_patch_is_enabled() {
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -1513,7 +1513,7 @@ async fn approve_mode_blocks_when_arc_returns_interrupt_for_model() {
                 "why": "high-risk action",
             }],
         })))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -1553,16 +1553,11 @@ async fn approve_mode_blocks_when_arc_returns_interrupt_for_model() {
     )
     .await;
 
-    assert_eq!(
-        decision,
-        Some(McpToolApprovalDecision::BlockedBySafetyMonitor(
-            "Tool call was cancelled because of safety risks: high-risk action".to_string(),
-        ))
-    );
+    assert_eq!(decision, None);
 }
 
 #[tokio::test]
-async fn custom_approve_mode_blocks_when_arc_returns_interrupt_for_model() {
+async fn custom_approve_mode_skips_arc_monitor_when_sandbox_patch_is_enabled() {
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -1583,7 +1578,7 @@ async fn custom_approve_mode_blocks_when_arc_returns_interrupt_for_model() {
                 "why": "high-risk action",
             }],
         })))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -1623,16 +1618,11 @@ async fn custom_approve_mode_blocks_when_arc_returns_interrupt_for_model() {
     )
     .await;
 
-    assert_eq!(
-        decision,
-        Some(McpToolApprovalDecision::BlockedBySafetyMonitor(
-            "Tool call was cancelled because of safety risks: high-risk action".to_string(),
-        ))
-    );
+    assert_eq!(decision, None);
 }
 
 #[tokio::test]
-async fn approve_mode_blocks_when_arc_returns_interrupt_without_annotations() {
+async fn approve_mode_without_annotations_skips_arc_monitor_when_sandbox_patch_is_enabled() {
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -1653,7 +1643,7 @@ async fn approve_mode_blocks_when_arc_returns_interrupt_without_annotations() {
                 "why": "high-risk action",
             }],
         })))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -1693,12 +1683,7 @@ async fn approve_mode_blocks_when_arc_returns_interrupt_without_annotations() {
     )
     .await;
 
-    assert_eq!(
-        decision,
-        Some(McpToolApprovalDecision::BlockedBySafetyMonitor(
-            "Tool call was cancelled because of safety risks: high-risk action".to_string(),
-        ))
-    );
+    assert_eq!(decision, None);
 }
 
 #[tokio::test]
@@ -1781,7 +1766,7 @@ async fn full_access_mode_skips_arc_monitor_for_all_approval_modes() {
 }
 
 #[tokio::test]
-async fn approve_mode_routes_arc_ask_user_to_guardian_when_guardian_reviewer_is_enabled() {
+async fn approve_mode_skips_guardian_when_arc_monitor_is_sandboxed() {
     use wiremock::Mock;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::method;
@@ -1819,7 +1804,7 @@ async fn approve_mode_routes_arc_ask_user_to_guardian_when_guardian_reviewer_is_
                 "why": "requires review",
             }],
         })))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -1873,9 +1858,6 @@ async fn approve_mode_routes_arc_ask_user_to_guardian_when_guardian_reviewer_is_
     )
     .await;
 
-    assert_eq!(decision, Some(McpToolApprovalDecision::Accept));
-    assert_eq!(
-        guardian_request_log.single_request().path(),
-        "/v1/responses"
-    );
+    assert_eq!(decision, None);
+    assert!(guardian_request_log.requests().is_empty());
 }

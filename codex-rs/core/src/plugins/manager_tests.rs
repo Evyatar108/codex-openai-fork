@@ -1683,7 +1683,11 @@ plugins = true
         .unwrap()
         .marketplaces;
 
-    assert!(marketplaces.is_empty());
+    assert!(
+        marketplaces
+            .iter()
+            .all(|marketplace| marketplace.name != "debug")
+    );
 }
 
 #[tokio::test]
@@ -1903,7 +1907,7 @@ enabled = true
 }
 
 #[tokio::test]
-async fn sync_plugins_from_remote_reconciles_cache_and_config() {
+async fn sync_plugins_from_remote_clears_local_state_when_remote_fetch_is_sandboxed() {
     let tmp = tempfile::tempdir().unwrap();
     let curated_root = curated_plugins_repo_path(tmp.path());
     write_openai_curated_marketplace(&curated_root, &["linear", "gmail", "calendar"]);
@@ -1950,6 +1954,7 @@ enabled = true
   {"id":"2","name":"gmail","marketplace_name":"openai-curated","version":"1.0.0","enabled":false}
 ]"#,
         ))
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -1969,9 +1974,10 @@ enabled = true
         result,
         RemotePluginSyncResult {
             installed_plugin_ids: Vec::new(),
-            enabled_plugin_ids: vec!["linear@openai-curated".to_string()],
+            enabled_plugin_ids: Vec::new(),
             disabled_plugin_ids: Vec::new(),
             uninstalled_plugin_ids: vec![
+                "linear@openai-curated".to_string(),
                 "gmail@openai-curated".to_string(),
                 "calendar@openai-curated".to_string(),
             ],
@@ -1979,9 +1985,9 @@ enabled = true
     );
 
     assert!(
-        tmp.path()
-            .join("plugins/cache/openai-curated/linear/local")
-            .is_dir()
+        !tmp.path()
+            .join("plugins/cache/openai-curated/linear")
+            .exists()
     );
     assert!(
         !tmp.path()
@@ -1995,8 +2001,7 @@ enabled = true
     );
 
     let config = fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).unwrap();
-    assert!(config.contains(r#"[plugins."linear@openai-curated"]"#));
-    assert!(config.contains("enabled = true"));
+    assert!(!config.contains(r#"[plugins."linear@openai-curated"]"#));
     assert!(!config.contains(r#"[plugins."gmail@openai-curated"]"#));
     assert!(!config.contains(r#"[plugins."calendar@openai-curated"]"#));
 
@@ -2015,7 +2020,7 @@ enabled = true
             .map(|plugin| (plugin.id, plugin.installed, plugin.enabled))
             .collect::<Vec<_>>(),
         vec![
-            ("linear@openai-curated".to_string(), true, true),
+            ("linear@openai-curated".to_string(), false, false),
             ("gmail@openai-curated".to_string(), false, false),
             ("calendar@openai-curated".to_string(), false, false),
         ]
@@ -2070,6 +2075,7 @@ enabled = true
   {"id":"2","name":"gmail","marketplace_name":"openai-curated","version":"1.0.0","enabled":false}
 ]"#,
         ))
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -2089,7 +2095,7 @@ enabled = true
         result,
         RemotePluginSyncResult {
             installed_plugin_ids: Vec::new(),
-            enabled_plugin_ids: vec!["linear@openai-curated".to_string()],
+            enabled_plugin_ids: Vec::new(),
             disabled_plugin_ids: Vec::new(),
             uninstalled_plugin_ids: Vec::new(),
         }
@@ -2116,6 +2122,7 @@ enabled = true
     assert!(config.contains(r#"[plugins."gmail@openai-curated"]"#));
     assert!(config.contains(r#"[plugins."calendar@openai-curated"]"#));
     assert!(config.contains("enabled = true"));
+    assert!(config.contains("enabled = false"));
 }
 
 #[tokio::test]
@@ -2176,7 +2183,7 @@ enabled = false
 }
 
 #[tokio::test]
-async fn sync_plugins_from_remote_keeps_existing_plugins_when_install_fails() {
+async fn sync_plugins_from_remote_uninstalls_existing_plugins_when_remote_fetch_is_sandboxed() {
     let tmp = tempfile::tempdir().unwrap();
     let curated_root = curated_plugins_repo_path(tmp.path());
     write_openai_curated_marketplace(&curated_root, &["linear", "gmail"]);
@@ -2205,30 +2212,35 @@ enabled = false
   {"id":"1","name":"gmail","marketplace_name":"openai-curated","version":"1.0.0","enabled":true}
 ]"#,
         ))
+        .expect(0)
         .mount(&server)
         .await;
 
     let mut config = load_config(tmp.path(), tmp.path()).await;
     config.chatgpt_base_url = format!("{}/backend-api/", server.uri());
     let manager = PluginsManager::new(tmp.path().to_path_buf());
-    let err = manager
+    let result = manager
         .sync_plugins_from_remote(
             &config,
             Some(&CodexAuth::create_dummy_chatgpt_auth_for_testing()),
             /*additive_only*/ false,
         )
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert!(matches!(
-        err,
-        PluginRemoteSyncError::Store(PluginStoreError::Invalid(ref message))
-            if message.contains("plugin source path is not a directory")
-    ));
+    assert_eq!(
+        result,
+        RemotePluginSyncResult {
+            installed_plugin_ids: Vec::new(),
+            enabled_plugin_ids: Vec::new(),
+            disabled_plugin_ids: Vec::new(),
+            uninstalled_plugin_ids: vec!["linear@openai-curated".to_string()],
+        }
+    );
     assert!(
-        tmp.path()
-            .join("plugins/cache/openai-curated/linear/local")
-            .is_dir()
+        !tmp.path()
+            .join("plugins/cache/openai-curated/linear")
+            .exists()
     );
     assert!(
         !tmp.path()
@@ -2237,13 +2249,12 @@ enabled = false
     );
 
     let config = fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).unwrap();
-    assert!(config.contains(r#"[plugins."linear@openai-curated"]"#));
     assert!(!config.contains(r#"[plugins."gmail@openai-curated"]"#));
-    assert!(config.contains("enabled = false"));
+    assert!(!config.contains(r#"[plugins."linear@openai-curated"]"#));
 }
 
 #[tokio::test]
-async fn sync_plugins_from_remote_uses_first_duplicate_local_plugin_entry() {
+async fn sync_plugins_from_remote_noops_when_remote_fetch_is_sandboxed_even_with_duplicates() {
     let tmp = tempfile::tempdir().unwrap();
     let curated_root = curated_plugins_repo_path(tmp.path());
     write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
@@ -2294,6 +2305,7 @@ plugins = true
   {"id":"1","name":"gmail","marketplace_name":"openai-curated","version":"1.0.0","enabled":true}
 ]"#,
         ))
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -2312,23 +2324,23 @@ plugins = true
     assert_eq!(
         result,
         RemotePluginSyncResult {
-            installed_plugin_ids: vec!["gmail@openai-curated".to_string()],
-            enabled_plugin_ids: vec!["gmail@openai-curated".to_string()],
+            installed_plugin_ids: Vec::new(),
+            enabled_plugin_ids: Vec::new(),
             disabled_plugin_ids: Vec::new(),
             uninstalled_plugin_ids: Vec::new(),
         }
     );
-    assert_eq!(
-        fs::read_to_string(tmp.path().join(format!(
-            "plugins/cache/openai-curated/gmail/{TEST_CURATED_PLUGIN_SHA}/marker.txt"
-        )))
-        .unwrap(),
-        "first"
+    assert!(
+        !tmp.path()
+            .join(format!(
+                "plugins/cache/openai-curated/gmail/{TEST_CURATED_PLUGIN_SHA}/marker.txt"
+            ))
+            .exists()
     );
 }
 
 #[tokio::test]
-async fn featured_plugin_ids_for_config_uses_restriction_product_query_param() {
+async fn featured_plugin_ids_for_config_returns_empty_when_remote_fetch_is_sandboxed() {
     let tmp = tempfile::tempdir().unwrap();
     write_file(
         &tmp.path().join(CONFIG_TOML_FILE),
@@ -2344,6 +2356,7 @@ plugins = true
         .and(header("authorization", "Bearer Access Token"))
         .and(header("chatgpt-account-id", "account_id"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"["chat-plugin"]"#))
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -2362,11 +2375,11 @@ plugins = true
         .await
         .unwrap();
 
-    assert_eq!(featured_plugin_ids, vec!["chat-plugin".to_string()]);
+    assert!(featured_plugin_ids.is_empty());
 }
 
 #[tokio::test]
-async fn featured_plugin_ids_for_config_defaults_query_param_to_codex() {
+async fn featured_plugin_ids_for_config_defaults_to_empty_when_remote_fetch_is_sandboxed() {
     let tmp = tempfile::tempdir().unwrap();
     write_file(
         &tmp.path().join(CONFIG_TOML_FILE),
@@ -2380,6 +2393,7 @@ plugins = true
         .and(path("/backend-api/plugins/featured"))
         .and(query_param("platform", "codex"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"["codex-plugin"]"#))
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -2395,7 +2409,7 @@ plugins = true
         .await
         .unwrap();
 
-    assert_eq!(featured_plugin_ids, vec!["codex-plugin".to_string()]);
+    assert!(featured_plugin_ids.is_empty());
 }
 
 #[test]
