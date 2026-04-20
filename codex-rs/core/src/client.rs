@@ -724,7 +724,7 @@ impl ModelClient {
         {
             api_provider.base_url = base_url.clone();
         }
-        let copilot_auth = if self.is_copilot() {
+        let copilot_auth = if self.state.provider.is_copilot_trusted() {
             Some(
                 self.state
                     .get_or_init_copilot_auth()
