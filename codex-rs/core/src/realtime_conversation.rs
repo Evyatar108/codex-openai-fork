@@ -258,6 +258,12 @@ impl RealtimeConversationManager {
     }
 
     async fn start_inner(&self, start: RealtimeStart) -> CodexResult<RealtimeStartOutput> {
+        if start.model_client.is_copilot() {
+            return Err(CodexErr::Fatal(
+                "Realtime is not supported for Copilot in v6".into(),
+            ));
+        }
+
         let RealtimeStart {
             api_provider,
             extra_headers,
@@ -1371,4 +1377,75 @@ async fn send_realtime_conversation_closed(
 
 #[cfg(test)]
 #[path = "realtime_conversation_tests.rs"]
-mod tests;
+mod file_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_model_provider_info::create_copilot_provider;
+    use codex_protocol::ThreadId;
+    use codex_protocol::protocol::SessionSource;
+
+    fn copilot_model_client() -> ModelClient {
+        ModelClient::new(
+            /*auth_manager*/ None,
+            ThreadId::new(),
+            /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+            create_copilot_provider(),
+            SessionSource::Cli,
+            /*model_verbosity*/ None,
+            /*enable_request_compression*/ false,
+            /*include_timing_metrics*/ false,
+            /*beta_features_header*/ None,
+        )
+    }
+
+    fn test_realtime_session_config() -> RealtimeSessionConfig {
+        RealtimeSessionConfig {
+            instructions: String::new(),
+            model: Some("realtime-test-model".to_string()),
+            session_id: Some("session-1".to_string()),
+            event_parser: RealtimeEventParser::V1,
+            session_mode: RealtimeSessionMode::Conversational,
+            output_modality: RealtimeOutputModality::Audio,
+            voice: default_realtime_voice(RealtimeWsVersion::V1),
+        }
+    }
+
+    async fn assert_copilot_realtime_start_error(sdp: Option<String>) {
+        let manager = RealtimeConversationManager::new();
+        let start = RealtimeStart {
+            api_provider: create_copilot_provider()
+                .to_api_provider(Some(AuthMode::ApiKey))
+                .expect("copilot api provider"),
+            extra_headers: Some(HeaderMap::new()),
+            session_config: test_realtime_session_config(),
+            model_client: copilot_model_client(),
+            sdp,
+        };
+
+        let err = manager
+            .start_inner(start)
+            .await
+            .err()
+            .expect("copilot realtime should be rejected");
+
+        match err {
+            CodexErr::Fatal(message) => {
+                assert!(message.contains("Copilot"));
+                assert!(message.contains("Realtime"));
+            }
+            other => panic!("expected fatal error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn realtime_start_errors_for_copilot_webrtc() {
+        assert_copilot_realtime_start_error(Some("fake-sdp".to_string())).await;
+    }
+
+    #[tokio::test]
+    async fn realtime_start_errors_for_copilot_websocket() {
+        assert_copilot_realtime_start_error(None).await;
+    }
+}

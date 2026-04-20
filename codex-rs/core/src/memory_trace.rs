@@ -40,7 +40,7 @@ pub async fn build_memories_from_trace_files(
     effort: Option<ReasoningEffortConfig>,
     session_telemetry: &SessionTelemetry,
 ) -> Result<Vec<BuiltMemory>> {
-    if trace_paths.is_empty() {
+    if trace_paths.is_empty() || client.is_copilot() {
         return Ok(Vec::new());
     }
 
