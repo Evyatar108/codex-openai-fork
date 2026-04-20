@@ -1,4 +1,6 @@
 use codex_core::config::Config;
+use codex_model_provider_info::COPILOT_BASE_URL;
+use codex_model_provider_info::COPILOT_PROVIDER_ID;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -27,6 +29,40 @@ fn builtin_copilot_attack_rejected_at_config_load() {
     assert!(
         message.contains("copilot") || message.contains("model_providers"),
         "unexpected config-load error: {message}"
+    );
+}
+
+#[test]
+fn builtin_copilot_provider_resolves_through_config_load() {
+    let codex_home = tempdir().expect("temp dir");
+
+    let cfg = Config::load_default_with_cli_overrides_for_codex_home(
+        codex_home.path().to_path_buf(),
+        vec![],
+    )
+    .expect("default config should load without error");
+
+    let copilot = cfg
+        .model_providers
+        .get(COPILOT_PROVIDER_ID)
+        .expect("built-in copilot provider should be present");
+
+    assert_eq!(
+        copilot.base_url.as_deref(),
+        Some(COPILOT_BASE_URL),
+        "copilot base_url should be the canonical Copilot API URL"
+    );
+    assert!(
+        !copilot.supports_websockets,
+        "copilot provider should have supports_websockets = false"
+    );
+    assert!(
+        !copilot.requires_openai_auth,
+        "copilot provider should have requires_openai_auth = false"
+    );
+    assert!(
+        copilot.is_copilot_trusted(),
+        "copilot provider should satisfy is_copilot_trusted()"
     );
 }
 
