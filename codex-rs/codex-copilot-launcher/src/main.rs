@@ -14,7 +14,7 @@ fn main() {
 fn is_passthrough(args: &[String]) -> bool {
     matches!(
         args.first().map(String::as_str),
-        Some("login" | "completion")
+        Some("login" | "completion" | "debug" | "features" | "mcp" | "marketplace")
     ) || args
         .iter()
         .any(|arg| matches!(arg.as_str(), "--version" | "-V" | "--help" | "-h"))
@@ -110,5 +110,37 @@ mod tests {
         let args = vec!["exec".to_string(), "say hi".to_string()];
 
         assert!(!is_passthrough(&args));
+    }
+
+    #[test]
+    fn debug_is_passthrough_arg() {
+        let args = vec!["debug".to_string(), "clear-memories".to_string()];
+
+        assert!(is_passthrough(&args));
+    }
+
+    #[test]
+    fn features_is_passthrough_arg() {
+        let args = vec!["features".to_string(), "list".to_string()];
+
+        assert!(is_passthrough(&args));
+    }
+
+    #[test]
+    fn mcp_is_passthrough_arg() {
+        let args = vec!["mcp".to_string(), "list".to_string()];
+
+        assert!(is_passthrough(&args));
+    }
+
+    #[test]
+    fn marketplace_is_passthrough_arg() {
+        let args = vec![
+            "marketplace".to_string(),
+            "add".to_string(),
+            "/tmp/source".to_string(),
+        ];
+
+        assert!(is_passthrough(&args));
     }
 }

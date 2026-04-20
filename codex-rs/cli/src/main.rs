@@ -10,6 +10,10 @@ use codex_chatgpt::apply_command::run_apply_command;
 use codex_cli::LandlockCommand;
 use codex_cli::SeatbeltCommand;
 use codex_cli::WindowsCommand;
+use codex_cli::build_feature_rows;
+use codex_cli::clear_memories;
+use codex_cli::disable_feature;
+use codex_cli::enable_feature;
 use codex_cli::read_api_key_from_stdin;
 use codex_cli::run_login_status;
 use codex_cli::run_login_with_api_key;
@@ -23,8 +27,6 @@ use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_execpolicy::ExecPolicyCheckCommand;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
-use codex_state::StateRuntime;
-use codex_state::state_db_path;
 use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
 use codex_tui::ExitReason;
@@ -52,10 +54,6 @@ use crate::responses_cmd::run_responses_command;
 
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
-use codex_core::config::edit::ConfigEditsBuilder;
-use codex_core::config::find_codex_home;
-use codex_features::FEATURES;
-use codex_features::Stage;
 use codex_features::is_known_feature_key;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::user_input::UserInput;
@@ -655,16 +653,6 @@ struct FeatureSetArgs {
     feature: String,
 }
 
-fn stage_str(stage: Stage) -> &'static str {
-    match stage {
-        Stage::UnderDevelopment => "under development",
-        Stage::Experimental { .. } => "experimental",
-        Stage::Stable => "stable",
-        Stage::Deprecated => "deprecated",
-        Stage::Removed => "removed",
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     arg0_dispatch_or_else(|arg0_paths: Arg0DispatchPaths| async move {
         cli_main(arg0_paths).await?;
@@ -1115,21 +1103,21 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     overrides,
                 )
                 .await?;
-                let mut rows = Vec::with_capacity(FEATURES.len());
                 let mut name_width = 0;
                 let mut stage_width = 0;
-                for def in FEATURES {
-                    let name = def.key;
-                    let stage = stage_str(def.stage);
-                    let enabled = config.features.enabled(def.id);
-                    name_width = name_width.max(name.len());
-                    stage_width = stage_width.max(stage.len());
-                    rows.push((name, stage, enabled));
+                let rows = build_feature_rows(&config);
+                for row in &rows {
+                    name_width = name_width.max(row.name.len());
+                    stage_width = stage_width.max(row.stage.len());
                 }
-                rows.sort_unstable_by_key(|(name, _, _)| *name);
 
-                for (name, stage, enabled) in rows {
-                    println!("{name:<name_width$}  {stage:<stage_width$}  {enabled}");
+                for row in rows {
+                    println!(
+                        "{name:<name_width$}  {stage:<stage_width$}  {enabled}",
+                        name = row.name,
+                        stage = row.stage,
+                        enabled = row.enabled
+                    );
                 }
             }
             FeaturesSubcommand::Enable(FeatureSetArgs { feature }) => {
@@ -1138,7 +1126,12 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     root_remote_auth_token_env.as_deref(),
                     "features enable",
                 )?;
-                enable_feature_in_config(&interactive, &feature).await?;
+                if let Some(warning) =
+                    enable_feature(&feature, interactive.config_profile.as_deref()).await?
+                {
+                    eprintln!("{warning}");
+                }
+                println!("Enabled feature `{feature}` in config.toml.");
             }
             FeaturesSubcommand::Disable(FeatureSetArgs { feature }) => {
                 reject_remote_mode_for_subcommand(
@@ -1146,7 +1139,8 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     root_remote_auth_token_env.as_deref(),
                     "features disable",
                 )?;
-                disable_feature_in_config(&interactive, &feature).await?;
+                disable_feature(&feature, interactive.config_profile.as_deref()).await?;
+                println!("Disabled feature `{feature}` in config.toml.");
             }
         },
     }
@@ -1169,54 +1163,6 @@ async fn run_exec_server_command(
     codex_exec_server::run_main(&cmd.listen, runtime_paths)
         .await
         .map_err(anyhow::Error::from_boxed)
-}
-
-async fn enable_feature_in_config(interactive: &TuiCli, feature: &str) -> anyhow::Result<()> {
-    FeatureToggles::validate_feature(feature)?;
-    let codex_home = find_codex_home()?;
-    ConfigEditsBuilder::new(&codex_home)
-        .with_profile(interactive.config_profile.as_deref())
-        .set_feature_enabled(feature, /*enabled*/ true)
-        .apply()
-        .await?;
-    println!("Enabled feature `{feature}` in config.toml.");
-    maybe_print_under_development_feature_warning(&codex_home, interactive, feature);
-    Ok(())
-}
-
-async fn disable_feature_in_config(interactive: &TuiCli, feature: &str) -> anyhow::Result<()> {
-    FeatureToggles::validate_feature(feature)?;
-    let codex_home = find_codex_home()?;
-    ConfigEditsBuilder::new(&codex_home)
-        .with_profile(interactive.config_profile.as_deref())
-        .set_feature_enabled(feature, /*enabled*/ false)
-        .apply()
-        .await?;
-    println!("Disabled feature `{feature}` in config.toml.");
-    Ok(())
-}
-
-fn maybe_print_under_development_feature_warning(
-    codex_home: &std::path::Path,
-    interactive: &TuiCli,
-    feature: &str,
-) {
-    if interactive.config_profile.is_some() {
-        return;
-    }
-
-    let Some(spec) = FEATURES.iter().find(|spec| spec.key == feature) else {
-        return;
-    };
-    if !matches!(spec.stage, Stage::UnderDevelopment) {
-        return;
-    }
-
-    let config_path = codex_home.join(codex_config::CONFIG_TOML_FILE);
-    eprintln!(
-        "Under-development features enabled: {feature}. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in {}.",
-        config_path.display()
-    );
 }
 
 async fn run_debug_prompt_input_command(
@@ -1298,39 +1244,12 @@ async fn run_debug_clear_memories_command(
     };
     let config =
         Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides).await?;
-
-    let state_path = state_db_path(config.sqlite_home.as_path());
-    let mut cleared_state_db = false;
-    if tokio::fs::try_exists(&state_path).await? {
-        let state_db =
-            StateRuntime::init(config.sqlite_home.clone(), config.model_provider_id.clone())
-                .await?;
-        state_db.clear_memory_data().await?;
-        cleared_state_db = true;
-    }
-
-    let memory_root = config.codex_home.join("memories");
-    let removed_memory_root = match tokio::fs::remove_dir_all(&memory_root).await {
-        Ok(()) => true,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-        Err(err) => return Err(err.into()),
-    };
-
-    let mut message = if cleared_state_db {
-        format!("Cleared memory state from {}.", state_path.display())
-    } else {
-        format!("No state db found at {}.", state_path.display())
-    };
-
-    if removed_memory_root {
-        message.push_str(&format!(" Removed {}.", memory_root.display()));
-    } else {
-        message.push_str(&format!(
-            " No memory directory found at {}.",
-            memory_root.display()
-        ));
-    }
-
+    let message = clear_memories(
+        config.sqlite_home.as_path(),
+        config.codex_home.as_path(),
+        &config.model_provider_id,
+    )
+    .await?;
     println!("{message}");
 
     Ok(())

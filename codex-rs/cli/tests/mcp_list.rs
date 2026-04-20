@@ -1,30 +1,51 @@
-use std::path::Path;
-
 use anyhow::Result;
+use clap::Parser;
+use codex_cli::mcp_cmd::GetArgs;
+use codex_cli::mcp_cmd::ListArgs;
+use codex_cli::mcp_cmd::McpCli;
+use codex_cli::mcp_cmd::McpSubcommand;
+use codex_cli::mcp_cmd::add_server;
+use codex_cli::mcp_cmd::get_server;
+use codex_cli::mcp_cmd::list_servers;
 use codex_config::types::McpServerTransportConfig;
+use codex_core::config::Config;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::load_global_mcp_servers;
-use predicates::prelude::PredicateBooleanExt;
-use predicates::str::contains;
 use pretty_assertions::assert_eq;
 use serde_json::Value as JsonValue;
 use serde_json::json;
+use std::path::Path;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use tempfile::TempDir;
 
-fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
-    let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
-    cmd.env("CODEX_HOME", codex_home);
-    Ok(cmd)
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
-#[test]
-fn list_shows_empty_state() -> Result<()> {
-    let codex_home = TempDir::new()?;
+async fn load_config_for_codex_home(codex_home: &Path) -> Result<Config> {
+    let _guard = env_lock().lock().expect("env mutex poisoned");
+    unsafe {
+        std::env::set_var("CODEX_HOME", codex_home);
+    }
+    let config =
+        Config::load_with_cli_overrides_and_harness_overrides(vec![], Default::default()).await?;
+    unsafe {
+        std::env::remove_var("CODEX_HOME");
+    }
+    Ok(config)
+}
 
-    let mut cmd = codex_command(codex_home.path())?;
-    let output = cmd.args(["mcp", "list"]).output()?;
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout)?;
+#[tokio::test]
+async fn list_shows_empty_state() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let config = Config::load_default_with_cli_overrides_for_codex_home(
+        codex_home.path().to_path_buf(),
+        vec![],
+    )?;
+
+    let stdout = list_servers(&config, ListArgs { json: false }).await?;
     assert!(stdout.contains("No MCP servers configured yet."));
 
     Ok(())
@@ -33,9 +54,12 @@ fn list_shows_empty_state() -> Result<()> {
 #[tokio::test]
 async fn list_and_get_render_expected_output() -> Result<()> {
     let codex_home = TempDir::new()?;
+    let config = Config::load_default_with_cli_overrides_for_codex_home(
+        codex_home.path().to_path_buf(),
+        vec![],
+    )?;
 
-    let mut add = codex_command(codex_home.path())?;
-    add.args([
+    let McpSubcommand::Add(add_args) = McpCli::try_parse_from([
         "mcp",
         "add",
         "docs",
@@ -45,9 +69,12 @@ async fn list_and_get_render_expected_output() -> Result<()> {
         "docs-server",
         "--port",
         "4000",
-    ])
-    .assert()
-    .success();
+    ])?
+    .subcommand
+    else {
+        panic!("expected add subcommand");
+    };
+    add_server(&config, add_args).await?;
 
     let mut servers = load_global_mcp_servers(codex_home.path()).await?;
     let docs_entry = servers
@@ -63,10 +90,8 @@ async fn list_and_get_render_expected_output() -> Result<()> {
         .replace_mcp_servers(&servers)
         .apply_blocking()?;
 
-    let mut list_cmd = codex_command(codex_home.path())?;
-    let list_output = list_cmd.args(["mcp", "list"]).output()?;
-    assert!(list_output.status.success());
-    let stdout = String::from_utf8(list_output.stdout)?;
+    let config = load_config_for_codex_home(codex_home.path()).await?;
+    let stdout = list_servers(&config, ListArgs { json: false }).await?;
     assert!(stdout.contains("Name"));
     assert!(stdout.contains("docs"));
     assert!(stdout.contains("docs-server"));
@@ -78,11 +103,8 @@ async fn list_and_get_render_expected_output() -> Result<()> {
     assert!(stdout.contains("enabled"));
     assert!(stdout.contains("Unsupported"));
 
-    let mut list_json_cmd = codex_command(codex_home.path())?;
-    let json_output = list_json_cmd.args(["mcp", "list", "--json"]).output()?;
-    assert!(json_output.status.success());
-    let stdout = String::from_utf8(json_output.stdout)?;
-    let parsed: JsonValue = serde_json::from_str(&stdout)?;
+    let list_json_output = list_servers(&config, ListArgs { json: true }).await?;
+    let parsed: JsonValue = serde_json::from_str(&list_json_output)?;
     assert_eq!(
         parsed,
         json!([
@@ -114,26 +136,35 @@ async fn list_and_get_render_expected_output() -> Result<()> {
         )
     );
 
-    let mut get_cmd = codex_command(codex_home.path())?;
-    let get_output = get_cmd.args(["mcp", "get", "docs"]).output()?;
-    assert!(get_output.status.success());
-    let stdout = String::from_utf8(get_output.stdout)?;
-    assert!(stdout.contains("docs"));
-    assert!(stdout.contains("transport: stdio"));
-    assert!(stdout.contains("command: docs-server"));
-    assert!(stdout.contains("args: --port 4000"));
-    assert!(stdout.contains("env: TOKEN=*****"));
-    assert!(stdout.contains("APP_TOKEN=*****"));
-    assert!(stdout.contains("WORKSPACE_ID=*****"));
-    assert!(stdout.contains("enabled: true"));
-    assert!(stdout.contains("remove: codex mcp remove docs"));
+    let get_output = get_server(
+        &config,
+        GetArgs {
+            name: "docs".into(),
+            json: false,
+        },
+    )
+    .await?;
+    assert!(get_output.contains("docs"));
+    assert!(get_output.contains("transport: stdio"));
+    assert!(get_output.contains("command: docs-server"));
+    assert!(get_output.contains("args: --port 4000"));
+    assert!(get_output.contains("env: TOKEN=*****"));
+    assert!(get_output.contains("APP_TOKEN=*****"));
+    assert!(get_output.contains("WORKSPACE_ID=*****"));
+    assert!(get_output.contains("enabled: true"));
+    assert!(get_output.contains("remove: codex mcp remove docs"));
 
-    let mut get_json_cmd = codex_command(codex_home.path())?;
-    get_json_cmd
-        .args(["mcp", "get", "docs", "--json"])
-        .assert()
-        .success()
-        .stdout(contains("\"name\": \"docs\"").and(contains("\"enabled\": true")));
+    let get_json_output = get_server(
+        &config,
+        GetArgs {
+            name: "docs".into(),
+            json: true,
+        },
+    )
+    .await?;
+    let parsed_get_json: JsonValue = serde_json::from_str(&get_json_output)?;
+    assert_eq!(parsed_get_json["name"], "docs");
+    assert_eq!(parsed_get_json["enabled"], true);
 
     Ok(())
 }
@@ -141,11 +172,17 @@ async fn list_and_get_render_expected_output() -> Result<()> {
 #[tokio::test]
 async fn get_disabled_server_shows_single_line() -> Result<()> {
     let codex_home = TempDir::new()?;
+    let config = Config::load_default_with_cli_overrides_for_codex_home(
+        codex_home.path().to_path_buf(),
+        vec![],
+    )?;
 
-    let mut add = codex_command(codex_home.path())?;
-    add.args(["mcp", "add", "docs", "--", "docs-server"])
-        .assert()
-        .success();
+    let McpSubcommand::Add(add_args) =
+        McpCli::try_parse_from(["mcp", "add", "docs", "--", "docs-server"])?.subcommand
+    else {
+        panic!("expected add subcommand");
+    };
+    add_server(&config, add_args).await?;
 
     let mut servers = load_global_mcp_servers(codex_home.path()).await?;
     let docs = servers
@@ -156,10 +193,15 @@ async fn get_disabled_server_shows_single_line() -> Result<()> {
         .replace_mcp_servers(&servers)
         .apply_blocking()?;
 
-    let mut get_cmd = codex_command(codex_home.path())?;
-    let get_output = get_cmd.args(["mcp", "get", "docs"]).output()?;
-    assert!(get_output.status.success());
-    let stdout = String::from_utf8(get_output.stdout)?;
+    let config = load_config_for_codex_home(codex_home.path()).await?;
+    let stdout = get_server(
+        &config,
+        GetArgs {
+            name: "docs".into(),
+            json: false,
+        },
+    )
+    .await?;
     assert_eq!(stdout.trim_end(), "docs (disabled)");
 
     Ok(())
