@@ -18,6 +18,7 @@ mod realtime_prompt;
 pub use codex::SteerInputError;
 mod codex_thread;
 mod compact_remote;
+pub mod copilot_transport;
 pub use codex_thread::CodexThread;
 pub use codex_thread::ThreadConfigSnapshot;
 mod agent;
