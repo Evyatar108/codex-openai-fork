@@ -14,6 +14,7 @@ use codex_cli::read_api_key_from_stdin;
 use codex_cli::run_login_status;
 use codex_cli::run_login_with_api_key;
 use codex_cli::run_login_with_chatgpt;
+use codex_cli::run_login_with_copilot;
 use codex_cli::run_login_with_device_code;
 use codex_cli::run_logout;
 use codex_cloud_tasks::Cli as CloudTasksCli;
@@ -310,6 +311,12 @@ struct LoginCommand {
     #[clap(skip)]
     config_overrides: CliConfigOverrides,
 
+    #[arg(long = "provider", value_name = "PROVIDER")]
+    provider: Option<String>,
+
+    #[arg(long = "force")]
+    force: bool,
+
     #[arg(
         long = "with-api-key",
         help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`)"
@@ -346,6 +353,29 @@ struct LoginCommand {
 enum LoginSubcommand {
     /// Show login status.
     Status,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoginFlow {
+    Copilot,
+    DeviceCode,
+    DeprecatedApiKey,
+    ApiKeyFromStdin,
+    Chatgpt,
+}
+
+fn login_flow(login_cli: &LoginCommand) -> LoginFlow {
+    if login_cli.provider.as_deref() == Some("copilot") {
+        LoginFlow::Copilot
+    } else if login_cli.use_device_code {
+        LoginFlow::DeviceCode
+    } else if login_cli.api_key.is_some() {
+        LoginFlow::DeprecatedApiKey
+    } else if login_cli.with_api_key {
+        LoginFlow::ApiKeyFromStdin
+    } else {
+        LoginFlow::Chatgpt
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -854,26 +884,32 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 Some(LoginSubcommand::Status) => {
                     run_login_status(login_cli.config_overrides).await;
                 }
-                None => {
-                    if login_cli.use_device_code {
+                None => match login_flow(&login_cli) {
+                    LoginFlow::Copilot => {
+                        run_login_with_copilot(login_cli.config_overrides, login_cli.force).await;
+                    }
+                    LoginFlow::DeviceCode => {
                         run_login_with_device_code(
                             login_cli.config_overrides,
                             login_cli.issuer_base_url,
                             login_cli.client_id,
                         )
                         .await;
-                    } else if login_cli.api_key.is_some() {
+                    }
+                    LoginFlow::DeprecatedApiKey => {
                         eprintln!(
                             "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
                         );
                         std::process::exit(1);
-                    } else if login_cli.with_api_key {
+                    }
+                    LoginFlow::ApiKeyFromStdin => {
                         let api_key = read_api_key_from_stdin();
                         run_login_with_api_key(login_cli.config_overrides, api_key).await;
-                    } else {
+                    }
+                    LoginFlow::Chatgpt => {
                         run_login_with_chatgpt(login_cli.config_overrides).await;
                     }
-                }
+                },
             }
         }
         Some(Subcommand::Logout(mut logout_cli)) => {
@@ -1653,6 +1689,31 @@ mod tests {
             unreachable!()
         };
         app_server
+    }
+
+    fn login_from_args(args: &[&str]) -> LoginCommand {
+        let cli = MultitoolCli::try_parse_from(args).expect("parse");
+        let Some(Subcommand::Login(login)) = cli.subcommand else {
+            panic!("expected login subcommand");
+        };
+        login
+    }
+
+    #[test]
+    fn login_provider_copilot_ignores_device_auth_flag() {
+        let login = login_from_args(&[
+            "codex",
+            "login",
+            "--provider",
+            "copilot",
+            "--device-auth",
+            "--force",
+        ]);
+
+        assert_eq!(login.provider.as_deref(), Some("copilot"));
+        assert!(login.use_device_code);
+        assert!(login.force);
+        assert_eq!(login_flow(&login), LoginFlow::Copilot);
     }
 
     #[test]
