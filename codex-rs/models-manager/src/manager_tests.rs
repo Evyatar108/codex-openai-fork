@@ -7,6 +7,7 @@ use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_copilot_provider;
 use codex_protocol::config_types::ModelProviderAuthInfo;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -729,6 +730,114 @@ async fn refresh_available_models_skips_network_without_chatgpt_auth() {
         models_mock.requests().len(),
         0,
         "no auth should avoid /models requests"
+    );
+}
+
+#[tokio::test]
+async fn refresh_available_models_skips_network_for_copilot_provider() {
+    let server = MockServer::start().await;
+    let models_mock = mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![remote_model(
+                "copilot-remote",
+                "Copilot Remote",
+                /*priority*/ 1,
+            )],
+        },
+    )
+    .await;
+
+    let codex_home = tempdir().expect("temp dir");
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let mut provider = create_copilot_provider();
+    provider.base_url = Some(server.uri());
+    let manager = ModelsManager::with_provider_for_tests(
+        codex_home.path().to_path_buf(),
+        auth_manager,
+        provider,
+    );
+
+    manager
+        .refresh_available_models(RefreshStrategy::Online)
+        .await
+        .expect("copilot refresh should no-op");
+
+    assert_eq!(
+        models_mock.requests().len(),
+        0,
+        "copilot provider should avoid /models requests"
+    );
+}
+
+#[tokio::test]
+async fn copilot_session_bootstrap_has_minimal_synthetic_catalog() {
+    let codex_home = tempdir().expect("temp dir");
+    let auth_manager = Arc::new(AuthManager::new(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+    ));
+    let manager = ModelsManager::with_provider_for_tests(
+        codex_home.path().to_path_buf(),
+        auth_manager,
+        create_copilot_provider(),
+    );
+
+    let models = manager.list_models(RefreshStrategy::OnlineIfUncached).await;
+    assert_eq!(
+        models.len(),
+        1,
+        "copilot should expose a synthetic one-model catalog"
+    );
+    assert_eq!(models[0].model, COPILOT_DEFAULT_MODEL);
+    assert!(
+        models[0].is_default,
+        "synthetic copilot model should be default"
+    );
+
+    let default_model = manager
+        .get_default_model(&None, RefreshStrategy::OnlineIfUncached)
+        .await;
+    assert_eq!(default_model, COPILOT_DEFAULT_MODEL);
+}
+
+#[tokio::test]
+async fn get_default_model_returns_copilot_default_when_provider_is_copilot() {
+    let server = MockServer::start().await;
+    let models_mock = mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![remote_model(
+                "remote-only",
+                "Remote Only",
+                /*priority*/ 0,
+            )],
+        },
+    )
+    .await;
+
+    let codex_home = tempdir().expect("temp dir");
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let mut provider = create_copilot_provider();
+    provider.base_url = Some(server.uri());
+    let manager = ModelsManager::with_provider_for_tests(
+        codex_home.path().to_path_buf(),
+        auth_manager,
+        provider,
+    );
+
+    let default_model = manager
+        .get_default_model(&None, RefreshStrategy::Online)
+        .await;
+
+    assert_eq!(default_model, COPILOT_DEFAULT_MODEL);
+    assert_eq!(
+        models_mock.requests().len(),
+        0,
+        "copilot default resolution should not hit /models"
     );
 }
 

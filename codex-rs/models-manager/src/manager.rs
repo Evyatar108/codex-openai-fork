@@ -44,6 +44,7 @@ const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const MODELS_ENDPOINT: &str = "/models";
+const COPILOT_DEFAULT_MODEL: &str = "gpt-5.4";
 #[derive(Clone)]
 struct ModelsRequestTelemetry {
     auth_mode: Option<String>,
@@ -213,17 +214,22 @@ impl ModelsManager {
         collaboration_modes_config: CollaborationModesConfig,
         provider: ModelProviderInfo,
     ) -> Self {
+        let has_explicit_catalog = model_catalog.is_some();
         let auth_manager = required_auth_manager_for_provider(auth_manager, &provider);
         let cache_path = codex_home.join(MODEL_CACHE_FILE);
         let cache_manager = ModelsCacheManager::new(cache_path, DEFAULT_MODEL_CACHE_TTL);
-        let catalog_mode = if model_catalog.is_some() {
+        let catalog_mode = if has_explicit_catalog {
             CatalogMode::Custom
         } else {
             CatalogMode::Default
         };
-        let remote_models = model_catalog
-            .map(|catalog| catalog.models)
-            .unwrap_or_else(|| Self::load_remote_models_from_file().unwrap_or_default());
+        let remote_models = if provider.is_copilot() && !has_explicit_catalog {
+            vec![copilot_synthetic_model_info(COPILOT_DEFAULT_MODEL)]
+        } else {
+            model_catalog
+                .map(|catalog| catalog.models)
+                .unwrap_or_else(|| Self::load_remote_models_from_file().unwrap_or_default())
+        };
         Self {
             remote_models: RwLock::new(remote_models),
             catalog_mode,
@@ -293,6 +299,9 @@ impl ModelsManager {
     ) -> String {
         if let Some(model) = model.as_ref() {
             return model.to_string();
+        }
+        if self.provider.is_copilot() {
+            return COPILOT_DEFAULT_MODEL.to_string();
         }
         if let Err(err) = self.refresh_available_models(refresh_strategy).await {
             error!("failed to refresh available models: {err}");
@@ -390,6 +399,12 @@ impl ModelsManager {
 
     /// Refresh available models according to the specified strategy.
     async fn refresh_available_models(&self, refresh_strategy: RefreshStrategy) -> CoreResult<()> {
+        // TODO(copilot-v7): translate {id, model_picker_enabled} -> ModelInfo OR build a
+        // Copilot-specific client.
+        if self.provider.is_copilot() {
+            return Ok(());
+        }
+
         // don't override the custom model catalog if one was provided by the user
         if matches!(self.catalog_mode, CatalogMode::Custom) {
             return Ok(());
@@ -578,6 +593,42 @@ impl ModelsManager {
             &[]
         };
         Self::construct_model_info_from_candidates(model, candidates, config)
+    }
+}
+
+fn copilot_synthetic_model_info(slug: &str) -> ModelInfo {
+    let builtin = model_info::model_info_from_slug(slug);
+    ModelInfo {
+        slug: slug.to_string(),
+        display_name: builtin.display_name,
+        description: builtin.description,
+        default_reasoning_level: builtin.default_reasoning_level,
+        supported_reasoning_levels: builtin.supported_reasoning_levels,
+        shell_type: builtin.shell_type,
+        visibility: builtin.visibility,
+        supported_in_api: true,
+        priority: builtin.priority,
+        additional_speed_tiers: builtin.additional_speed_tiers,
+        availability_nux: builtin.availability_nux,
+        upgrade: builtin.upgrade,
+        base_instructions: builtin.base_instructions,
+        model_messages: builtin.model_messages,
+        supports_reasoning_summaries: builtin.supports_reasoning_summaries,
+        default_reasoning_summary: builtin.default_reasoning_summary,
+        support_verbosity: builtin.support_verbosity,
+        default_verbosity: builtin.default_verbosity,
+        apply_patch_tool_type: builtin.apply_patch_tool_type,
+        web_search_tool_type: builtin.web_search_tool_type,
+        truncation_policy: builtin.truncation_policy,
+        supports_parallel_tool_calls: builtin.supports_parallel_tool_calls,
+        supports_image_detail_original: builtin.supports_image_detail_original,
+        context_window: builtin.context_window,
+        auto_compact_token_limit: builtin.auto_compact_token_limit,
+        effective_context_window_percent: builtin.effective_context_window_percent,
+        experimental_supported_tools: builtin.experimental_supported_tools,
+        input_modalities: builtin.input_modalities,
+        used_fallback_model_metadata: false,
+        supports_search_tool: builtin.supports_search_tool,
     }
 }
 
