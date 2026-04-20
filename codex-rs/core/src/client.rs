@@ -100,6 +100,7 @@ use tracing::warn;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
+use crate::copilot_transport;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_api::CoreAuthProvider;
@@ -1222,6 +1223,8 @@ impl ModelClientSession {
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
+        let is_copilot = self.client.state.provider.is_copilot();
+        let mut copilot_auth_retries = 0u32;
         loop {
             let client_setup = self.client.current_client_setup().await?;
             let transport = ReqwestTransport::new(build_reqwest_client());
@@ -1247,11 +1250,16 @@ impl ModelClientSession {
                 summary,
                 service_tier,
             )?;
-            let client = ApiResponsesClient::new(
-                transport,
-                client_setup.api_provider,
-                client_setup.api_auth,
-            )
+            let auth_notifier = client_setup.api_auth.clone();
+            let client = if is_copilot {
+                copilot_transport::build_copilot_client(
+                    client_setup.api_provider,
+                    client_setup.api_auth,
+                    transport,
+                )
+            } else {
+                ApiResponsesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
+            }
             .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
             let stream_result = client.stream_request(request, options).await;
 
@@ -1259,6 +1267,21 @@ impl ModelClientSession {
                 Ok(stream) => {
                     let (stream, _) = map_response_stream(stream, session_telemetry.clone());
                     return Ok(stream);
+                }
+                Err(ApiError::Transport(TransportError::Http { status, .. }))
+                    if is_copilot
+                        && (status == StatusCode::UNAUTHORIZED
+                            || status == StatusCode::FORBIDDEN) =>
+                {
+                    if copilot_auth_retries >= 2 {
+                        return Err(CodexErr::Fatal(format!(
+                            "Copilot auth failed after {} retries: HTTP {status}",
+                            copilot_auth_retries
+                        )));
+                    }
+                    auth_notifier.on_unauthorized();
+                    copilot_auth_retries += 1;
+                    continue;
                 }
                 Err(ApiError::Transport(
                     unauthorized_transport @ TransportError::Http { status, .. },

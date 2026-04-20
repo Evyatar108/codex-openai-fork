@@ -56,6 +56,7 @@ use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_output_text_delta;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_response_sequence;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
@@ -164,6 +165,15 @@ struct ProviderAuthCommandFixture {
     tempdir: TempDir,
     command: String,
     args: Vec<String>,
+}
+
+struct CopilotClientFixture {
+    _copilot_home: TempDir,
+    client: ModelClient,
+    model_info: codex_protocol::openai_models::ModelInfo,
+    session_telemetry: SessionTelemetry,
+    effort: Option<ReasoningEffort>,
+    summary: ReasoningSummary,
 }
 
 impl ProviderAuthCommandFixture {
@@ -943,72 +953,10 @@ fn test_copilot_auth(server: &MockServer) -> (TempDir, Arc<CopilotAuth>) {
     (temp, Arc::new(auth))
 }
 
-async fn complete_model_client_turn(
-    client: &ModelClient,
-    model_info: &codex_protocol::openai_models::ModelInfo,
-    session_telemetry: &SessionTelemetry,
-    effort: Option<ReasoningEffort>,
-    summary: ReasoningSummary,
-    text: &str,
-) {
-    let mut client_session = client.new_session();
-    let mut prompt = Prompt::default();
-    prompt.input.push(ResponseItem::Message {
-        id: None,
-        role: "user".to_string(),
-        content: vec![ContentItem::InputText {
-            text: text.to_string(),
-        }],
-        end_turn: None,
-        phase: None,
-    });
-
-    let mut stream = client_session
-        .stream(
-            &prompt,
-            model_info,
-            session_telemetry,
-            effort,
-            summary,
-            /*service_tier*/ None,
-            /*turn_metadata_header*/ None,
-        )
-        .await
-        .expect("responses stream to start");
-
-    while let Some(event) = stream.next().await {
-        if let Ok(ResponseEvent::Completed { .. }) = event {
-            return;
-        }
-    }
-
-    panic!("expected completed event");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn copilot_session_id_stable_across_turns() {
-    skip_if_no_network!();
-
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/copilot_internal/v2/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "token": "copilot-token",
-            "expires_at": 4_102_444_800u64,
-            "refresh_in": 3600u64
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let responses_mock = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
-            sse(vec![ev_response_created("resp2"), ev_completed("resp2")]),
-        ],
-    )
-    .await;
-
+async fn copilot_client_fixture(
+    responses_server: &MockServer,
+    token_server: &MockServer,
+) -> CopilotClientFixture {
     let provider = create_copilot_provider();
     let codex_home = TempDir::new().expect("temp dir");
     let mut config = load_default_config_for_test(&codex_home).await;
@@ -1047,28 +995,129 @@ async fn copilot_session_id_stable_across_turns() {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
     );
-    let (_copilot_home, copilot_auth) = test_copilot_auth(&server);
+    let (copilot_home, copilot_auth) = test_copilot_auth(token_server);
     codex_core::test_support::configure_copilot_session_for_tests(
         &client,
         copilot_auth,
-        format!("{}/v1", server.uri()),
+        format!("{}/v1", responses_server.uri()),
     );
 
-    complete_model_client_turn(
-        &client,
-        &model_info,
-        &session_telemetry,
+    CopilotClientFixture {
+        _copilot_home: copilot_home,
+        client,
+        model_info,
+        session_telemetry,
         effort,
         summary,
+    }
+}
+
+fn completed_sse_template(response_id: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string(sse(vec![
+            ev_response_created(response_id),
+            ev_completed(response_id),
+        ]))
+}
+
+async fn complete_model_client_turn(
+    client: &ModelClient,
+    model_info: &codex_protocol::openai_models::ModelInfo,
+    session_telemetry: &SessionTelemetry,
+    effort: Option<ReasoningEffort>,
+    summary: ReasoningSummary,
+    text: &str,
+) {
+    stream_model_client_turn(client, model_info, session_telemetry, effort, summary, text)
+        .await
+        .expect("responses stream to start");
+}
+
+async fn stream_model_client_turn(
+    client: &ModelClient,
+    model_info: &codex_protocol::openai_models::ModelInfo,
+    session_telemetry: &SessionTelemetry,
+    effort: Option<ReasoningEffort>,
+    summary: ReasoningSummary,
+    text: &str,
+) -> Result<(), CodexErr> {
+    let mut client_session = client.new_session();
+    let mut prompt = Prompt::default();
+    prompt.input.push(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: text.to_string(),
+        }],
+        end_turn: None,
+        phase: None,
+    });
+
+    let mut stream = client_session
+        .stream(
+            &prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
+        )
+        .await?;
+
+    while let Some(event) = stream.next().await {
+        if let Ok(ResponseEvent::Completed { .. }) = event {
+            return Ok(());
+        }
+        if let Err(err) = event {
+            return Err(err);
+        }
+    }
+
+    panic!("expected completed event");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copilot_session_id_stable_across_turns() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/copilot_internal/v2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token": "copilot-token",
+            "expires_at": 4_102_444_800u64,
+            "refresh_in": 3600u64
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let responses_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+            sse(vec![ev_response_created("resp2"), ev_completed("resp2")]),
+        ],
+    )
+    .await;
+    let fixture = copilot_client_fixture(&server, &server).await;
+
+    complete_model_client_turn(
+        &fixture.client,
+        &fixture.model_info,
+        &fixture.session_telemetry,
+        fixture.effort,
+        fixture.summary,
         "first turn",
     )
     .await;
     complete_model_client_turn(
-        &client,
-        &model_info,
-        &session_telemetry,
-        effort,
-        summary,
+        &fixture.client,
+        &fixture.model_info,
+        &fixture.session_telemetry,
+        fixture.effort,
+        fixture.summary,
         "second turn",
     )
     .await;
@@ -1092,6 +1141,178 @@ async fn copilot_session_id_stable_across_turns() {
         .header("x-request-id")
         .expect("second x-request-id header");
     assert_ne!(first_request_id, second_request_id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copilot_stream_normalizes_body() {
+    skip_if_no_network!();
+
+    let responses_server = MockServer::start().await;
+    let token_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/copilot_internal/v2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token": "copilot-token",
+            "expires_at": 4_102_444_800u64,
+            "refresh_in": 3600u64
+        })))
+        .expect(1)
+        .mount(&token_server)
+        .await;
+    let responses_mock = mount_sse_once(
+        &responses_server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
+    let fixture = copilot_client_fixture(&responses_server, &token_server).await;
+
+    complete_model_client_turn(
+        &fixture.client,
+        &fixture.model_info,
+        &fixture.session_telemetry,
+        fixture.effort,
+        fixture.summary,
+        "normalize this request",
+    )
+    .await;
+
+    let request = responses_mock.single_request();
+    assert_eq!(
+        request.body_json().get("service_tier"),
+        Some(&serde_json::Value::Null)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copilot_401_triggers_retry_and_refresh() {
+    skip_if_no_network!();
+
+    let responses_server = MockServer::start().await;
+    let token_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/copilot_internal/v2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token": "copilot-token",
+            "expires_at": 4_102_444_800u64,
+            "refresh_in": 3600u64
+        })))
+        .expect(2)
+        .mount(&token_server)
+        .await;
+    let responses_mock = mount_response_sequence(
+        &responses_server,
+        vec![
+            ResponseTemplate::new(401).set_body_string("unauthorized"),
+            completed_sse_template("resp1"),
+        ],
+    )
+    .await;
+    let fixture = copilot_client_fixture(&responses_server, &token_server).await;
+
+    complete_model_client_turn(
+        &fixture.client,
+        &fixture.model_info,
+        &fixture.session_telemetry,
+        fixture.effort,
+        fixture.summary,
+        "retry after 401",
+    )
+    .await;
+
+    assert_eq!(responses_mock.requests().len(), 2);
+    let token_requests = token_server.received_requests().await.unwrap_or_default();
+    assert_eq!(token_requests.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copilot_403_triggers_retry_and_refresh() {
+    skip_if_no_network!();
+
+    let responses_server = MockServer::start().await;
+    let token_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/copilot_internal/v2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token": "copilot-token",
+            "expires_at": 4_102_444_800u64,
+            "refresh_in": 3600u64
+        })))
+        .expect(2)
+        .mount(&token_server)
+        .await;
+    let responses_mock = mount_response_sequence(
+        &responses_server,
+        vec![
+            ResponseTemplate::new(403).set_body_string("forbidden"),
+            completed_sse_template("resp1"),
+        ],
+    )
+    .await;
+    let fixture = copilot_client_fixture(&responses_server, &token_server).await;
+
+    complete_model_client_turn(
+        &fixture.client,
+        &fixture.model_info,
+        &fixture.session_telemetry,
+        fixture.effort,
+        fixture.summary,
+        "retry after 403",
+    )
+    .await;
+
+    assert_eq!(responses_mock.requests().len(), 2);
+    let token_requests = token_server.received_requests().await.unwrap_or_default();
+    assert_eq!(token_requests.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copilot_auth_cap_exhausted_returns_fatal() {
+    skip_if_no_network!();
+
+    let responses_server = MockServer::start().await;
+    let token_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/copilot_internal/v2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "token": "copilot-token",
+            "expires_at": 4_102_444_800u64,
+            "refresh_in": 3600u64
+        })))
+        .expect(3)
+        .mount(&token_server)
+        .await;
+    let responses_mock = mount_response_sequence(
+        &responses_server,
+        vec![
+            ResponseTemplate::new(401).set_body_string("unauthorized"),
+            ResponseTemplate::new(401).set_body_string("unauthorized"),
+            ResponseTemplate::new(401).set_body_string("unauthorized"),
+        ],
+    )
+    .await;
+    let fixture = copilot_client_fixture(&responses_server, &token_server).await;
+
+    let err = stream_model_client_turn(
+        &fixture.client,
+        &fixture.model_info,
+        &fixture.session_telemetry,
+        fixture.effort,
+        fixture.summary,
+        "retry cap exhausted",
+    )
+    .await
+    .expect_err("copilot retries should exhaust");
+
+    assert_eq!(responses_mock.requests().len(), 3);
+    let token_requests = token_server.received_requests().await.unwrap_or_default();
+    assert_eq!(token_requests.len(), 3);
+    match err {
+        CodexErr::Fatal(message) => {
+            assert!(message.contains("Copilot auth failed after 2 retries"));
+            assert!(message.contains("HTTP 401"));
+        }
+        other => panic!("expected fatal error, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
