@@ -1680,6 +1680,7 @@ dependencies = [
  "codex-chatgpt",
  "codex-cloud-tasks",
  "codex-config",
+ "codex-copilot",
  "codex-core",
  "codex-exec",
  "codex-exec-server",
@@ -1715,6 +1716,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
