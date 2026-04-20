@@ -525,6 +525,11 @@ impl ModelClient {
         session_config: ApiRealtimeSessionConfig,
         extra_headers: ApiHeaderMap,
     ) -> Result<RealtimeWebrtcCallStart> {
+        if self.is_copilot() {
+            return Err(CodexErr::Fatal(
+                "Realtime is not supported for Copilot in v6".into(),
+            ));
+        }
         // Create the media call over HTTP first, then retain matching auth so realtime can attach
         // the server-side control WebSocket to the call id from that HTTP response.
         let client_setup = self.current_client_setup().await?;
