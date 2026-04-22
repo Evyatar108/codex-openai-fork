@@ -182,7 +182,7 @@ pub fn ensure_running(port: u16) -> anyhow::Result<()> {
         print_log_tail(&log_path, 10);
         anyhow::bail!(
             "codex-copilot-gateway did not start in time. Have you logged in?\n  \
-             Run: codex-copilot-gateway login"
+             If your token is missing or expired, delete `~/.local/share/copilot-api/` and re-run `codex` in an interactive terminal."
         );
     }
 
@@ -193,7 +193,7 @@ pub fn ensure_running(port: u16) -> anyhow::Result<()> {
         anyhow::bail!(
             "codex-copilot-gateway started but is not healthy. Check the log above.\n  \
              Common causes: expired token, network issues.\n  \
-             Re-login: codex-copilot-gateway login"
+             Re-login: delete `~/.local/share/copilot-api/` and re-run `codex` in an interactive terminal."
         );
     }
 

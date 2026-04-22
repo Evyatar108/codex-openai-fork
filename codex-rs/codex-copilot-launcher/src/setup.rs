@@ -30,7 +30,7 @@ pub fn first_run_bootstrap() -> Result<()> {
     if !is_tty {
         if !token_exists {
             eprintln!(
-                "First-time setup requires an interactive terminal.\n  Run manually: codex-copilot-gateway login\n  Then re-run codex."
+                "First-time setup requires an interactive terminal.\n  Run `codex` in an interactive terminal to complete setup, then re-try this command."
             );
             std::process::exit(1);
         }
@@ -237,7 +237,7 @@ fn run_login() -> Result<()> {
         .status()
         .map_err(|e| anyhow::anyhow!("failed to run codex-copilot-gateway login: {e}"))?;
     if !status.success() {
-        bail!("Login failed. Retry with: codex-copilot-gateway login");
+        bail!("Login failed. Retry by re-running `codex` in an interactive terminal.");
     }
     Ok(())
 }
