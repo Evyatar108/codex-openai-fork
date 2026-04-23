@@ -1405,6 +1405,7 @@ dependencies = [
  "bytes",
  "chrono",
  "codex-client",
+ "codex-copilot",
  "codex-protocol",
  "codex-utils-rustls-provider",
  "eventsource-stream",
@@ -1679,6 +1680,7 @@ dependencies = [
  "codex-chatgpt",
  "codex-cloud-tasks",
  "codex-config",
+ "codex-copilot",
  "codex-core",
  "codex-exec",
  "codex-exec-server",
@@ -1714,6 +1716,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
@@ -1897,6 +1900,7 @@ dependencies = [
  "anyhow",
  "codex-client",
  "dirs",
+ "http 1.4.0",
  "pretty_assertions",
  "reqwest",
  "serde",
@@ -1905,31 +1909,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
- "wiremock",
-]
-
-[[package]]
-name = "codex-copilot-gateway"
-version = "0.121.0-copilot-api.6"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "bytes",
- "clap",
- "codex-client",
- "codex-copilot",
- "codex-utils-rustls-provider",
- "eventsource-stream",
- "futures",
- "http 1.4.0",
- "pretty_assertions",
- "reqwest",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-tungstenite",
- "tungstenite",
  "wiremock",
 ]
 
@@ -1964,9 +1943,11 @@ dependencies = [
  "codex-apply-patch",
  "codex-arg0",
  "codex-async-utils",
+ "codex-client",
  "codex-code-mode",
  "codex-config",
  "codex-connectors",
+ "codex-copilot",
  "codex-core-skills",
  "codex-exec-server",
  "codex-execpolicy",
@@ -2375,6 +2356,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-client",
  "codex-config",
+ "codex-copilot",
  "codex-keyring-store",
  "codex-model-provider-info",
  "codex-otel",
@@ -2482,6 +2464,7 @@ dependencies = [
  "serde",
  "tempfile",
  "toml 0.9.11+spec-1.1.0",
+ "url",
 ]
 
 [[package]]

@@ -18,6 +18,7 @@ mod realtime_prompt;
 pub use codex::SteerInputError;
 mod codex_thread;
 mod compact_remote;
+pub mod copilot_transport;
 pub use codex_thread::CodexThread;
 pub use codex_thread::ThreadConfigSnapshot;
 mod agent;
@@ -108,6 +109,7 @@ pub(crate) use skills::resolve_skill_dependencies_for_turn;
 pub(crate) use skills::skills_load_input_from_config;
 mod skills_watcher;
 mod stream_events_utils;
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 mod unified_exec;
 pub mod windows_sandbox;

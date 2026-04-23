@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use codex_copilot::CopilotAuth;
 use codex_exec_server::EnvironmentManager;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -19,6 +20,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use once_cell::sync::Lazy;
 
+use crate::ModelClient;
 use crate::ThreadManager;
 use crate::config::Config;
 use crate::thread_manager;
@@ -47,6 +49,14 @@ pub fn auth_manager_from_auth(auth: CodexAuth) -> Arc<AuthManager> {
 
 pub fn auth_manager_from_auth_with_home(auth: CodexAuth, codex_home: PathBuf) -> Arc<AuthManager> {
     AuthManager::from_auth_for_testing_with_home(auth, codex_home)
+}
+
+pub fn configure_copilot_session_for_tests(
+    client: &ModelClient,
+    auth: Arc<CopilotAuth>,
+    responses_base_url: String,
+) {
+    client.configure_copilot_session_for_tests(auth, responses_base_url);
 }
 
 pub fn thread_manager_with_models_provider(

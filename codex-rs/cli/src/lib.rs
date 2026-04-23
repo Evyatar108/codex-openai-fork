@@ -1,18 +1,29 @@
+mod debug_clear_memories;
 pub(crate) mod debug_sandbox;
 mod exit_status;
+mod features;
 pub(crate) mod login;
+pub mod mcp_cmd;
 
 use clap::Parser;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_cli::CliConfigOverrides;
 
+pub use debug_clear_memories::clear_memories;
 pub use debug_sandbox::run_command_under_landlock;
 pub use debug_sandbox::run_command_under_seatbelt;
 pub use debug_sandbox::run_command_under_windows;
+pub use features::FeatureRow;
+pub use features::build_feature_rows;
+pub use features::disable_feature;
+pub use features::disable_feature_in_codex_home;
+pub use features::enable_feature;
+pub use features::enable_feature_in_codex_home;
 pub use login::read_api_key_from_stdin;
 pub use login::run_login_status;
 pub use login::run_login_with_api_key;
 pub use login::run_login_with_chatgpt;
+pub use login::run_login_with_copilot;
 pub use login::run_login_with_device_code;
 pub use login::run_login_with_device_code_fallback_to_browser;
 pub use login::run_logout;

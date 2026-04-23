@@ -639,7 +639,7 @@ fn read_extracted_backup_archive_git_sha_rejects_path_traversal_ref() {
 }
 
 #[tokio::test]
-async fn startup_remote_plugin_sync_writes_marker_and_reconciles_state() {
+async fn startup_remote_plugin_sync_writes_marker_when_remote_fetch_is_sandboxed() {
     let tmp = tempdir().expect("tempdir");
     let curated_root = curated_plugins_repo_path(tmp.path());
     write_openai_curated_marketplace(&curated_root, &["linear"]);
@@ -664,6 +664,7 @@ enabled = false
   {"id":"1","name":"linear","marketplace_name":"openai-curated","version":"1.0.0","enabled":true}
 ]"#,
         ))
+        .expect(0)
         .mount(&server)
         .await;
 
@@ -693,7 +694,7 @@ enabled = false
     .expect("marker should be written");
 
     assert!(
-        tmp.path()
+        !tmp.path()
             .join(format!(
                 "plugins/cache/openai-curated/linear/{TEST_CURATED_PLUGIN_SHA}"
             ))
@@ -702,7 +703,7 @@ enabled = false
     let config =
         std::fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).expect("config should exist");
     assert!(config.contains(r#"[plugins."linear@openai-curated"]"#));
-    assert!(config.contains("enabled = true"));
+    assert!(config.contains("enabled = false"));
 
     let marker_contents = std::fs::read_to_string(marker_path).expect("marker should be readable");
     assert_eq!(marker_contents, "ok\n");

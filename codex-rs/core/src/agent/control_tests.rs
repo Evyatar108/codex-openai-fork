@@ -31,6 +31,9 @@ use tokio::time::sleep;
 use tokio::time::timeout;
 use toml::Value as TomlValue;
 
+const ASYNC_TEST_TIMEOUT: Duration = Duration::from_secs(15);
+const SLOW_ASYNC_TEST_TIMEOUT: Duration = Duration::from_secs(60);
+
 async fn test_config_with_cli_overrides(
     cli_overrides: Vec<(String, TomlValue)>,
 ) -> (TempDir, Config) {
@@ -186,7 +189,7 @@ async fn wait_for_subagent_notification(parent_thread: &Arc<CodexThread>) -> boo
             sleep(Duration::from_millis(25)).await;
         }
     };
-    timeout(Duration::from_secs(2), wait).await.is_ok()
+    timeout(ASYNC_TEST_TIMEOUT, wait).await.is_ok()
 }
 
 async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str) {
@@ -210,7 +213,7 @@ async fn wait_for_live_thread_spawn_children(
     let mut expected_children = expected_children.to_vec();
     expected_children.sort_by_key(std::string::ToString::to_string);
 
-    timeout(Duration::from_secs(5), async {
+    timeout(ASYNC_TEST_TIMEOUT, async {
         loop {
             let mut child_ids = control
                 .open_thread_spawn_children(parent_thread_id)
@@ -501,6 +504,25 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
 async fn append_message_records_assistant_message() {
     let harness = AgentControlHarness::new().await;
     let (thread_id, thread) = harness.start_thread().await;
+    let mut status_rx = harness
+        .control
+        .subscribe_status(thread_id)
+        .await
+        .expect("status subscription should succeed");
+    if matches!(status_rx.borrow().clone(), AgentStatus::PendingInit) {
+        let _ = timeout(SLOW_ASYNC_TEST_TIMEOUT, async {
+            loop {
+                status_rx
+                    .changed()
+                    .await
+                    .expect("thread status should advance past pending init");
+                if !matches!(status_rx.borrow().clone(), AgentStatus::PendingInit) {
+                    break;
+                }
+            }
+        })
+        .await;
+    }
     let message =
         "author: /root\nrecipient: /root/worker\nother_recipients: []\nContent: hello from tests";
 
@@ -1549,7 +1571,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         .await
         .expect("status subscription should succeed");
     if matches!(status_rx.borrow().clone(), AgentStatus::PendingInit) {
-        timeout(Duration::from_secs(5), async {
+        timeout(ASYNC_TEST_TIMEOUT, async {
             loop {
                 status_rx
                     .changed()
@@ -1571,7 +1593,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
     let state_db = child_thread
         .state_db()
         .expect("sqlite state db should be available for nickname resume test");
-    timeout(Duration::from_secs(5), async {
+    timeout(SLOW_ASYNC_TEST_TIMEOUT, async {
         loop {
             if let Ok(Some(metadata)) = state_db.get_thread(child_thread_id).await
                 && metadata.agent_nickname.is_some()

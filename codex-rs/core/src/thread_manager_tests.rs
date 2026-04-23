@@ -3,6 +3,9 @@ use crate::codex::make_session_and_context;
 use crate::config::test_config;
 use crate::rollout::RolloutRecorder;
 use crate::tasks::interrupted_turn_history_marker;
+use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_copilot_provider;
+use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::models::ContentItem;
@@ -274,9 +277,13 @@ async fn shutdown_all_threads_bounded_submits_shutdown_to_every_thread() {
 }
 
 #[tokio::test]
-async fn new_uses_configured_openai_provider_for_model_refresh() {
-    let server = MockServer::start().await;
-    let models_mock = mount_models_once(&server, ModelsResponse { models: vec![] }).await;
+async fn thread_manager_non_copilot_sessions_still_use_openai_models_provider() {
+    let openai_server = MockServer::start().await;
+    let openai_models_mock =
+        mount_models_once(&openai_server, ModelsResponse { models: vec![] }).await;
+    let other_provider_server = MockServer::start().await;
+    let other_provider_models_mock =
+        mount_models_once(&other_provider_server, ModelsResponse { models: vec![] }).await;
 
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config();
@@ -284,11 +291,16 @@ async fn new_uses_configured_openai_provider_for_model_refresh() {
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
     config.model_catalog = None;
+    config.model_provider = create_oss_provider_with_base_url(
+        "test-non-copilot",
+        &other_provider_server.uri(),
+        WireApi::Responses,
+    );
     config
         .model_providers
         .get_mut("openai")
         .expect("openai provider should exist")
-        .base_url = Some(server.uri());
+        .base_url = Some(openai_server.uri());
 
     let auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
@@ -304,7 +316,49 @@ async fn new_uses_configured_openai_provider_for_model_refresh() {
     );
 
     let _ = manager.list_models(RefreshStrategy::Online).await;
-    assert_eq!(models_mock.requests().len(), 1);
+    assert_eq!(openai_models_mock.requests().len(), 1);
+    assert_eq!(other_provider_models_mock.requests().len(), 0);
+}
+
+#[tokio::test]
+async fn thread_manager_passes_copilot_provider_to_models_manager() {
+    let openai_server = MockServer::start().await;
+    let openai_models_mock =
+        mount_models_once(&openai_server, ModelsResponse { models: vec![] }).await;
+
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config();
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    config.model_catalog = None;
+    config.model_provider = create_copilot_provider();
+    config
+        .model_providers
+        .get_mut("openai")
+        .expect("openai provider should exist")
+        .base_url = Some(openai_server.uri());
+
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let manager = ThreadManager::new(
+        &config,
+        auth_manager,
+        SessionSource::Exec,
+        CollaborationModesConfig::default(),
+        Arc::new(codex_exec_server::EnvironmentManager::new(
+            /*exec_server_url*/ None,
+        )),
+        /*analytics_events_client*/ None,
+    );
+
+    let default_model = manager
+        .get_models_manager()
+        .get_default_model(&None, RefreshStrategy::Online)
+        .await;
+
+    assert_eq!(default_model, "gpt-5.4");
+    assert_eq!(openai_models_mock.requests().len(), 0);
 }
 
 #[test]

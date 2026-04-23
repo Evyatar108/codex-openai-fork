@@ -1,6 +1,5 @@
 mod config;
 mod discovery;
-mod gateway;
 mod setup;
 
 use std::process::Command;
@@ -12,36 +11,36 @@ fn main() {
     }
 }
 
+fn is_passthrough(args: &[String]) -> bool {
+    matches!(
+        args.first().map(String::as_str),
+        Some("login" | "completion" | "debug" | "features" | "mcp" | "marketplace")
+    ) || args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--version" | "-V" | "--help" | "-h"))
+}
+
 fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // Passthrough commands: skip copilot-api startup, exec codex-core immediately
-    let is_passthrough = args.iter().any(|a| {
-        matches!(
-            a.as_str(),
-            "--version" | "-V" | "--help" | "-h" | "completion"
-        )
-    });
-
     let codex_core = discovery::find_codex_core()?;
 
-    if is_passthrough {
-        return exec_codex_core(&codex_core, &args, None);
+    // Passthrough commands skip bootstrap and exec codex-core immediately.
+    if is_passthrough(&args) {
+        return exec_codex_core(&codex_core, &args);
     }
 
-    // Normal launch: first-run bootstrap, config, copilot-api, then codex-core
+    // Normal launch: first-run bootstrap, config, then codex-core.
     setup::first_run_bootstrap()?;
 
     let cfg = config::load_config();
-    gateway::ensure_running(cfg.copilot_api_port)?;
 
     // Build final args: user args first, then provider -c flags last.
     // Provider flags MUST come last so they always win — later -c values
-    // override earlier ones for the same key, ensuring the sandbox endpoint
-    // can never be overridden by user-supplied flags (which would leak data
-    // to the official OpenAI API).
+    // override earlier ones for the same key, ensuring the built-in Copilot
+    // provider selection and sandbox defaults win over user-supplied flags.
     let provider_flags =
-        config::provider_config_flags(cfg.copilot_api_port, &cfg.default_model, cfg.default_shell.as_deref());
+        config::provider_config_flags(&cfg.default_model, cfg.default_shell.as_deref());
     let mut final_args: Vec<String> = args;
     for flag in &provider_flags {
         final_args.push("-c".to_string());
@@ -65,14 +64,10 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    exec_codex_core(&codex_core, &final_args, Some(cfg.copilot_api_port))
+    exec_codex_core(&codex_core, &final_args)
 }
 
-fn exec_codex_core(
-    codex_core: &std::path::Path,
-    args: &[String],
-    copilot_api_port: Option<u16>,
-) -> anyhow::Result<()> {
+fn exec_codex_core(codex_core: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -91,13 +86,61 @@ fn exec_codex_core(
             .status()
             .map_err(|e| anyhow::anyhow!("failed to run codex-core: {e}"))?;
 
-        let code = status.code().unwrap_or(1);
-        // On non-zero exit, check if copilot-api is still healthy
-        if code != 0 {
-            if let Some(port) = copilot_api_port {
-                gateway::check_health_or_print_log(port);
-            }
-        }
-        std::process::exit(code);
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_passthrough;
+
+    #[test]
+    fn login_is_passthrough_arg() {
+        let args = vec![
+            "login".to_string(),
+            "--provider".to_string(),
+            "copilot".to_string(),
+        ];
+
+        assert!(is_passthrough(&args));
+    }
+
+    #[test]
+    fn exec_is_not_passthrough() {
+        let args = vec!["exec".to_string(), "say hi".to_string()];
+
+        assert!(!is_passthrough(&args));
+    }
+
+    #[test]
+    fn debug_is_passthrough_arg() {
+        let args = vec!["debug".to_string(), "clear-memories".to_string()];
+
+        assert!(is_passthrough(&args));
+    }
+
+    #[test]
+    fn features_is_passthrough_arg() {
+        let args = vec!["features".to_string(), "list".to_string()];
+
+        assert!(is_passthrough(&args));
+    }
+
+    #[test]
+    fn mcp_is_passthrough_arg() {
+        let args = vec!["mcp".to_string(), "list".to_string()];
+
+        assert!(is_passthrough(&args));
+    }
+
+    #[test]
+    fn marketplace_is_passthrough_arg() {
+        let args = vec![
+            "marketplace".to_string(),
+            "add".to_string(),
+            "/tmp/source".to_string(),
+        ];
+
+        assert!(is_passthrough(&args));
     }
 }

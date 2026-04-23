@@ -3,11 +3,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use anyhow::anyhow;
-use reqwest::header::ACCEPT;
-use reqwest::header::AUTHORIZATION;
-use reqwest::header::CONTENT_TYPE;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderValue;
+use http::HeaderMap;
+use http::HeaderValue;
+use http::header::ACCEPT;
+use http::header::AUTHORIZATION;
+use http::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
@@ -23,12 +23,12 @@ const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 const COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const GITHUB_APP_SCOPES: &str = "read:user";
-const API_VERSION: &str = "2025-10-01";
-const USER_AGENT: &str = "GitHubCopilotChat/0.38.2";
-const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.38.2";
-const VSCODE_VERSION: &str = "1.110.1";
+pub const API_VERSION: &str = "2025-10-01";
+pub const USER_AGENT: &str = "GitHubCopilotChat/0.38.2";
+pub const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.38.2";
+pub const VSCODE_VERSION: &str = "1.110.1";
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CopilotAuth {
     client: reqwest::Client,
     paths: AppPaths,
@@ -176,9 +176,9 @@ impl CopilotAuth {
             return Ok(cached.token);
         }
 
-        let github_token = self
-            .read_github_token()?
-            .ok_or_else(|| anyhow!("GitHub token not found. Run: codex-copilot-gateway login"))?;
+        let github_token = self.read_github_token()?.ok_or_else(|| {
+            anyhow!("GitHub token not found. Run: codex login --provider copilot")
+        })?;
 
         let response = self
             .client
@@ -220,40 +220,15 @@ impl CopilotAuth {
         force_token_refresh: bool,
     ) -> anyhow::Result<HeaderMap> {
         let copilot_token = self.copilot_token(force_token_refresh).await?;
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {copilot_token}"))?,
+        let mut headers = build_session_headers(
+            &copilot_token,
+            &self.machine_id,
+            &self.session_id,
+            &self.device_id,
         );
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-        headers.insert(
-            "copilot-integration-id",
-            HeaderValue::from_static("vscode-chat"),
-        );
-        headers.insert(
-            "editor-version",
-            HeaderValue::from_str(&format!("vscode/{VSCODE_VERSION}"))?,
-        );
-        headers.insert(
-            "editor-plugin-version",
-            HeaderValue::from_static(EDITOR_PLUGIN_VERSION),
-        );
-        headers.insert("user-agent", HeaderValue::from_static(USER_AGENT));
-        headers.insert(
-            "openai-intent",
-            HeaderValue::from_static("conversation-agent"),
-        );
-        headers.insert(
-            "x-github-api-version",
-            HeaderValue::from_static(API_VERSION),
-        );
-        headers.insert(
-            "x-vscode-user-agent-library-version",
-            HeaderValue::from_static("electron-fetch"),
-        );
-        headers.insert("x-request-id", HeaderValue::from_str(request_id)?);
-        headers.insert("x-agent-task-id", HeaderValue::from_str(request_id)?);
+        let request_id = HeaderValue::from_str(request_id)?;
+        headers.insert("x-request-id", request_id.clone());
+        headers.insert("x-agent-task-id", request_id);
         headers.insert("x-initiator", HeaderValue::from_static(initiator.as_str()));
         headers.insert(
             "x-interaction-type",
@@ -261,12 +236,6 @@ impl CopilotAuth {
                 Initiator::Agent => "conversation-agent",
                 Initiator::User => "conversation-user",
             }),
-        );
-        headers.insert("vscode-machineid", HeaderValue::from_str(&self.machine_id)?);
-        headers.insert("vscode-sessionid", HeaderValue::from_str(&self.session_id)?);
-        headers.insert(
-            "x-codex-copilot-device-id",
-            HeaderValue::from_str(&self.device_id)?,
         );
         if let Some(interaction_id) = interaction_id {
             headers.insert("x-interaction-id", HeaderValue::from_str(interaction_id)?);
@@ -276,6 +245,23 @@ impl CopilotAuth {
         }
 
         Ok(headers)
+    }
+
+    pub(crate) fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
+    pub(crate) fn machine_id(&self) -> &str {
+        &self.machine_id
+    }
+
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn copilot_token_path(&self) -> &std::path::Path {
+        &self.paths.copilot_token_path
     }
 
     pub fn copilot_base_url(&self) -> &str {
@@ -531,6 +517,51 @@ fn standard_headers() -> anyhow::Result<HeaderMap> {
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     Ok(headers)
+}
+
+pub(crate) fn build_session_headers(
+    token: &str,
+    vscode_machineid: &str,
+    vscode_sessionid: &str,
+    device_id: &str,
+) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, header_value(&format!("Bearer {token}")));
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    headers.insert(
+        "copilot-integration-id",
+        HeaderValue::from_static("vscode-chat"),
+    );
+    headers.insert(
+        "editor-version",
+        header_value(&format!("vscode/{VSCODE_VERSION}")),
+    );
+    headers.insert(
+        "editor-plugin-version",
+        HeaderValue::from_static(EDITOR_PLUGIN_VERSION),
+    );
+    headers.insert("user-agent", HeaderValue::from_static(USER_AGENT));
+    headers.insert(
+        "openai-intent",
+        HeaderValue::from_static("conversation-agent"),
+    );
+    headers.insert(
+        "x-github-api-version",
+        HeaderValue::from_static(API_VERSION),
+    );
+    headers.insert(
+        "x-vscode-user-agent-library-version",
+        HeaderValue::from_static("electron-fetch"),
+    );
+    headers.insert("vscode-machineid", header_value(vscode_machineid));
+    headers.insert("vscode-sessionid", header_value(vscode_sessionid));
+    headers.insert("x-codex-copilot-device-id", header_value(device_id));
+    headers
+}
+
+fn header_value(value: &str) -> HeaderValue {
+    HeaderValue::from_str(value).expect("copilot auth metadata must be a valid header value")
 }
 
 fn now_epoch_seconds() -> u64 {

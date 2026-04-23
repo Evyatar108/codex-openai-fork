@@ -15,7 +15,7 @@ anyhow = { workspace = true }
 assert_cmd = { workspace = true }
 base64 = { workspace = true }
 codex-arg0 = { workspace = true }
-codex-core = { workspace = true }
+codex-core = { workspace = true, features = ["test-support"] }
 codex-exec-server = { workspace = true }
 codex-features = { workspace = true }
 codex-login = { workspace = true }

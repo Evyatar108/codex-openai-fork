@@ -59,6 +59,7 @@ use codex_api::build_conversation_headers;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
 use codex_app_server_protocol::AuthMode;
+use codex_copilot::CopilotAuth;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
@@ -99,6 +100,7 @@ use tracing::warn;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
+use crate::copilot_transport;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_api::CoreAuthProvider;
@@ -148,6 +150,12 @@ struct ModelClientState {
     window_generation: AtomicU64,
     installation_id: String,
     provider: ModelProviderInfo,
+    copilot_auth: OnceLock<Arc<CopilotAuth>>,
+    copilot_auth_init_lock: StdMutex<()>,
+    // Integration tests seed this so Copilot requests can stay on wiremock without weakening the
+    // production F-170 trusted-base-url guard.
+    #[cfg(any(test, feature = "test-support"))]
+    copilot_api_base_url_override_for_tests: OnceLock<String>,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
     model_verbosity: Option<VerbosityConfig>,
@@ -166,6 +174,26 @@ struct CurrentClientSetup {
     auth: Option<CodexAuth>,
     api_provider: codex_api::Provider,
     api_auth: CoreAuthProvider,
+}
+
+impl ModelClientState {
+    fn get_or_init_copilot_auth(&self) -> anyhow::Result<Arc<CopilotAuth>> {
+        if let Some(auth) = self.copilot_auth.get() {
+            return Ok(auth.clone());
+        }
+
+        let _lock = self
+            .copilot_auth_init_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(auth) = self.copilot_auth.get() {
+            return Ok(auth.clone());
+        }
+
+        let auth = Arc::new(CopilotAuth::new()?);
+        let _ = self.copilot_auth.set(auth.clone());
+        Ok(auth)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -310,6 +338,10 @@ impl ModelClient {
                 window_generation: AtomicU64::new(0),
                 installation_id,
                 provider,
+                copilot_auth: OnceLock::new(),
+                copilot_auth_init_lock: StdMutex::new(()),
+                #[cfg(any(test, feature = "test-support"))]
+                copilot_api_base_url_override_for_tests: OnceLock::new(),
                 auth_env_telemetry,
                 session_source,
                 model_verbosity,
@@ -348,6 +380,28 @@ impl ModelClient {
     pub(crate) fn advance_window_generation(&self) {
         self.state.window_generation.fetch_add(1, Ordering::Relaxed);
         self.store_cached_websocket_session(WebsocketSession::default());
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn configure_copilot_session_for_tests(
+        &self,
+        auth: Arc<CopilotAuth>,
+        responses_base_url: String,
+    ) {
+        self.state
+            .copilot_auth
+            .set(auth)
+            .unwrap_or_else(|_| panic!("copilot auth should only be configured once in tests"));
+        self.state
+            .copilot_api_base_url_override_for_tests
+            .set(responses_base_url)
+            .unwrap_or_else(|_| {
+                panic!("copilot responses base URL should only be configured once in tests")
+            });
+    }
+
+    pub fn is_copilot(&self) -> bool {
+        self.state.provider.is_copilot()
     }
 
     fn current_window_id(&self) -> String {
@@ -474,6 +528,11 @@ impl ModelClient {
         session_config: ApiRealtimeSessionConfig,
         extra_headers: ApiHeaderMap,
     ) -> Result<RealtimeWebrtcCallStart> {
+        if self.is_copilot() {
+            return Err(CodexErr::Fatal(
+                "Realtime is not supported for Copilot in v6".into(),
+            ));
+        }
         // Create the media call over HTTP first, then retain matching auth so realtime can attach
         // the server-side control WebSocket to the call id from that HTTP response.
         let client_setup = self.current_client_setup().await?;
@@ -655,11 +714,27 @@ impl ModelClient {
             Some(manager) => manager.auth().await,
             None => None,
         };
-        let api_provider = self
+        let mut api_provider = self
             .state
             .provider
             .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.state.provider)?;
+        #[cfg(any(test, feature = "test-support"))]
+        if self.is_copilot()
+            && let Some(base_url) = self.state.copilot_api_base_url_override_for_tests.get()
+        {
+            api_provider.base_url = base_url.clone();
+        }
+        let copilot_auth = if self.state.provider.is_copilot_trusted() {
+            Some(
+                self.state
+                    .get_or_init_copilot_auth()
+                    .map_err(|err| CodexErr::Fatal(err.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let api_auth =
+            auth_provider_from_auth(auth.clone(), &self.state.provider, copilot_auth).await?;
         Ok(CurrentClientSetup {
             auth,
             api_provider,
@@ -1157,6 +1232,8 @@ impl ModelClientSession {
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
+        let is_copilot = self.client.state.provider.is_copilot();
+        let mut copilot_auth_retries = 0u32;
         loop {
             let client_setup = self.client.current_client_setup().await?;
             let transport = ReqwestTransport::new(build_reqwest_client());
@@ -1182,11 +1259,16 @@ impl ModelClientSession {
                 summary,
                 service_tier,
             )?;
-            let client = ApiResponsesClient::new(
-                transport,
-                client_setup.api_provider,
-                client_setup.api_auth,
-            )
+            let auth_notifier = client_setup.api_auth.clone();
+            let client = if is_copilot {
+                copilot_transport::build_copilot_client(
+                    client_setup.api_provider,
+                    client_setup.api_auth,
+                    transport,
+                )
+            } else {
+                ApiResponsesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
+            }
             .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
             let stream_result = client.stream_request(request, options).await;
 
@@ -1194,6 +1276,21 @@ impl ModelClientSession {
                 Ok(stream) => {
                     let (stream, _) = map_response_stream(stream, session_telemetry.clone());
                     return Ok(stream);
+                }
+                Err(ApiError::Transport(TransportError::Http { status, .. }))
+                    if is_copilot
+                        && (status == StatusCode::UNAUTHORIZED
+                            || status == StatusCode::FORBIDDEN) =>
+                {
+                    if copilot_auth_retries >= 2 {
+                        return Err(CodexErr::Fatal(format!(
+                            "Copilot auth failed after {} retries: HTTP {status}",
+                            copilot_auth_retries
+                        )));
+                    }
+                    auth_notifier.on_unauthorized();
+                    copilot_auth_retries += 1;
+                    continue;
                 }
                 Err(ApiError::Transport(
                     unauthorized_transport @ TransportError::Http { status, .. },

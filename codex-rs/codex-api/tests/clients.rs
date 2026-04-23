@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -25,6 +27,7 @@ use http::HeaderMap;
 use http::HeaderValue;
 use http::StatusCode;
 use pretty_assertions::assert_eq;
+use serde_json::Value;
 
 fn assert_path_ends_with(requests: &[Request], suffix: &str) {
     assert_eq!(requests.len(), 1);
@@ -370,6 +373,145 @@ async fn azure_default_store_attaches_ids_and_headers() -> Result<()> {
         .and_then(|item| item.get("id"))
         .and_then(|id| id.as_str());
     assert_eq!(input_id, Some("msg_1"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn pre_send_hook_fires_exactly_once_per_call() -> Result<()> {
+    let state = RecordingState::default();
+    let transport = RecordingTransport::new(state.clone());
+    let hook_calls = Arc::new(AtomicUsize::new(0));
+    let hook_counter = hook_calls.clone();
+    let client = ResponsesClient::new(transport, provider("openai"), NoAuth).with_pre_send_hook(
+        Arc::new(move |_, headers| {
+            hook_counter.fetch_add(1, Ordering::SeqCst);
+            headers.insert("x-pre-send-count", HeaderValue::from_static("1"));
+        }),
+    );
+
+    for _ in 0..2 {
+        let _stream = client
+            .stream(
+                serde_json::json!({ "model": "gpt-test" }),
+                HeaderMap::new(),
+                Compression::None,
+                None,
+            )
+            .await?;
+    }
+
+    assert_eq!(hook_calls.load(Ordering::SeqCst), 2);
+
+    let requests = state.take_stream_requests();
+    assert_eq!(requests.len(), 2);
+    for req in requests {
+        assert_eq!(
+            req.headers
+                .get("x-pre-send-count")
+                .and_then(|value| value.to_str().ok()),
+            Some("1")
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn pre_send_hook_mutates_body_and_headers() -> Result<()> {
+    let state = RecordingState::default();
+    let transport = RecordingTransport::new(state.clone());
+    let client = ResponsesClient::new(transport, provider("openai"), NoAuth).with_pre_send_hook(
+        Arc::new(|body, headers| {
+            body["service_tier"] = Value::Null;
+            body["metadata"] = serde_json::json!({ "source": "pre-send-hook" });
+            headers.insert("x-pre-send-hook", HeaderValue::from_static("applied"));
+        }),
+    );
+
+    let _stream = client
+        .stream(
+            serde_json::json!({
+                "model": "gpt-test",
+                "service_tier": "auto",
+            }),
+            HeaderMap::new(),
+            Compression::None,
+            None,
+        )
+        .await?;
+
+    let requests = state.take_stream_requests();
+    assert_eq!(requests.len(), 1);
+    let req = &requests[0];
+
+    assert_eq!(
+        req.headers
+            .get("x-pre-send-hook")
+            .and_then(|value| value.to_str().ok()),
+        Some("applied")
+    );
+    assert_eq!(
+        req.body
+            .as_ref()
+            .and_then(RequestBody::json)
+            .and_then(|body| body.get("service_tier")),
+        Some(&Value::Null)
+    );
+    assert_eq!(
+        req.body
+            .as_ref()
+            .and_then(RequestBody::json)
+            .and_then(|body| body.get("metadata"))
+            .and_then(|value| value.get("source"))
+            .and_then(Value::as_str),
+        Some("pre-send-hook")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn with_telemetry_preserves_pre_send_hook() -> Result<()> {
+    let state = RecordingState::default();
+    let transport = RecordingTransport::new(state.clone());
+    let hook_calls = Arc::new(AtomicUsize::new(0));
+    let hook_counter = hook_calls.clone();
+    let client = ResponsesClient::new(transport, provider("openai"), NoAuth)
+        .with_pre_send_hook(Arc::new(move |body, headers| {
+            hook_counter.fetch_add(1, Ordering::SeqCst);
+            body["telemetry_preserved"] = Value::Bool(true);
+            headers.insert("x-pre-send-hook", HeaderValue::from_static("preserved"));
+        }))
+        .with_telemetry(None, None);
+
+    let _stream = client
+        .stream(
+            serde_json::json!({ "model": "gpt-test" }),
+            HeaderMap::new(),
+            Compression::None,
+            None,
+        )
+        .await?;
+
+    assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
+
+    let requests = state.take_stream_requests();
+    assert_eq!(requests.len(), 1);
+    let req = &requests[0];
+    assert_eq!(
+        req.headers
+            .get("x-pre-send-hook")
+            .and_then(|value| value.to_str().ok()),
+        Some("preserved")
+    );
+    assert_eq!(
+        req.body
+            .as_ref()
+            .and_then(RequestBody::json)
+            .and_then(|body| body.get("telemetry_preserved")),
+        Some(&Value::Bool(true))
+    );
 
     Ok(())
 }

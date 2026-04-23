@@ -81,6 +81,11 @@ async fn run_remote_compact_task_inner(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
+    if turn_context.provider.is_copilot() {
+        // TODO(copilot-v7): translate /compact schema.
+        return Ok(());
+    }
+
     let attempt = CompactionAnalyticsAttempt::begin(
         sess.as_ref(),
         turn_context.as_ref(),
@@ -341,4 +346,85 @@ fn trim_function_call_history_to_fit_context_window(
     }
 
     deleted_items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::ModelClient;
+    use codex_model_provider_info::WireApi;
+    use codex_model_provider_info::create_copilot_provider;
+    use codex_model_provider_info::create_oss_provider_with_base_url;
+    use codex_protocol::models::ContentItem;
+    use codex_protocol::protocol::SessionSource;
+    use pretty_assertions::assert_eq;
+    use std::sync::Arc;
+    use wiremock::MockServer;
+
+    #[tokio::test]
+    async fn compaction_skipped_for_copilot() {
+        let server = MockServer::start().await;
+        let (mut session, mut turn_context) = crate::codex::make_session_and_context().await;
+        session.services.model_client = ModelClient::new(
+            Some(session.services.auth_manager.clone()),
+            session.conversation_id,
+            /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+            create_oss_provider_with_base_url(
+                "test",
+                &format!("{}/v1", server.uri()),
+                WireApi::Responses,
+            ),
+            SessionSource::Exec,
+            /*model_verbosity*/ None,
+            /*enable_request_compression*/ false,
+            /*include_timing_metrics*/ false,
+            /*beta_features_header*/ None,
+        );
+        turn_context.provider = create_copilot_provider();
+
+        let seeded_history = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "before compact".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "assistant reply".to_string(),
+                }],
+                end_turn: None,
+                phase: None,
+            },
+        ];
+        session
+            .record_into_history(&seeded_history, &turn_context)
+            .await;
+        let history_before = session.clone_history().await.raw_items().to_vec();
+
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        run_remote_compact_task_inner(
+            &session,
+            &turn_context,
+            InitialContextInjection::DoNotInject,
+            CompactionTrigger::Manual,
+            CompactionReason::UserRequested,
+            CompactionPhase::StandaloneTurn,
+        )
+        .await
+        .expect("copilot compaction should be skipped");
+
+        let history_after = session.clone_history().await.raw_items().to_vec();
+        assert_eq!(history_after, history_before);
+        assert_eq!(
+            server.received_requests().await.unwrap_or_default().len(),
+            0
+        );
+    }
 }

@@ -1,3 +1,6 @@
+use std::ffi::OsString;
+use std::sync::Mutex;
+
 use super::AuthRequestTelemetryContext;
 use super::ModelClient;
 use super::PendingUnauthorizedRetry;
@@ -10,6 +13,7 @@ use super::X_OPENAI_SUBAGENT_HEADER;
 use codex_api::CoreAuthProvider;
 use codex_app_server_protocol::AuthMode;
 use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_copilot_provider;
 use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
@@ -18,9 +22,13 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use tempfile::tempdir;
+
+static COPILOT_API_HOME_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 fn test_model_client(session_source: SessionSource) -> ModelClient {
-    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    let provider =
+        create_oss_provider_with_base_url("", "https://example.com/v1", WireApi::Responses);
     ModelClient::new(
         /*auth_manager*/ None,
         ThreadId::new(),
@@ -32,6 +40,32 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
     )
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+        let original = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 }
 
 fn test_model_info() -> ModelInfo {
@@ -155,7 +189,10 @@ async fn summarize_memories_returns_empty_for_empty_input() {
 fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
     let auth_context = AuthRequestTelemetryContext::new(
         Some(AuthMode::Chatgpt),
-        &CoreAuthProvider::for_test(Some("access-token"), Some("workspace-123")),
+        &CoreAuthProvider::new_legacy(
+            Some("access-token".to_string()),
+            Some("workspace-123".to_string()),
+        ),
         PendingUnauthorizedRetry::from_recovery(UnauthorizedRecoveryExecution {
             mode: "managed",
             phase: "refresh_token",
@@ -168,4 +205,36 @@ fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
     assert!(auth_context.retry_after_unauthorized);
     assert_eq!(auth_context.recovery_mode, Some("managed"));
     assert_eq!(auth_context.recovery_phase, Some("refresh_token"));
+}
+
+#[test]
+fn get_or_init_copilot_auth_reuses_session_auth() {
+    let _env_lock = COPILOT_API_HOME_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let temp = tempdir().expect("temp dir");
+    let _copilot_api_home = EnvVarGuard::set("COPILOT_API_HOME", temp.path().as_os_str());
+
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        ThreadId::new(),
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        create_copilot_provider(),
+        SessionSource::Cli,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+    );
+
+    let first = client
+        .state
+        .get_or_init_copilot_auth()
+        .expect("first copilot auth init");
+    let second = client
+        .state
+        .get_or_init_copilot_auth()
+        .expect("second copilot auth init");
+
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
 }

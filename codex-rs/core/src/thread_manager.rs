@@ -233,6 +233,11 @@ impl ThreadManager {
             .get(OPENAI_PROVIDER_ID)
             .cloned()
             .unwrap_or_else(|| ModelProviderInfo::create_openai_provider(/*base_url*/ None));
+        let models_provider = if config.model_provider.is_copilot() {
+            config.model_provider.clone()
+        } else {
+            openai_models_provider
+        };
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
         let plugins_manager = Arc::new(PluginsManager::new_with_restriction_product(
             codex_home.to_path_buf(),
@@ -254,7 +259,7 @@ impl ThreadManager {
                     auth_manager.clone(),
                     config.model_catalog.clone(),
                     collaboration_modes_config,
-                    openai_models_provider,
+                    models_provider,
                 )),
                 environment_manager,
                 skills_manager,

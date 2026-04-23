@@ -21,6 +21,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
+use url::Url;
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
@@ -33,6 +34,8 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
+pub const COPILOT_PROVIDER_ID: &str = "copilot";
+pub const COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
@@ -73,6 +76,12 @@ impl<'de> Deserialize<'de> for WireApi {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ModelProviderInfo {
+    /// DECISION(F-120): id embedded on ModelProviderInfo despite churn cost -
+    /// name-based dispatch allows user-defined provider spoofing of Copilot
+    /// auth-header injection.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub id: String,
     /// Friendly display name.
     pub name: String,
     /// Base URL for the provider's OpenAI-compatible API.
@@ -262,6 +271,7 @@ impl ModelProviderInfo {
 
     pub fn create_openai_provider(base_url: Option<String>) -> ModelProviderInfo {
         ModelProviderInfo {
+            id: OPENAI_PROVIDER_ID.into(),
             name: OPENAI_PROVIDER_NAME.into(),
             base_url,
             env_key: None,
@@ -300,6 +310,26 @@ impl ModelProviderInfo {
         self.name == OPENAI_PROVIDER_NAME
     }
 
+    /// Returns true only for the provider registered under the reserved
+    /// COPILOT_PROVIDER_ID. ID-based (not name-based) to prevent a
+    /// user-defined provider with the same display name from spoofing Copilot
+    /// auth-header injection.
+    pub fn is_copilot(&self) -> bool {
+        self.id.eq_ignore_ascii_case(COPILOT_PROVIDER_ID)
+    }
+
+    pub fn is_copilot_trusted(&self) -> bool {
+        if !self.is_copilot() {
+            return false;
+        }
+
+        self.base_url
+            .as_deref()
+            .and_then(|value| Url::parse(value).ok())
+            .map(|url| url.scheme() == "https" && url.host_str() == Some("api.githubcopilot.com"))
+            .unwrap_or(false)
+    }
+
     pub fn has_command_auth(&self) -> bool {
         self.auth.is_some()
     }
@@ -324,13 +354,22 @@ pub fn built_in_model_providers(
     // `model_providers` in config.toml to add their own providers.
     [
         (OPENAI_PROVIDER_ID, openai_provider),
+        (COPILOT_PROVIDER_ID, create_copilot_provider()),
         (
             OLLAMA_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
+            create_oss_provider(
+                OLLAMA_OSS_PROVIDER_ID,
+                DEFAULT_OLLAMA_PORT,
+                WireApi::Responses,
+            ),
         ),
         (
             LMSTUDIO_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses),
+            create_oss_provider(
+                LMSTUDIO_OSS_PROVIDER_ID,
+                DEFAULT_LMSTUDIO_PORT,
+                WireApi::Responses,
+            ),
         ),
     ]
     .into_iter()
@@ -338,7 +377,33 @@ pub fn built_in_model_providers(
     .collect()
 }
 
-pub fn create_oss_provider(default_provider_port: u16, wire_api: WireApi) -> ModelProviderInfo {
+pub fn create_copilot_provider() -> ModelProviderInfo {
+    ModelProviderInfo {
+        id: COPILOT_PROVIDER_ID.into(),
+        name: "Copilot".into(),
+        base_url: Some(COPILOT_BASE_URL.into()),
+        env_key: None,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    }
+}
+
+pub fn create_oss_provider(
+    id: &str,
+    default_provider_port: u16,
+    wire_api: WireApi,
+) -> ModelProviderInfo {
     // These CODEX_OSS_ environment variables are experimental: we may
     // switch to reading values from config.toml instead.
     let default_codex_oss_base_url = format!(
@@ -354,11 +419,16 @@ pub fn create_oss_provider(default_provider_port: u16, wire_api: WireApi) -> Mod
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or(default_codex_oss_base_url);
-    create_oss_provider_with_base_url(&codex_oss_base_url, wire_api)
+    create_oss_provider_with_base_url(id, &codex_oss_base_url, wire_api)
 }
 
-pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> ModelProviderInfo {
+pub fn create_oss_provider_with_base_url(
+    id: &str,
+    base_url: &str,
+    wire_api: WireApi,
+) -> ModelProviderInfo {
     ModelProviderInfo {
+        id: id.into(),
         name: "gpt-oss".into(),
         base_url: Some(base_url.into()),
         env_key: None,
