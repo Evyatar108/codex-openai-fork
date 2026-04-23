@@ -11,6 +11,7 @@ use codex_protocol::error::RetryLimitReachedError;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::error::UsageLimitReachedError;
 use http::HeaderMap;
+use http::HeaderValue;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;

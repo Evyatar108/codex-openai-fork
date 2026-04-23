@@ -1,5 +1,4 @@
 pub mod agent_identity;
-pub mod api_bridge;
 pub mod auth;
 pub mod auth_env_telemetry;
 pub mod token_data;

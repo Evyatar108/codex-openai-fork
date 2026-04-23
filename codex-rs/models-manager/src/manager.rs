@@ -661,6 +661,7 @@ fn copilot_synthetic_model_info(slug: &str) -> ModelInfo {
         supports_parallel_tool_calls: builtin.supports_parallel_tool_calls,
         supports_image_detail_original: builtin.supports_image_detail_original,
         context_window: builtin.context_window,
+        max_context_window: builtin.max_context_window,
         auto_compact_token_limit: builtin.auto_compact_token_limit,
         effective_context_window_percent: builtin.effective_context_window_percent,
         experimental_supported_tools: builtin.experimental_supported_tools,

@@ -220,6 +220,8 @@ use codex_app_server_protocol::WindowsSandboxSetupStartResponse;
 use codex_app_server_protocol::build_turns_from_rollout_items;
 use codex_arg0::Arg0DispatchPaths;
 use codex_backend_client::AddCreditsNudgeCreditType as BackendAddCreditsNudgeCreditType;
+// SANDBOX PATCH: BackendClient unused since send_add_credits_nudge_email_inner is early-returned.
+#[allow(unused_imports)]
 use codex_backend_client::Client as BackendClient;
 use codex_chatgpt::connectors;
 use codex_config::types::McpServerTransportConfig;

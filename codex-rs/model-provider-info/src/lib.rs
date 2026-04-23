@@ -356,6 +356,7 @@ impl ModelProviderInfo {
         aws: Option<ModelProviderAwsAuthInfo>,
     ) -> ModelProviderInfo {
         ModelProviderInfo {
+            id: AMAZON_BEDROCK_PROVIDER_ID.into(),
             name: AMAZON_BEDROCK_PROVIDER_NAME.into(),
             base_url: Some(AMAZON_BEDROCK_DEFAULT_BASE_URL.into()),
             env_key: None,
@@ -466,6 +467,7 @@ pub fn create_copilot_provider() -> ModelProviderInfo {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
