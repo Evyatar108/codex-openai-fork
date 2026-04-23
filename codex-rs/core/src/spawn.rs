@@ -122,5 +122,70 @@ pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io
         }
     }
 
-    cmd.kill_on_drop(true).spawn()
+    // On Windows, confine the child + its descendants in a Job Object so we
+    // can reliably terminate the whole tree when the immediate child exits.
+    // Without this, grandchildren (cargo/rustc/link.exe spawned by a shell)
+    // outlive the child, keep the inherited stdout/stderr pipe handles open,
+    // and leave `tokio::io::blocking` readers parked on `ReadFile` forever —
+    // which in turn hangs `BlockingPool::Drop` during runtime shutdown.
+    // This complements (not duplicates) the Unix `prctl(PR_SET_PDEATHSIG)`
+    // mechanism above: prctl kills the immediate child when codex-core dies,
+    // JobObject kills grandchildren when the immediate child dies.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_SUSPENDED so grandchildren cannot spawn before we assign
+        // the child to the Job Object.
+        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+    }
+
+    let child = cmd.kill_on_drop(true).spawn()?;
+
+    #[cfg(windows)]
+    {
+        if let Err(err) = attach_windows_job(&child) {
+            // Non-fatal: fall back to the legacy behavior (no job + pipe
+            // inheritance leak possible). Preserves functionality in
+            // restricted environments (e.g. outer job without nested-job
+            // support, some CI runners) at the cost of the grandchild-leak
+            // shutdown hang this patch is designed to prevent. `kill_on_drop`
+            // still terminates the immediate child.
+            tracing::warn!("windows job-object attach failed; spawning without it: {err}");
+            // The child was spawned CREATE_SUSPENDED; resume it now so tool
+            // execution can proceed.
+            if let Some(raw) =
+                child.raw_handle().map(|h| h as windows_sys::Win32::Foundation::HANDLE)
+            {
+                if let Err(resume_err) = crate::windows_job::resume_process(raw) {
+                    tracing::error!(
+                        "failed to resume suspended child after job fallback: {resume_err}"
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(child)
+}
+
+/// Wraps the Windows-specific work of attaching a freshly-spawned
+/// (CREATE_SUSPENDED) child to a kill-on-close Job Object, resuming it,
+/// and installing a watcher task that closes the job once the immediate
+/// child exits.
+#[cfg(windows)]
+fn attach_windows_job(child: &Child) -> std::io::Result<()> {
+    let raw_handle = child
+        .raw_handle()
+        .ok_or_else(|| {
+            std::io::Error::other("tokio::process::Child has no raw_handle on Windows")
+        })? as windows_sys::Win32::Foundation::HANDLE;
+    let job = crate::windows_job::create_kill_on_close_job()?;
+    crate::windows_job::assign_process_to_job(&job, raw_handle)?;
+    crate::windows_job::resume_process(raw_handle)?;
+    // `close_job_on_child_exit` duplicates `raw_handle` internally, so the
+    // watcher is independent of `tokio::process::Child`'s handle lifetime.
+    // This prevents PID recycling races when `kill_on_drop` closes the
+    // Child's handle before the watcher runs.
+    crate::windows_job::close_job_on_child_exit(raw_handle, job)?;
+    Ok(())
 }

@@ -4,6 +4,18 @@
 // For both modes, any other output must be written to stderr.
 #![deny(clippy::print_stdout)]
 
+// Debug-only shutdown-path tracing. Emits to stderr only when the
+// `CODEX_SHUTDOWN_TRACE` environment variable is set; silent otherwise.
+// Useful for diagnosing post-completion hangs without bloating normal
+// runs. Format: `[shutdown-trace] <message>`.
+macro_rules! shutdown_trace {
+    ($($arg:tt)*) => {
+        if std::env::var_os("CODEX_SHUTDOWN_TRACE").is_some() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 mod cli;
 mod event_processor;
 mod event_processor_with_human_output;
@@ -495,7 +507,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     };
-    run_exec_session(ExecRunArgs {
+    let session_result = run_exec_session(ExecRunArgs {
         in_process_start_args,
         command,
         config,
@@ -512,7 +524,11 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         stderr_with_ansi,
     })
     .instrument(exec_span)
-    .await
+    .await;
+    shutdown_trace!("[shutdown-trace] run_main: run_exec_session.instrument.await returned");
+    let ret = session_result;
+    shutdown_trace!("[shutdown-trace] run_main: about to return from run_main");
+    ret
 }
 
 async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
@@ -856,6 +872,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     match event_processor.process_server_notification(notification) {
                         CodexStatus::Running => {}
                         CodexStatus::InitiateShutdown => {
+                            shutdown_trace!("[shutdown-trace] exec: calling request_shutdown");
                             if let Err(err) = request_shutdown(
                                 &client,
                                 &mut request_ids,
@@ -865,6 +882,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                             {
                                 warn!("thread/unsubscribe failed during shutdown: {err}");
                             }
+                            shutdown_trace!("[shutdown-trace] exec: request_shutdown returned");
                             break;
                         }
                     }
@@ -878,14 +896,19 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         }
     }
 
+    shutdown_trace!("[shutdown-trace] exec: calling client.shutdown");
     if let Err(err) = client.shutdown().await {
         warn!("in-process app-server shutdown failed: {err}");
     }
+    shutdown_trace!("[shutdown-trace] exec: client.shutdown returned");
     event_processor.print_final_output();
+    shutdown_trace!("[shutdown-trace] exec: print_final_output returned");
     if error_seen {
+        shutdown_trace!("[shutdown-trace] exec: exiting with code 1 (error_seen)");
         std::process::exit(1);
     }
 
+    shutdown_trace!("[shutdown-trace] exec: run_exec_session returning Ok(())");
     Ok(())
 }
 
@@ -1355,9 +1378,16 @@ async fn request_shutdown(
             thread_id: thread_id.to_string(),
         },
     };
-    send_request_with_response::<ThreadUnsubscribeResponse>(client, request, "thread/unsubscribe")
-        .await
-        .map(|_| ())
+    shutdown_trace!("[shutdown-trace] request_shutdown: sending ThreadUnsubscribe");
+    let result = send_request_with_response::<ThreadUnsubscribeResponse>(
+        client,
+        request,
+        "thread/unsubscribe",
+    )
+    .await
+    .map(|_| ());
+    shutdown_trace!("[shutdown-trace] request_shutdown: ThreadUnsubscribe response received");
+    result
 }
 
 async fn resolve_server_request(

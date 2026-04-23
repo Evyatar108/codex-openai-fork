@@ -1,3 +1,13 @@
+// Debug-only shutdown-path tracing. Emits to stderr only when the
+// `CODEX_SHUTDOWN_TRACE` environment variable is set; silent otherwise.
+macro_rules! shutdown_trace {
+    ($($arg:tt)*) => {
+        if std::env::var_os("CODEX_SHUTDOWN_TRACE").is_some() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 use crate::bespoke_event_handling::apply_bespoke_event_handling;
 use crate::bespoke_event_handling::maybe_emit_hook_prompt_item_completed;
 use crate::command_exec::CommandExecManager;
@@ -5853,6 +5863,7 @@ impl CodexMessageProcessor {
         request_id: ConnectionRequestId,
         params: ThreadUnsubscribeParams,
     ) {
+        shutdown_trace!("[shutdown-trace] thread_unsubscribe: entered");
         let thread_id = match ThreadId::from_string(&params.thread_id) {
             Ok(id) => id,
             Err(err) => {
@@ -5862,11 +5873,23 @@ impl CodexMessageProcessor {
             }
         };
 
-        if self.thread_manager.get_thread(thread_id).await.is_err() {
+        shutdown_trace!("[shutdown-trace] thread_unsubscribe: calling thread_manager.get_thread");
+        let get_thread_result = self.thread_manager.get_thread(thread_id).await;
+        shutdown_trace!(
+            "[shutdown-trace] thread_unsubscribe: get_thread returned (is_err={})",
+            get_thread_result.is_err()
+        );
+        if get_thread_result.is_err() {
             // Reconcile stale app-server bookkeeping when the thread has already been
             // removed from the core manager. This keeps loaded-status/subscription state
             // consistent with the source of truth before reporting NotLoaded.
+            shutdown_trace!(
+                "[shutdown-trace] thread_unsubscribe: calling finalize_thread_teardown"
+            );
             self.finalize_thread_teardown(thread_id).await;
+            shutdown_trace!(
+                "[shutdown-trace] thread_unsubscribe: finalize_thread_teardown returned; sending NotLoaded response"
+            );
             self.outgoing
                 .send_response(
                     request_id,
@@ -5875,22 +5898,33 @@ impl CodexMessageProcessor {
                     },
                 )
                 .await;
+            shutdown_trace!(
+                "[shutdown-trace] thread_unsubscribe: NotLoaded response sent"
+            );
             return;
         };
 
+        shutdown_trace!(
+            "[shutdown-trace] thread_unsubscribe: calling unsubscribe_connection_from_thread"
+        );
         let was_subscribed = self
             .thread_state_manager
             .unsubscribe_connection_from_thread(thread_id, request_id.connection_id)
             .await;
+        shutdown_trace!(
+            "[shutdown-trace] thread_unsubscribe: unsubscribe_connection_from_thread returned (was_subscribed={was_subscribed})"
+        );
 
         let status = if was_subscribed {
             ThreadUnsubscribeStatus::Unsubscribed
         } else {
             ThreadUnsubscribeStatus::NotSubscribed
         };
+        shutdown_trace!("[shutdown-trace] thread_unsubscribe: sending response");
         self.outgoing
             .send_response(request_id, ThreadUnsubscribeResponse { status })
             .await;
+        shutdown_trace!("[shutdown-trace] thread_unsubscribe: response sent");
     }
 
     async fn archive_thread_common(

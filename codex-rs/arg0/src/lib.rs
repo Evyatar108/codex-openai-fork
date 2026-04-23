@@ -3,6 +3,16 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 
+// Debug-only shutdown-path tracing. Emits to stderr only when the
+// `CODEX_SHUTDOWN_TRACE` environment variable is set; silent otherwise.
+macro_rules! shutdown_trace {
+    ($($arg:tt)*) => {
+        if std::env::var_os("CODEX_SHUTDOWN_TRACE").is_some() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 use codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1;
 use codex_exec_server::CODEX_FS_HELPER_ARG1;
 use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
@@ -185,7 +195,7 @@ where
     // Regular invocation – create a Tokio runtime and execute the provided
     // async entry-point.
     let runtime = build_runtime()?;
-    runtime.block_on(async move {
+    let result = runtime.block_on(async move {
         let current_exe = std::env::current_exe().ok();
         let paths = Arg0DispatchPaths {
             codex_self_exe: current_exe.clone(),
@@ -199,8 +209,15 @@ where
                 .and_then(|path_entry| path_entry.paths().main_execve_wrapper_exe.clone()),
         };
 
-        main_fn(paths).await
-    })
+        let r = main_fn(paths).await;
+        shutdown_trace!("[shutdown-trace] arg0: main_fn.await returned");
+        r
+    });
+    shutdown_trace!("[shutdown-trace] arg0: runtime.block_on returned");
+    // Drop runtime explicitly so we can trace before/after.
+    drop(runtime);
+    shutdown_trace!("[shutdown-trace] arg0: runtime dropped; returning result");
+    result
 }
 
 fn linux_sandbox_exe_path(
