@@ -145,6 +145,7 @@ fn test_supports_remote_compaction_for_openai() {
 #[test]
 fn test_supports_remote_compaction_for_azure_name() {
     let provider = ModelProviderInfo {
+        id: "azure".into(),
         name: "Azure".into(),
         base_url: Some("https://example.com/openai".into()),
         env_key: Some("AZURE_OPENAI_API_KEY".into()),
@@ -170,6 +171,7 @@ fn test_supports_remote_compaction_for_azure_name() {
 #[test]
 fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
     let provider = ModelProviderInfo {
+        id: "example".into(),
         name: "Example".into(),
         base_url: Some("https://example.com/v1".into()),
         env_key: Some("API_KEY".into()),
@@ -245,6 +247,7 @@ fn test_create_amazon_bedrock_provider() {
     assert_eq!(
         ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
         ModelProviderInfo {
+            id: AMAZON_BEDROCK_PROVIDER_ID.into(),
             name: "Amazon Bedrock".to_string(),
             base_url: Some("https://bedrock-mantle.us-east-1.api.aws/v1".to_string()),
             env_key: None,
@@ -440,6 +443,7 @@ fn is_copilot_rejects_different_id() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -465,6 +469,7 @@ fn is_copilot_rejects_renamed_builtin() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,

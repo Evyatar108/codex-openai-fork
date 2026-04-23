@@ -1,5 +1,6 @@
 mod auth;
 mod bearer_auth_provider;
+mod copilot;
 mod provider;
 
 pub use bearer_auth_provider::AuthorizationHeaderAuthProvider;

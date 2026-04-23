@@ -63,7 +63,6 @@ use codex_api::build_conversation_headers;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
 use codex_app_server_protocol::AuthMode;
-use codex_copilot::CopilotAuth;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
@@ -155,8 +154,6 @@ struct ModelClientState {
     window_generation: AtomicU64,
     installation_id: String,
     provider: SharedModelProvider,
-    copilot_auth: OnceLock<Arc<CopilotAuth>>,
-    copilot_auth_init_lock: StdMutex<()>,
     // Integration tests seed this so Copilot requests can stay on wiremock without weakening the
     // production F-170 trusted-base-url guard.
     #[cfg(any(test, feature = "test-support"))]
@@ -179,26 +176,6 @@ struct CurrentClientSetup {
     auth: Option<CodexAuth>,
     api_provider: ApiProvider,
     api_auth: SharedAuthProvider,
-}
-
-impl ModelClientState {
-    fn get_or_init_copilot_auth(&self) -> anyhow::Result<Arc<CopilotAuth>> {
-        if let Some(auth) = self.copilot_auth.get() {
-            return Ok(auth.clone());
-        }
-
-        let _lock = self
-            .copilot_auth_init_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(auth) = self.copilot_auth.get() {
-            return Ok(auth.clone());
-        }
-
-        let auth = Arc::new(CopilotAuth::new()?);
-        let _ = self.copilot_auth.set(auth.clone());
-        Ok(auth)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -346,8 +323,6 @@ impl ModelClient {
                 window_generation: AtomicU64::new(0),
                 installation_id,
                 provider: model_provider,
-                copilot_auth: OnceLock::new(),
-                copilot_auth_init_lock: StdMutex::new(()),
                 #[cfg(any(test, feature = "test-support"))]
                 copilot_api_base_url_override_for_tests: OnceLock::new(),
                 auth_env_telemetry,
@@ -409,13 +384,13 @@ impl ModelClient {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn configure_copilot_session_for_tests(
         &self,
-        auth: Arc<CopilotAuth>,
+        auth: Arc<codex_copilot::CopilotAuth>,
         responses_base_url: String,
     ) {
         self.state
-            .copilot_auth
-            .set(auth)
-            .unwrap_or_else(|_| panic!("copilot auth should only be configured once in tests"));
+            .provider
+            .inject_copilot_auth_for_tests(auth)
+            .unwrap_or_else(|e| panic!("configure_copilot_session_for_tests: {e}"));
         self.state
             .copilot_api_base_url_override_for_tests
             .set(responses_base_url)
@@ -751,60 +726,41 @@ impl ModelClient {
         let auth = self.state.provider.auth().await;
         let api_provider = self.state.provider.api_provider().await?;
         let auth_manager = self.state.provider.auth_manager();
-        let api_auth: SharedAuthProvider = if self.is_copilot() {
-            // SANDBOX PATCH: Copilot sessions bypass bearer-auth resolution; inject
-            // CopilotHeaderSource built from the session-scoped CopilotAuth.
-            if !self.state.provider.info().is_copilot_trusted() {
-                return Err(CodexErr::Fatal(
-                    "Copilot provider base_url override; refusing to inject Copilot credentials"
-                        .into(),
-                ));
-            }
-            let copilot_auth = self
-                .state
-                .get_or_init_copilot_auth()
-                .map_err(|e| CodexErr::Fatal(e.to_string()))?;
-            let source = codex_copilot::CopilotHeaderSource::new(copilot_auth)
-                .await
-                .map_err(|e| CodexErr::Fatal(e.to_string()))?;
-            Arc::new(
-                codex_api::CoreAuthProvider::new_legacy(None, None)
-                    .with_copilot(Arc::new(source)),
-            )
-        } else {
-            match (agent_task, auth_manager.as_ref(), auth.as_ref()) {
-                (Some(agent_task), Some(auth_manager), Some(auth)) => {
-                    if let Some(authorization_header_value) = auth_manager
-                        .chatgpt_agent_task_authorization_header_for_auth(
-                            auth,
-                            agent_task.authorization_target(),
+        let api_auth: SharedAuthProvider = match (agent_task, auth_manager.as_ref(), auth.as_ref())
+        {
+            (Some(agent_task), Some(auth_manager), Some(auth)) => {
+                if let Some(authorization_header_value) = auth_manager
+                    .chatgpt_agent_task_authorization_header_for_auth(
+                        auth,
+                        agent_task.authorization_target(),
+                    )
+                    .map_err(|err| {
+                        CodexErr::Stream(
+                            format!("failed to build agent assertion authorization: {err}"),
+                            None,
                         )
-                        .map_err(|err| {
-                            CodexErr::Stream(
-                                format!("failed to build agent assertion authorization: {err}"),
-                                None,
-                            )
-                        })?
-                    {
-                        debug!(
-                            agent_runtime_id = %agent_task.agent_runtime_id,
-                            task_id = %agent_task.task_id,
-                            "using agent assertion authorization for downstream request"
-                        );
-                        let mut auth_provider = AuthorizationHeaderAuthProvider::new(
-                            Some(authorization_header_value),
-                            /*account_id*/ None,
-                        );
-                        if auth.is_fedramp_account() {
-                            auth_provider = auth_provider.with_fedramp_routing_header();
-                        }
-                        Arc::new(auth_provider)
-                    } else {
-                        self.state.provider.api_auth().await?
+                    })?
+                {
+                    debug!(
+                        agent_runtime_id = %agent_task.agent_runtime_id,
+                        task_id = %agent_task.task_id,
+                        "using agent assertion authorization for downstream request"
+                    );
+                    let mut auth_provider = AuthorizationHeaderAuthProvider::new(
+                        Some(authorization_header_value),
+                        /*account_id*/ None,
+                    );
+                    if auth.is_fedramp_account() {
+                        auth_provider = auth_provider.with_fedramp_routing_header();
                     }
+                    Arc::new(auth_provider)
+                } else {
+                    // SANDBOX PATCH: Copilot sessions resolve through
+                    // CopilotModelProvider::api_auth in codex-model-provider.
+                    self.state.provider.api_auth().await?
                 }
-                _ => self.state.provider.api_auth().await?,
             }
+            _ => self.state.provider.api_auth().await?,
         };
         // SANDBOX PATCH: Copilot test override + Copilot auth init happens through
         // `SharedModelProvider` in v0.123+. Keeping the test-support hook here so integration

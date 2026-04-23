@@ -364,7 +364,7 @@ mod tests {
     #[tokio::test]
     async fn compaction_skipped_for_copilot() {
         let server = MockServer::start().await;
-        let (mut session, mut turn_context) = crate::codex::make_session_and_context().await;
+        let (mut session, mut turn_context) = crate::session::tests::make_session_and_context().await;
         session.services.model_client = ModelClient::new(
             Some(session.services.auth_manager.clone()),
             session.conversation_id,

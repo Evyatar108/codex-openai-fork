@@ -383,7 +383,7 @@ async fn pre_send_hook_fires_exactly_once_per_call() -> Result<()> {
     let transport = RecordingTransport::new(state.clone());
     let hook_calls = Arc::new(AtomicUsize::new(0));
     let hook_counter = hook_calls.clone();
-    let client = ResponsesClient::new(transport, provider("openai"), NoAuth).with_pre_send_hook(
+    let client = ResponsesClient::new(transport, provider("openai"), Arc::new(NoAuth)).with_pre_send_hook(
         Arc::new(move |_, headers| {
             hook_counter.fetch_add(1, Ordering::SeqCst);
             headers.insert("x-pre-send-count", HeaderValue::from_static("1"));
@@ -421,7 +421,7 @@ async fn pre_send_hook_fires_exactly_once_per_call() -> Result<()> {
 async fn pre_send_hook_mutates_body_and_headers() -> Result<()> {
     let state = RecordingState::default();
     let transport = RecordingTransport::new(state.clone());
-    let client = ResponsesClient::new(transport, provider("openai"), NoAuth).with_pre_send_hook(
+    let client = ResponsesClient::new(transport, provider("openai"), Arc::new(NoAuth)).with_pre_send_hook(
         Arc::new(|body, headers| {
             body["service_tier"] = Value::Null;
             body["metadata"] = serde_json::json!({ "source": "pre-send-hook" });
@@ -477,7 +477,7 @@ async fn with_telemetry_preserves_pre_send_hook() -> Result<()> {
     let transport = RecordingTransport::new(state.clone());
     let hook_calls = Arc::new(AtomicUsize::new(0));
     let hook_counter = hook_calls.clone();
-    let client = ResponsesClient::new(transport, provider("openai"), NoAuth)
+    let client = ResponsesClient::new(transport, provider("openai"), Arc::new(NoAuth))
         .with_pre_send_hook(Arc::new(move |body, headers| {
             hook_counter.fetch_add(1, Ordering::SeqCst);
             body["telemetry_preserved"] = Value::Bool(true);

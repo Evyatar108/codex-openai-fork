@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use codex_api::CoreAuthProvider;
 use codex_api::Provider as ApiProvider;
-use codex_copilot::CopilotAuth;
 use codex_core::config::Config;
 use codex_core::copilot_transport;
 use codex_model_provider::create_model_provider;
@@ -41,37 +39,23 @@ pub(crate) async fn run_responses_command(
     let model_provider = create_model_provider(config.model_provider, Some(base_auth_manager));
     let api_provider = model_provider.api_provider().await?;
     let api_auth = model_provider.api_auth().await?;
-    let copilot_auth = if is_copilot {
-        Some(Arc::new(
-            CopilotAuth::new().map_err(|e| anyhow::anyhow!(e))?,
-        ))
-    } else {
-        None
-    };
-    run_responses_with_auth(payload, api_provider, api_auth, copilot_auth).await
+    run_responses_with_auth(payload, api_provider, api_auth, is_copilot).await
 }
 
 pub async fn run_responses_with_auth(
     payload: Value,
     api_provider: ApiProvider,
     api_auth: Arc<dyn codex_api::ApiAuthProvider>,
-    copilot_auth: Option<Arc<CopilotAuth>>,
+    is_copilot: bool,
 ) -> anyhow::Result<()> {
     let transport =
         codex_api::ReqwestTransport::new(codex_login::default_client::build_reqwest_client());
     // SANDBOX PATCH: delegate Copilot sessions to the shared transport factory so the
     // per-request pre_send_hook (normalize_payload + copilot-vision-request) stays consistent
-    // with the streaming path in `core::client::stream_responses_api`.
-    let client = if let Some(copilot_auth) = copilot_auth {
-        // TODO(copilot): add retry-on-401/403 once the CLI path shares the main client retry loop.
-        let header_source = Arc::new(
-            codex_copilot::CopilotHeaderSource::new(copilot_auth)
-                .await
-                .map_err(|err| anyhow::anyhow!(err))?,
-        );
-        let copilot_auth_provider: codex_api::SharedAuthProvider =
-            Arc::new(CoreAuthProvider::default().with_copilot(header_source));
-        copilot_transport::build_copilot_client(api_provider, copilot_auth_provider, transport)
+    // with the streaming path in `core::client::stream_responses_api`. Copilot auth itself
+    // is already wired into `api_auth` by `CopilotModelProvider::api_auth()`.
+    let client = if is_copilot {
+        copilot_transport::build_copilot_client(api_provider, api_auth, transport)
     } else {
         codex_api::ResponsesClient::new(transport, api_provider, api_auth)
     };
@@ -309,8 +293,9 @@ mod tests {
         let header_source = CopilotHeaderSource::new(copilot_auth)
             .await
             .expect("copilot header source");
-        let api_auth =
-            CoreAuthProvider::new_legacy(None, None).with_copilot(Arc::new(header_source));
+        let api_auth: codex_api::SharedAuthProvider = Arc::new(
+            CoreAuthProvider::new_legacy(None, None).with_copilot(Arc::new(header_source)),
+        );
         let api_provider = test_api_provider(&responses_server);
 
         let payload = json!({
@@ -335,15 +320,9 @@ mod tests {
             ]
         });
 
-        let noop_auth: Arc<dyn codex_api::ApiAuthProvider> = Arc::new(api_auth.clone());
-        let copilot_auth = api_auth
-            .copilot
-            .as_ref()
-            .expect("copilot header source present")
-            .clone();
-        // The Copilot branch of run_responses_with_auth rebuilds its own CoreAuthProvider from
-        // CopilotAuth; in this test we pre-materialized the header source, so invoke the
-        // transport factory directly to exercise the pre_send_hook wiring.
+        // Exercise the transport factory directly to verify the pre_send_hook wiring; the
+        // real run_responses_with_auth flow wraps the same Copilot auth via
+        // CopilotModelProvider::api_auth in `codex-model-provider`.
         let transport =
             codex_api::ReqwestTransport::new(codex_login::default_client::build_reqwest_client());
         let client = copilot_transport::build_copilot_client(api_provider, api_auth, transport);
@@ -359,8 +338,6 @@ mod tests {
         while let Some(event) = stream.rx_event.recv().await {
             let _ = event.expect("event ok");
         }
-        let _ = noop_auth;
-        let _ = copilot_auth;
 
         let requests = responses_server
             .received_requests()

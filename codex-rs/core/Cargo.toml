@@ -14,7 +14,7 @@ name = "codex-write-config-schema"
 path = "src/bin/config_schema.rs"
 
 [features]
-test-support = []
+test-support = ["codex-model-provider/test-support"]
 
 [lints]
 workspace = true

@@ -2546,11 +2546,14 @@ version = "0.123.0-copilot-api.1"
 dependencies = [
  "async-trait",
  "codex-api",
+ "codex-copilot",
  "codex-login",
  "codex-model-provider-info",
  "codex-protocol",
  "http 1.4.0",
  "pretty_assertions",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -43,6 +43,18 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
         let auth = self.auth().await;
         resolve_provider_auth(auth.as_ref(), self.info())
     }
+
+    /// SANDBOX PATCH: Test-only hook — inject a pre-built `CopilotAuth` so
+    /// integration tests can redirect Copilot token/header traffic at wiremock
+    /// without going through the on-disk token flow. Default no-op;
+    /// `CopilotModelProvider` overrides.
+    #[cfg(any(test, feature = "test-support"))]
+    fn inject_copilot_auth_for_tests(
+        &self,
+        _auth: std::sync::Arc<codex_copilot::CopilotAuth>,
+    ) -> Result<(), &'static str> {
+        Err("provider does not support Copilot test-auth injection")
+    }
 }
 
 /// Shared runtime model provider handle.
@@ -54,6 +66,15 @@ pub fn create_model_provider(
     auth_manager: Option<Arc<AuthManager>>,
 ) -> SharedModelProvider {
     let auth_manager = auth_manager_for_provider(auth_manager, &provider_info);
+    // SANDBOX PATCH: Route Copilot sessions through CopilotModelProvider so
+    // api_auth() attaches CopilotHeaderSource without requiring callers to
+    // branch on is_copilot().
+    if provider_info.is_copilot() {
+        return Arc::new(crate::copilot::CopilotModelProvider::new(
+            provider_info,
+            auth_manager,
+        ));
+    }
     Arc::new(ConfiguredModelProvider {
         info: provider_info,
         auth_manager,
