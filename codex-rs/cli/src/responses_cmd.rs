@@ -69,7 +69,8 @@ pub async fn run_responses_with_auth(
                 .await
                 .map_err(|err| anyhow::anyhow!(err))?,
         );
-        let copilot_auth_provider = CoreAuthProvider::default().with_copilot(header_source);
+        let copilot_auth_provider: codex_api::SharedAuthProvider =
+            Arc::new(CoreAuthProvider::default().with_copilot(header_source));
         copilot_transport::build_copilot_client(api_provider, copilot_auth_provider, transport)
     } else {
         codex_api::ResponsesClient::new(transport, api_provider, api_auth)

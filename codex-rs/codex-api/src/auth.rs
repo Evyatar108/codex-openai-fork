@@ -8,6 +8,11 @@ use std::sync::Arc;
 /// reach this interface.
 pub trait AuthProvider: Send + Sync {
     fn add_auth_headers(&self, headers: &mut HeaderMap);
+
+    /// SANDBOX PATCH: notify the auth provider that a 401/403 was observed on a
+    /// request. Default no-op; overridden by providers that cache credentials
+    /// (e.g. Copilot) to trigger invalidation.
+    fn on_unauthorized(&self) {}
 }
 
 /// Shared auth handle passed through API clients.

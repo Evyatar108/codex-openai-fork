@@ -216,15 +216,9 @@ impl CoreAuthProvider {
     pub fn for_test(token: Option<&str>, account_id: Option<&str>) -> Self {
         Self::new_legacy(token.map(str::to_string), account_id.map(str::to_string))
     }
-
-    pub fn on_unauthorized(&self) {
-        if let Some(source) = self.copilot.as_ref() {
-            source.invalidate();
-        }
-    }
 }
 
-impl ApiAuthProvider for CoreAuthProvider {
+impl crate::auth::AuthProvider for CoreAuthProvider {
     fn add_auth_headers(&self, headers: &mut HeaderMap) {
         if let Some(source) = self.copilot.as_ref() {
             source.inject(headers);
@@ -240,6 +234,12 @@ impl ApiAuthProvider for CoreAuthProvider {
             && let Ok(header) = HeaderValue::from_str(account_id)
         {
             let _ = headers.insert("ChatGPT-Account-ID", header);
+        }
+    }
+
+    fn on_unauthorized(&self) {
+        if let Some(source) = self.copilot.as_ref() {
+            source.invalidate();
         }
     }
 }

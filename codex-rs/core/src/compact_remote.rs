@@ -81,7 +81,7 @@ async fn run_remote_compact_task_inner(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
-    if turn_context.provider.is_copilot() {
+    if turn_context.provider.info().is_copilot() {
         // TODO(copilot-v7): translate /compact schema.
         return Ok(());
     }

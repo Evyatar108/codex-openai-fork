@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use codex_api::CoreAuthProvider;
 use codex_api::Provider as ApiProvider;
 use codex_api::ResponsesClient;
+use codex_api::SharedAuthProvider;
 use codex_client::HttpTransport;
 use codex_copilot::payload::Initiator;
 use codex_copilot::payload::normalize_payload;
@@ -18,9 +18,9 @@ use serde_json::Value;
 
 pub fn build_copilot_client<T: HttpTransport>(
     api_provider: ApiProvider,
-    auth: CoreAuthProvider,
+    auth: SharedAuthProvider,
     transport: T,
-) -> ResponsesClient<T, CoreAuthProvider> {
+) -> ResponsesClient<T> {
     ResponsesClient::new(transport, api_provider, auth)
         .with_pre_send_hook(Arc::new(apply_copilot_request_transforms))
 }

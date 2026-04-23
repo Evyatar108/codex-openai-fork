@@ -154,7 +154,7 @@ struct ModelClientState {
     conversation_id: ThreadId,
     window_generation: AtomicU64,
     installation_id: String,
-    provider: ModelProviderInfo,
+    provider: SharedModelProvider,
     copilot_auth: OnceLock<Arc<CopilotAuth>>,
     copilot_auth_init_lock: StdMutex<()>,
     // Integration tests seed this so Copilot requests can stay on wiremock without weakening the
@@ -345,7 +345,7 @@ impl ModelClient {
                 conversation_id,
                 window_generation: AtomicU64::new(0),
                 installation_id,
-                provider,
+                provider: model_provider,
                 copilot_auth: OnceLock::new(),
                 copilot_auth_init_lock: StdMutex::new(()),
                 #[cfg(any(test, feature = "test-support"))]
@@ -425,7 +425,7 @@ impl ModelClient {
     }
 
     pub fn is_copilot(&self) -> bool {
-        self.state.provider.is_copilot()
+        self.state.provider.info().is_copilot()
     }
 
     fn current_window_id(&self) -> String {
@@ -751,38 +751,60 @@ impl ModelClient {
         let auth = self.state.provider.auth().await;
         let api_provider = self.state.provider.api_provider().await?;
         let auth_manager = self.state.provider.auth_manager();
-        let api_auth = match (agent_task, auth_manager.as_ref(), auth.as_ref()) {
-            (Some(agent_task), Some(auth_manager), Some(auth)) => {
-                if let Some(authorization_header_value) = auth_manager
-                    .chatgpt_agent_task_authorization_header_for_auth(
-                        auth,
-                        agent_task.authorization_target(),
-                    )
-                    .map_err(|err| {
-                        CodexErr::Stream(
-                            format!("failed to build agent assertion authorization: {err}"),
-                            None,
-                        )
-                    })?
-                {
-                    debug!(
-                        agent_runtime_id = %agent_task.agent_runtime_id,
-                        task_id = %agent_task.task_id,
-                        "using agent assertion authorization for downstream request"
-                    );
-                    let mut auth_provider = AuthorizationHeaderAuthProvider::new(
-                        Some(authorization_header_value),
-                        /*account_id*/ None,
-                    );
-                    if auth.is_fedramp_account() {
-                        auth_provider = auth_provider.with_fedramp_routing_header();
-                    }
-                    Arc::new(auth_provider)
-                } else {
-                    self.state.provider.api_auth().await?
-                }
+        let api_auth: SharedAuthProvider = if self.is_copilot() {
+            // SANDBOX PATCH: Copilot sessions bypass bearer-auth resolution; inject
+            // CopilotHeaderSource built from the session-scoped CopilotAuth.
+            if !self.state.provider.info().is_copilot_trusted() {
+                return Err(CodexErr::Fatal(
+                    "Copilot provider base_url override; refusing to inject Copilot credentials"
+                        .into(),
+                ));
             }
-            _ => self.state.provider.api_auth().await?,
+            let copilot_auth = self
+                .state
+                .get_or_init_copilot_auth()
+                .map_err(|e| CodexErr::Fatal(e.to_string()))?;
+            let source = codex_copilot::CopilotHeaderSource::new(copilot_auth)
+                .await
+                .map_err(|e| CodexErr::Fatal(e.to_string()))?;
+            Arc::new(
+                codex_api::CoreAuthProvider::new_legacy(None, None)
+                    .with_copilot(Arc::new(source)),
+            )
+        } else {
+            match (agent_task, auth_manager.as_ref(), auth.as_ref()) {
+                (Some(agent_task), Some(auth_manager), Some(auth)) => {
+                    if let Some(authorization_header_value) = auth_manager
+                        .chatgpt_agent_task_authorization_header_for_auth(
+                            auth,
+                            agent_task.authorization_target(),
+                        )
+                        .map_err(|err| {
+                            CodexErr::Stream(
+                                format!("failed to build agent assertion authorization: {err}"),
+                                None,
+                            )
+                        })?
+                    {
+                        debug!(
+                            agent_runtime_id = %agent_task.agent_runtime_id,
+                            task_id = %agent_task.task_id,
+                            "using agent assertion authorization for downstream request"
+                        );
+                        let mut auth_provider = AuthorizationHeaderAuthProvider::new(
+                            Some(authorization_header_value),
+                            /*account_id*/ None,
+                        );
+                        if auth.is_fedramp_account() {
+                            auth_provider = auth_provider.with_fedramp_routing_header();
+                        }
+                        Arc::new(auth_provider)
+                    } else {
+                        self.state.provider.api_auth().await?
+                    }
+                }
+                _ => self.state.provider.api_auth().await?,
+            }
         };
         // SANDBOX PATCH: Copilot test override + Copilot auth init happens through
         // `SharedModelProvider` in v0.123+. Keeping the test-support hook here so integration
@@ -1304,7 +1326,7 @@ impl ModelClientSession {
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
-        let is_copilot = self.client.state.provider.is_copilot();
+        let is_copilot = self.client.state.provider.info().is_copilot();
         let mut copilot_auth_retries = 0u32;
         loop {
             let client_setup = self

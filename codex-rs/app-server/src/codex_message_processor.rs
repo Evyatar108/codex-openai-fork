@@ -1904,50 +1904,22 @@ impl CodexMessageProcessor {
         }
     }
 
+    // SANDBOX PATCH: Return auth-required error immediately — no HTTP call to
+    // /backend-api/add_credits_nudge_email. Add-credits nudge email is a ChatGPT
+    // Business/Enterprise feature; copilot-api does not use it.
     async fn send_add_credits_nudge_email_inner(
         &self,
-        params: SendAddCreditsNudgeEmailParams,
+        _params: SendAddCreditsNudgeEmailParams,
     ) -> Result<AddCreditsNudgeEmailStatus, JSONRPCErrorError> {
-        let Some(auth) = self.auth_manager.auth().await else {
-            return Err(JSONRPCErrorError {
-                code: INVALID_REQUEST_ERROR_CODE,
-                message: "codex account authentication required to notify workspace owner"
-                    .to_string(),
-                data: None,
-            });
-        };
-
-        if !auth.is_chatgpt_auth() {
-            return Err(JSONRPCErrorError {
-                code: INVALID_REQUEST_ERROR_CODE,
-                message: "chatgpt authentication required to notify workspace owner".to_string(),
-                data: None,
-            });
-        }
-
-        let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
-            .map_err(|err| JSONRPCErrorError {
-                code: INTERNAL_ERROR_CODE,
-                message: format!("failed to construct backend client: {err}"),
-                data: None,
-            })?;
-
-        match client
-            .send_add_credits_nudge_email(Self::backend_credit_type(params.credit_type))
-            .await
-        {
-            Ok(()) => Ok(AddCreditsNudgeEmailStatus::Sent),
-            Err(err) if err.status().is_some_and(|status| status.as_u16() == 429) => {
-                Ok(AddCreditsNudgeEmailStatus::CooldownActive)
-            }
-            Err(err) => Err(JSONRPCErrorError {
-                code: INTERNAL_ERROR_CODE,
-                message: format!("failed to notify workspace owner: {err}"),
-                data: None,
-            }),
-        }
+        Err(JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message: "codex account authentication required to notify workspace owner".to_string(),
+            data: None,
+        })
     }
 
+    // SANDBOX PATCH: unused since send_add_credits_nudge_email_inner is early-returned.
+    #[allow(dead_code)]
     fn backend_credit_type(value: AddCreditsNudgeCreditType) -> BackendAddCreditsNudgeCreditType {
         match value {
             AddCreditsNudgeCreditType::Credits => BackendAddCreditsNudgeCreditType::Credits,
