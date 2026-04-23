@@ -10,15 +10,10 @@ use codex_chatgpt::apply_command::run_apply_command;
 use codex_cli::LandlockCommand;
 use codex_cli::SeatbeltCommand;
 use codex_cli::WindowsCommand;
-use codex_cli::build_feature_rows;
-use codex_cli::clear_memories;
-use codex_cli::disable_feature;
-use codex_cli::enable_feature;
 use codex_cli::read_api_key_from_stdin;
 use codex_cli::run_login_status;
 use codex_cli::run_login_with_api_key;
 use codex_cli::run_login_with_chatgpt;
-use codex_cli::run_login_with_copilot;
 use codex_cli::run_login_with_device_code;
 use codex_cli::run_logout;
 use codex_cloud_tasks::Cli as CloudTasksCli;
@@ -27,6 +22,8 @@ use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_execpolicy::ExecPolicyCheckCommand;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
+use codex_state::StateRuntime;
+use codex_state::state_db_path;
 use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
 use codex_tui::ExitReason;
@@ -37,9 +34,9 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use supports_color::Stream;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod marketplace_cmd;
 mod mcp_cmd;
@@ -52,9 +49,19 @@ use crate::mcp_cmd::McpCli;
 use crate::responses_cmd::ResponsesCommand;
 use crate::responses_cmd::run_responses_command;
 
+use codex_core::build_models_manager;
+use codex_core::clear_memory_roots_contents;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
+use codex_core::config::edit::ConfigEditsBuilder;
+use codex_core::config::find_codex_home;
+use codex_features::FEATURES;
+use codex_features::Stage;
 use codex_features::is_known_feature_key;
+use codex_models_manager::AuthManager;
+use codex_models_manager::bundled_models_response;
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::user_input::UserInput;
 use codex_terminal_detection::TerminalName;
@@ -71,7 +78,7 @@ use codex_terminal_detection::TerminalName;
     // The executable is sometimes invoked via a platform‑specific name like
     // `codex-x86_64-unknown-linux-musl`, but the help output should always use
     // the generic `codex` command name that users run.
-    bin_name = "codex-core",
+    bin_name = "codex",
     override_usage = "codex [OPTIONS] [PROMPT]\n       codex [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
@@ -109,8 +116,8 @@ enum Subcommand {
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
 
-    /// Manage plugin marketplaces for Codex.
-    Marketplace(MarketplaceCli),
+    /// Manage Codex plugins.
+    Plugin(PluginCli),
 
     /// Start Codex as an MCP server (stdio).
     McpServer,
@@ -118,8 +125,8 @@ enum Subcommand {
     /// [experimental] Run the app server or related tooling.
     AppServer(AppServerCommand),
 
-    /// Launch the Codex desktop app (downloads the macOS installer if missing).
-    #[cfg(target_os = "macos")]
+    /// Launch the Codex desktop app (opens the app installer if missing).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     App(app_cmd::AppCommand),
 
     /// Generate shell completion scripts.
@@ -169,6 +176,21 @@ enum Subcommand {
 }
 
 #[derive(Debug, Parser)]
+struct PluginCli {
+    #[clap(flatten)]
+    pub config_overrides: CliConfigOverrides,
+
+    #[command(subcommand)]
+    subcommand: PluginSubcommand,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum PluginSubcommand {
+    /// Manage plugin marketplaces for Codex.
+    Marketplace(MarketplaceCli),
+}
+
+#[derive(Debug, Parser)]
 struct CompletionCommand {
     /// Shell to generate completions for
     #[clap(value_enum, default_value_t = Shell::Bash)]
@@ -183,6 +205,9 @@ struct DebugCommand {
 
 #[derive(Debug, clap::Subcommand)]
 enum DebugSubcommand {
+    /// Render the raw model catalog as JSON.
+    Models(DebugModelsCommand),
+
     /// Tooling: helps debug the app server.
     AppServer(DebugAppServerCommand),
 
@@ -221,6 +246,13 @@ struct DebugPromptInputCommand {
     /// Optional image(s) to attach to the user prompt.
     #[arg(long = "image", short = 'i', value_name = "FILE", value_delimiter = ',', num_args = 1..)]
     images: Vec<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+struct DebugModelsCommand {
+    /// Skip refresh and dump only the bundled catalog shipped with this binary.
+    #[arg(long = "bundled", default_value_t = false)]
+    bundled: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -309,12 +341,6 @@ struct LoginCommand {
     #[clap(skip)]
     config_overrides: CliConfigOverrides,
 
-    #[arg(long = "provider", value_name = "PROVIDER")]
-    provider: Option<String>,
-
-    #[arg(long = "force")]
-    force: bool,
-
     #[arg(
         long = "with-api-key",
         help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`)"
@@ -351,29 +377,6 @@ struct LoginCommand {
 enum LoginSubcommand {
     /// Show login status.
     Status,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LoginFlow {
-    Copilot,
-    DeviceCode,
-    DeprecatedApiKey,
-    ApiKeyFromStdin,
-    Chatgpt,
-}
-
-fn login_flow(login_cli: &LoginCommand) -> LoginFlow {
-    if login_cli.provider.as_deref() == Some("copilot") {
-        LoginFlow::Copilot
-    } else if login_cli.use_device_code {
-        LoginFlow::DeviceCode
-    } else if login_cli.api_key.is_some() {
-        LoginFlow::DeprecatedApiKey
-    } else if login_cli.with_api_key {
-        LoginFlow::ApiKeyFromStdin
-    } else {
-        LoginFlow::Chatgpt
-    }
 }
 
 #[derive(Debug, Parser)]
@@ -488,7 +491,6 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
     let AppExitInfo {
         token_usage,
         thread_id: conversation_id,
-        thread_name,
         ..
     } = exit_info;
 
@@ -501,7 +503,7 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
     }
 
     if let Some(resume_cmd) =
-        codex_core::util::resume_command(thread_name.as_deref(), conversation_id)
+        codex_core::util::resume_command(/*thread_name*/ None, conversation_id)
     {
         let command = if color_enabled {
             resume_cmd.cyan().to_string()
@@ -527,7 +529,7 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
     let update_action = exit_info.update_action;
     let color_enabled = supports_color::on(Stream::Stdout).is_some();
     for line in format_exit_messages(exit_info, color_enabled) {
-        print!("{line}\r\n");
+        println!("{line}");
     }
     if let Some(action) = update_action {
         run_update_action(action)?;
@@ -544,10 +546,19 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     let status = {
         #[cfg(windows)]
         {
-            // On Windows, run via cmd.exe so .CMD/.BAT are correctly resolved (PATHEXT semantics).
-            std::process::Command::new("cmd")
-                .args(["/C", &cmd_str])
-                .status()?
+            if action == UpdateAction::StandaloneWindows {
+                let (cmd, args) = action.command_args();
+                // Run the standalone PowerShell installer with PowerShell
+                // itself. Routing this through `cmd.exe /C` would parse
+                // PowerShell metacharacters like `|` before PowerShell sees
+                // the installer command.
+                std::process::Command::new(cmd).args(args).status()?
+            } else {
+                // On Windows, run via cmd.exe so .CMD/.BAT are correctly resolved (PATHEXT semantics).
+                std::process::Command::new("cmd")
+                    .args(["/C", &cmd_str])
+                    .status()?
+            }
         }
         #[cfg(not(windows))]
         {
@@ -653,6 +664,16 @@ struct FeatureSetArgs {
     feature: String,
 }
 
+fn stage_str(stage: Stage) -> &'static str {
+    match stage {
+        Stage::UnderDevelopment => "under development",
+        Stage::Experimental { .. } => "experimental",
+        Stage::Stable => "stable",
+        Stage::Deprecated => "deprecated",
+        Stage::Removed => "removed",
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     arg0_dispatch_or_else(|arg0_paths: Arg0DispatchPaths| async move {
         cli_main(arg0_paths).await?;
@@ -696,6 +717,9 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 root_remote_auth_token_env.as_deref(),
                 "exec",
             )?;
+            exec_cli
+                .shared
+                .inherit_exec_root_options(&interactive.shared);
             prepend_config_flags(
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
@@ -734,17 +758,23 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());
             mcp_cli.run().await?;
         }
-        Some(Subcommand::Marketplace(mut marketplace_cli)) => {
+        Some(Subcommand::Plugin(plugin_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
                 root_remote_auth_token_env.as_deref(),
-                "marketplace",
+                "plugin",
             )?;
-            prepend_config_flags(
-                &mut marketplace_cli.config_overrides,
-                root_config_overrides.clone(),
-            );
-            marketplace_cli.run().await?;
+            let PluginCli {
+                mut config_overrides,
+                subcommand,
+            } = plugin_cli;
+            prepend_config_flags(&mut config_overrides, root_config_overrides.clone());
+            match subcommand {
+                PluginSubcommand::Marketplace(mut marketplace_cli) => {
+                    prepend_config_flags(&mut marketplace_cli.config_overrides, config_overrides);
+                    marketplace_cli.run().await?;
+                }
+            }
         }
         Some(Subcommand::AppServer(app_server_cli)) => {
             let AppServerCommand {
@@ -795,7 +825,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 }
             }
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         Some(Subcommand::App(app_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -872,32 +902,26 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 Some(LoginSubcommand::Status) => {
                     run_login_status(login_cli.config_overrides).await;
                 }
-                None => match login_flow(&login_cli) {
-                    LoginFlow::Copilot => {
-                        run_login_with_copilot(login_cli.config_overrides, login_cli.force).await;
-                    }
-                    LoginFlow::DeviceCode => {
+                None => {
+                    if login_cli.use_device_code {
                         run_login_with_device_code(
                             login_cli.config_overrides,
                             login_cli.issuer_base_url,
                             login_cli.client_id,
                         )
                         .await;
-                    }
-                    LoginFlow::DeprecatedApiKey => {
+                    } else if login_cli.api_key.is_some() {
                         eprintln!(
                             "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
                         );
                         std::process::exit(1);
-                    }
-                    LoginFlow::ApiKeyFromStdin => {
+                    } else if login_cli.with_api_key {
                         let api_key = read_api_key_from_stdin();
                         run_login_with_api_key(login_cli.config_overrides, api_key).await;
-                    }
-                    LoginFlow::Chatgpt => {
+                    } else {
                         run_login_with_chatgpt(login_cli.config_overrides).await;
                     }
-                },
+                }
             }
         }
         Some(Subcommand::Logout(mut logout_cli)) => {
@@ -984,6 +1008,14 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             }
         },
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
+            DebugSubcommand::Models(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug models",
+                )?;
+                run_debug_models_command(cmd, root_config_overrides).await?;
+            }
             DebugSubcommand::AppServer(cmd) => {
                 reject_remote_mode_for_subcommand(
                     root_remote.as_deref(),
@@ -1061,8 +1093,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 "stdio-to-uds",
             )?;
             let socket_path = cmd.socket_path;
-            tokio::task::spawn_blocking(move || codex_stdio_to_uds::run(socket_path.as_path()))
-                .await??;
+            codex_stdio_to_uds::run(socket_path.as_path()).await?;
         }
         Some(Subcommand::ExecServer(cmd)) => {
             reject_remote_mode_for_subcommand(
@@ -1103,21 +1134,21 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     overrides,
                 )
                 .await?;
+                let mut rows = Vec::with_capacity(FEATURES.len());
                 let mut name_width = 0;
                 let mut stage_width = 0;
-                let rows = build_feature_rows(&config);
-                for row in &rows {
-                    name_width = name_width.max(row.name.len());
-                    stage_width = stage_width.max(row.stage.len());
+                for def in FEATURES {
+                    let name = def.key;
+                    let stage = stage_str(def.stage);
+                    let enabled = config.features.enabled(def.id);
+                    name_width = name_width.max(name.len());
+                    stage_width = stage_width.max(stage.len());
+                    rows.push((name, stage, enabled));
                 }
+                rows.sort_unstable_by_key(|(name, _, _)| *name);
 
-                for row in rows {
-                    println!(
-                        "{name:<name_width$}  {stage:<stage_width$}  {enabled}",
-                        name = row.name,
-                        stage = row.stage,
-                        enabled = row.enabled
-                    );
+                for (name, stage, enabled) in rows {
+                    println!("{name:<name_width$}  {stage:<stage_width$}  {enabled}");
                 }
             }
             FeaturesSubcommand::Enable(FeatureSetArgs { feature }) => {
@@ -1126,12 +1157,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     root_remote_auth_token_env.as_deref(),
                     "features enable",
                 )?;
-                if let Some(warning) =
-                    enable_feature(&feature, interactive.config_profile.as_deref()).await?
-                {
-                    eprintln!("{warning}");
-                }
-                println!("Enabled feature `{feature}` in config.toml.");
+                enable_feature_in_config(&interactive, &feature).await?;
             }
             FeaturesSubcommand::Disable(FeatureSetArgs { feature }) => {
                 reject_remote_mode_for_subcommand(
@@ -1139,8 +1165,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     root_remote_auth_token_env.as_deref(),
                     "features disable",
                 )?;
-                disable_feature(&feature, interactive.config_profile.as_deref()).await?;
-                println!("Disabled feature `{feature}` in config.toml.");
+                disable_feature_in_config(&interactive, &feature).await?;
             }
         },
     }
@@ -1165,12 +1190,61 @@ async fn run_exec_server_command(
         .map_err(anyhow::Error::from_boxed)
 }
 
+async fn enable_feature_in_config(interactive: &TuiCli, feature: &str) -> anyhow::Result<()> {
+    FeatureToggles::validate_feature(feature)?;
+    let codex_home = find_codex_home()?;
+    ConfigEditsBuilder::new(&codex_home)
+        .with_profile(interactive.config_profile.as_deref())
+        .set_feature_enabled(feature, /*enabled*/ true)
+        .apply()
+        .await?;
+    println!("Enabled feature `{feature}` in config.toml.");
+    maybe_print_under_development_feature_warning(&codex_home, interactive, feature);
+    Ok(())
+}
+
+async fn disable_feature_in_config(interactive: &TuiCli, feature: &str) -> anyhow::Result<()> {
+    FeatureToggles::validate_feature(feature)?;
+    let codex_home = find_codex_home()?;
+    ConfigEditsBuilder::new(&codex_home)
+        .with_profile(interactive.config_profile.as_deref())
+        .set_feature_enabled(feature, /*enabled*/ false)
+        .apply()
+        .await?;
+    println!("Disabled feature `{feature}` in config.toml.");
+    Ok(())
+}
+
+fn maybe_print_under_development_feature_warning(
+    codex_home: &std::path::Path,
+    interactive: &TuiCli,
+    feature: &str,
+) {
+    if interactive.config_profile.is_some() {
+        return;
+    }
+
+    let Some(spec) = FEATURES.iter().find(|spec| spec.key == feature) else {
+        return;
+    };
+    if !matches!(spec.stage, Stage::UnderDevelopment) {
+        return;
+    }
+
+    let config_path = codex_home.join(codex_config::CONFIG_TOML_FILE);
+    eprintln!(
+        "Under-development features enabled: {feature}. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in {}.",
+        config_path.display()
+    );
+}
+
 async fn run_debug_prompt_input_command(
     cmd: DebugPromptInputCommand,
     root_config_overrides: CliConfigOverrides,
     interactive: TuiCli,
     arg0_paths: Arg0DispatchPaths,
 ) -> anyhow::Result<()> {
+    let shared = interactive.shared.into_inner();
     let mut cli_kv_overrides = root_config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
@@ -1181,38 +1255,38 @@ async fn run_debug_prompt_input_command(
         ));
     }
 
-    let approval_policy = if interactive.full_auto {
+    let approval_policy = if shared.full_auto {
         Some(AskForApproval::OnRequest)
-    } else if interactive.dangerously_bypass_approvals_and_sandbox {
+    } else if shared.dangerously_bypass_approvals_and_sandbox {
         Some(AskForApproval::Never)
     } else {
         interactive.approval_policy.map(Into::into)
     };
-    let sandbox_mode = if interactive.full_auto {
+    let sandbox_mode = if shared.full_auto {
         Some(codex_protocol::config_types::SandboxMode::WorkspaceWrite)
-    } else if interactive.dangerously_bypass_approvals_and_sandbox {
+    } else if shared.dangerously_bypass_approvals_and_sandbox {
         Some(codex_protocol::config_types::SandboxMode::DangerFullAccess)
     } else {
-        interactive.sandbox_mode.map(Into::into)
+        shared.sandbox_mode.map(Into::into)
     };
     let overrides = ConfigOverrides {
-        model: interactive.model,
-        config_profile: interactive.config_profile,
+        model: shared.model,
+        config_profile: shared.config_profile,
         approval_policy,
         sandbox_mode,
-        cwd: interactive.cwd,
+        cwd: shared.cwd,
         codex_self_exe: arg0_paths.codex_self_exe,
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe,
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe,
-        show_raw_agent_reasoning: interactive.oss.then_some(true),
+        show_raw_agent_reasoning: shared.oss.then_some(true),
         ephemeral: Some(true),
-        additional_writable_roots: interactive.add_dir,
+        additional_writable_roots: shared.add_dir,
         ..Default::default()
     };
     let config =
         Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides).await?;
 
-    let mut input = interactive
+    let mut input = shared
         .images
         .into_iter()
         .chain(cmd.images)
@@ -1231,6 +1305,31 @@ async fn run_debug_prompt_input_command(
     Ok(())
 }
 
+async fn run_debug_models_command(
+    cmd: DebugModelsCommand,
+    root_config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
+    let catalog = if cmd.bundled {
+        bundled_models_response()?
+    } else {
+        let cli_overrides = root_config_overrides
+            .parse_overrides()
+            .map_err(anyhow::Error::msg)?;
+        let config = Config::load_with_cli_overrides(cli_overrides).await?;
+        let auth_manager =
+            AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ true);
+        let models_manager =
+            build_models_manager(&config, auth_manager, CollaborationModesConfig::default());
+        models_manager
+            .raw_model_catalog(RefreshStrategy::OnlineIfUncached)
+            .await
+    };
+
+    serde_json::to_writer(std::io::stdout(), &catalog)?;
+    println!();
+    Ok(())
+}
+
 async fn run_debug_clear_memories_command(
     root_config_overrides: &CliConfigOverrides,
     interactive: &TuiCli,
@@ -1244,12 +1343,29 @@ async fn run_debug_clear_memories_command(
     };
     let config =
         Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides).await?;
-    let message = clear_memories(
-        config.sqlite_home.as_path(),
-        config.codex_home.as_path(),
-        &config.model_provider_id,
-    )
-    .await?;
+
+    let state_path = state_db_path(config.sqlite_home.as_path());
+    let mut cleared_state_db = false;
+    if tokio::fs::try_exists(&state_path).await? {
+        let state_db =
+            StateRuntime::init(config.sqlite_home.clone(), config.model_provider_id.clone())
+                .await?;
+        state_db.clear_memory_data().await?;
+        cleared_state_db = true;
+    }
+
+    clear_memory_roots_contents(&config.codex_home).await?;
+
+    let mut message = if cleared_state_db {
+        format!("Cleared memory state from {}.", state_path.display())
+    } else {
+        format!("No state db found at {}.", state_path.display())
+    };
+    message.push_str(&format!(
+        " Cleared memory directories under {}.",
+        config.codex_home.display()
+    ));
+
     println!("{message}");
 
     Ok(())
@@ -1441,40 +1557,24 @@ fn finalize_fork_interactive(
 /// root-level flags. Only overrides fields explicitly set on the subcommand-scoped
 /// CLI. Also appends `-c key=value` overrides with highest precedence.
 fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli) {
-    if let Some(model) = subcommand_cli.model {
-        interactive.model = Some(model);
-    }
-    if subcommand_cli.oss {
-        interactive.oss = true;
-    }
-    if let Some(profile) = subcommand_cli.config_profile {
-        interactive.config_profile = Some(profile);
-    }
-    if let Some(sandbox) = subcommand_cli.sandbox_mode {
-        interactive.sandbox_mode = Some(sandbox);
-    }
-    if let Some(approval) = subcommand_cli.approval_policy {
+    let TuiCli {
+        shared,
+        approval_policy,
+        web_search,
+        prompt,
+        config_overrides,
+        ..
+    } = subcommand_cli;
+    interactive
+        .shared
+        .apply_subcommand_overrides(shared.into_inner());
+    if let Some(approval) = approval_policy {
         interactive.approval_policy = Some(approval);
     }
-    if subcommand_cli.full_auto {
-        interactive.full_auto = true;
-    }
-    if subcommand_cli.dangerously_bypass_approvals_and_sandbox {
-        interactive.dangerously_bypass_approvals_and_sandbox = true;
-    }
-    if let Some(cwd) = subcommand_cli.cwd {
-        interactive.cwd = Some(cwd);
-    }
-    if subcommand_cli.web_search {
+    if web_search {
         interactive.web_search = true;
     }
-    if !subcommand_cli.images.is_empty() {
-        interactive.images = subcommand_cli.images;
-    }
-    if !subcommand_cli.add_dir.is_empty() {
-        interactive.add_dir.extend(subcommand_cli.add_dir);
-    }
-    if let Some(prompt) = subcommand_cli.prompt {
+    if let Some(prompt) = prompt {
         // Normalize CRLF/CR to LF so CLI-provided text can't leak `\r` into TUI state.
         interactive.prompt = Some(prompt.replace("\r\n", "\n").replace('\r', "\n"));
     }
@@ -1482,7 +1582,7 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
     interactive
         .config_overrides
         .raw_overrides
-        .extend(subcommand_cli.config_overrides.raw_overrides);
+        .extend(config_overrides.raw_overrides);
 }
 
 fn print_completion(cmd: CompletionCommand) {
@@ -1602,37 +1702,25 @@ mod tests {
         assert_eq!(args.prompt.as_deref(), Some("re-review"));
     }
 
+    #[test]
+    fn dangerous_bypass_conflicts_with_approval_policy() {
+        let err = MultitoolCli::try_parse_from([
+            "codex",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--ask-for-approval",
+            "on-request",
+        ])
+        .expect_err("conflicting permission flags should be rejected");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
     fn app_server_from_args(args: &[&str]) -> AppServerCommand {
         let cli = MultitoolCli::try_parse_from(args).expect("parse");
         let Subcommand::AppServer(app_server) = cli.subcommand.expect("app-server present") else {
             unreachable!()
         };
         app_server
-    }
-
-    fn login_from_args(args: &[&str]) -> LoginCommand {
-        let cli = MultitoolCli::try_parse_from(args).expect("parse");
-        let Some(Subcommand::Login(login)) = cli.subcommand else {
-            panic!("expected login subcommand");
-        };
-        login
-    }
-
-    #[test]
-    fn login_provider_copilot_ignores_device_auth_flag() {
-        let login = login_from_args(&[
-            "codex",
-            "login",
-            "--provider",
-            "copilot",
-            "--device-auth",
-            "--force",
-        ]);
-
-        assert_eq!(login.provider.as_deref(), Some("copilot"));
-        assert!(login.use_device_code);
-        assert!(login.force);
-        assert_eq!(login_flow(&login), LoginFlow::Copilot);
     }
 
     #[test]
@@ -1662,12 +1750,69 @@ mod tests {
     }
 
     #[test]
+    fn debug_models_parses_bundled_flag() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "debug", "models", "--bundled"]).expect("parse");
+
+        let Some(Subcommand::Debug(DebugCommand {
+            subcommand: DebugSubcommand::Models(cmd),
+        })) = cli.subcommand
+        else {
+            panic!("expected debug models subcommand");
+        };
+
+        assert!(cmd.bundled);
+    }
+
+    #[test]
     fn responses_subcommand_is_hidden_from_help_but_parses() {
         let help = MultitoolCli::command().render_help().to_string();
         assert!(!help.contains("responses"));
 
         let cli = MultitoolCli::try_parse_from(["codex", "responses"]).expect("parse");
         assert!(matches!(cli.subcommand, Some(Subcommand::Responses(_))));
+    }
+
+    #[test]
+    fn plugin_marketplace_add_parses_under_plugin() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "plugin", "marketplace", "add", "owner/repo"])
+                .expect("parse");
+
+        assert!(matches!(cli.subcommand, Some(Subcommand::Plugin(_))));
+    }
+
+    #[test]
+    fn plugin_marketplace_upgrade_parses_under_plugin() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "plugin", "marketplace", "upgrade", "debug"])
+                .expect("parse");
+
+        assert!(matches!(cli.subcommand, Some(Subcommand::Plugin(_))));
+    }
+
+    #[test]
+    fn plugin_marketplace_remove_parses_under_plugin() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "plugin", "marketplace", "remove", "debug"])
+                .expect("parse");
+
+        assert!(matches!(cli.subcommand, Some(Subcommand::Plugin(_))));
+    }
+
+    #[test]
+    fn marketplace_no_longer_parses_at_top_level() {
+        let add_result =
+            MultitoolCli::try_parse_from(["codex", "marketplace", "add", "owner/repo"]);
+        assert!(add_result.is_err());
+
+        let upgrade_result =
+            MultitoolCli::try_parse_from(["codex", "marketplace", "upgrade", "debug"]);
+        assert!(upgrade_result.is_err());
+
+        let remove_result =
+            MultitoolCli::try_parse_from(["codex", "marketplace", "remove", "debug"]);
+        assert!(remove_result.is_err());
     }
 
     fn sample_exit_info(conversation_id: Option<&str>, thread_name: Option<&str>) -> AppExitInfo {
@@ -1729,7 +1874,7 @@ mod tests {
     }
 
     #[test]
-    fn format_exit_messages_prefers_thread_name() {
+    fn format_exit_messages_uses_id_even_when_thread_has_name() {
         let exit_info = sample_exit_info(
             Some("123e4567-e89b-12d3-a456-426614174000"),
             Some("my-thread"),
@@ -1739,7 +1884,8 @@ mod tests {
             lines,
             vec![
                 "Token usage: total=2 input=0 output=2".to_string(),
-                "To continue this session, run codex resume my-thread".to_string(),
+                "To continue this session, run codex resume 123e4567-e89b-12d3-a456-426614174000"
+                    .to_string(),
             ]
         );
     }

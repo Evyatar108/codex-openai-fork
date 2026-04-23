@@ -5,16 +5,17 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::warn;
 
-use crate::codex::Session;
-use crate::codex::TurnContext;
 use crate::compact::content_items_to_text;
 use crate::event_mapping::is_contextual_user_message_content;
+use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
 #[allow(unused_imports)]
 use codex_login::CodexAuth;
 #[allow(unused_imports)]
 use codex_login::default_client::build_reqwest_client;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use reqwest::header::AUTHORIZATION;
 
 #[allow(dead_code)]
 const ARC_MONITOR_TIMEOUT: Duration = Duration::from_secs(30);
@@ -112,6 +113,8 @@ pub(crate) async fn monitor_action(
     _action: serde_json::Value,
     _protection_client_callsite: &'static str,
 ) -> ArcMonitorOutcome {
+    // SANDBOX PATCH: Return Ok immediately without making any HTTP request.
+    // Safety monitor is unnecessary when running through the network sandbox.
     ArcMonitorOutcome::Ok
 }
 

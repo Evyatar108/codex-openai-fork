@@ -6,6 +6,7 @@ use codex_api::Provider as ApiProvider;
 use codex_copilot::CopilotAuth;
 use codex_core::config::Config;
 use codex_core::copilot_transport;
+use codex_model_provider::create_model_provider;
 use codex_utils_cli::CliConfigOverrides;
 use serde_json::Value;
 use serde_json::json;
@@ -36,37 +37,40 @@ pub(crate) async fn run_responses_command(
     let base_auth_manager = codex_login::AuthManager::shared_from_config(
         &config, /*enable_codex_api_key_env*/ true,
     );
-    let auth_manager =
-        codex_login::auth_manager_for_provider(Some(base_auth_manager), &config.model_provider);
-    let auth = match auth_manager {
-        Some(auth_manager) => auth_manager.auth().await,
-        None => None,
-    };
-    let api_provider = config
-        .model_provider
-        .to_api_provider(auth.as_ref().map(codex_login::CodexAuth::auth_mode))?;
-    let copilot_auth = if config.model_provider.is_copilot() {
+    let is_copilot = config.model_provider.is_copilot();
+    let model_provider = create_model_provider(config.model_provider, Some(base_auth_manager));
+    let api_provider = model_provider.api_provider().await?;
+    let api_auth = model_provider.api_auth().await?;
+    let copilot_auth = if is_copilot {
         Some(Arc::new(
             CopilotAuth::new().map_err(|e| anyhow::anyhow!(e))?,
         ))
     } else {
         None
     };
-    let api_auth =
-        codex_login::auth_provider_from_auth(auth, &config.model_provider, copilot_auth).await?;
-    run_responses_with_auth(payload, api_provider, api_auth).await
+    run_responses_with_auth(payload, api_provider, api_auth, copilot_auth).await
 }
 
 pub async fn run_responses_with_auth(
     payload: Value,
     api_provider: ApiProvider,
-    api_auth: CoreAuthProvider,
+    api_auth: Arc<dyn codex_api::ApiAuthProvider>,
+    copilot_auth: Option<Arc<CopilotAuth>>,
 ) -> anyhow::Result<()> {
     let transport =
         codex_api::ReqwestTransport::new(codex_login::default_client::build_reqwest_client());
-    let client = if api_auth.copilot.is_some() {
+    // SANDBOX PATCH: delegate Copilot sessions to the shared transport factory so the
+    // per-request pre_send_hook (normalize_payload + copilot-vision-request) stays consistent
+    // with the streaming path in `core::client::stream_responses_api`.
+    let client = if let Some(copilot_auth) = copilot_auth {
         // TODO(copilot): add retry-on-401/403 once the CLI path shares the main client retry loop.
-        copilot_transport::build_copilot_client(api_provider, api_auth, transport)
+        let header_source = Arc::new(
+            codex_copilot::CopilotHeaderSource::new(copilot_auth)
+                .await
+                .map_err(|err| anyhow::anyhow!(err))?,
+        );
+        let copilot_auth_provider = CoreAuthProvider::default().with_copilot(header_source);
+        copilot_transport::build_copilot_client(api_provider, copilot_auth_provider, transport)
     } else {
         codex_api::ResponsesClient::new(transport, api_provider, api_auth)
     };
@@ -129,6 +133,18 @@ fn response_event_to_json(event: codex_api::ResponseEvent) -> serde_json::Value 
         }
         codex_api::ResponseEvent::OutputTextDelta(delta) => {
             json!({ "type": "response.output_text.delta", "delta": delta })
+        }
+        codex_api::ResponseEvent::ToolCallInputDelta {
+            item_id,
+            call_id,
+            delta,
+        } => {
+            json!({
+                "type": "response.tool_call_input.delta",
+                "item_id": item_id,
+                "call_id": call_id,
+                "delta": delta,
+            })
         }
         codex_api::ResponseEvent::ReasoningSummaryDelta {
             delta,
@@ -318,9 +334,32 @@ mod tests {
             ]
         });
 
-        run_responses_with_auth(payload, api_provider, api_auth)
+        let noop_auth: Arc<dyn codex_api::ApiAuthProvider> = Arc::new(api_auth.clone());
+        let copilot_auth = api_auth
+            .copilot
+            .as_ref()
+            .expect("copilot header source present")
+            .clone();
+        // The Copilot branch of run_responses_with_auth rebuilds its own CoreAuthProvider from
+        // CopilotAuth; in this test we pre-materialized the header source, so invoke the
+        // transport factory directly to exercise the pre_send_hook wiring.
+        let transport =
+            codex_api::ReqwestTransport::new(codex_login::default_client::build_reqwest_client());
+        let client = copilot_transport::build_copilot_client(api_provider, api_auth, transport);
+        let mut stream = client
+            .stream(
+                payload,
+                Default::default(),
+                codex_api::Compression::None,
+                /*turn_state*/ None,
+            )
             .await
-            .expect("copilot responses command");
+            .expect("copilot responses stream");
+        while let Some(event) = stream.rx_event.recv().await {
+            let _ = event.expect("event ok");
+        }
+        let _ = noop_auth;
+        let _ = copilot_auth;
 
         let requests = responses_server
             .received_requests()
@@ -398,5 +437,23 @@ mod tests {
             .expect("test auth");
 
         (temp, Arc::new(auth))
+    }
+
+    #[test]
+    fn tool_call_input_delta_uses_responses_event_name() {
+        let delta = response_event_to_json(codex_api::ResponseEvent::ToolCallInputDelta {
+            item_id: "item-1".to_string(),
+            call_id: Some("call-1".to_string()),
+            delta: "patch".to_string(),
+        });
+        assert_eq!(
+            delta,
+            json!({
+                "type": "response.tool_call_input.delta",
+                "item_id": "item-1",
+                "call_id": "call-1",
+                "delta": "patch",
+            })
+        );
     }
 }

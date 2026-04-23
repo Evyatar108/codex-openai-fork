@@ -5,9 +5,9 @@ use crate::agent::agent_status_from_event;
 use crate::config::AgentRoleConfig;
 use crate::config::Config;
 use crate::config::ConfigBuilder;
-use crate::contextual_user_message::SUBAGENT_NOTIFICATION_OPEN_TAG;
+use crate::context::ContextualUserFragment;
+use crate::context::SubagentNotification;
 use assert_matches::assert_matches;
-use chrono::Utc;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
@@ -24,15 +24,15 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_thread_store::ArchiveThreadParams;
+use codex_thread_store::LocalThreadStore;
+use codex_thread_store::ThreadStore;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use toml::Value as TomlValue;
-
-const ASYNC_TEST_TIMEOUT: Duration = Duration::from_secs(15);
-const SLOW_ASYNC_TEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 async fn test_config_with_cli_overrides(
     cli_overrides: Vec<(String, TomlValue)>,
@@ -128,7 +128,7 @@ fn has_subagent_notification(history_items: &[ResponseItem]) -> bool {
         }
         content.iter().any(|content_item| match content_item {
             ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                text.contains(SUBAGENT_NOTIFICATION_OPEN_TAG)
+                SubagentNotification::matches_text(text)
             }
             ContentItem::InputImage { .. } => false,
         })
@@ -189,7 +189,9 @@ async fn wait_for_subagent_notification(parent_thread: &Arc<CodexThread>) -> boo
             sleep(Duration::from_millis(25)).await;
         }
     };
-    timeout(ASYNC_TEST_TIMEOUT, wait).await.is_ok()
+    // CI can take several seconds to schedule the detached completion watcher,
+    // especially on slower Windows runners.
+    timeout(Duration::from_secs(10), wait).await.is_ok()
 }
 
 async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str) {
@@ -213,7 +215,7 @@ async fn wait_for_live_thread_spawn_children(
     let mut expected_children = expected_children.to_vec();
     expected_children.sort_by_key(std::string::ToString::to_string);
 
-    timeout(ASYNC_TEST_TIMEOUT, async {
+    timeout(Duration::from_secs(5), async {
         loop {
             let mut child_ids = control
                 .open_thread_spawn_children(parent_thread_id)
@@ -504,25 +506,6 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
 async fn append_message_records_assistant_message() {
     let harness = AgentControlHarness::new().await;
     let (thread_id, thread) = harness.start_thread().await;
-    let mut status_rx = harness
-        .control
-        .subscribe_status(thread_id)
-        .await
-        .expect("status subscription should succeed");
-    if matches!(status_rx.borrow().clone(), AgentStatus::PendingInit) {
-        let _ = timeout(SLOW_ASYNC_TEST_TIMEOUT, async {
-            loop {
-                status_rx
-                    .changed()
-                    .await
-                    .expect("thread status should advance past pending init");
-                if !matches!(status_rx.borrow().clone(), AgentStatus::PendingInit) {
-                    break;
-                }
-            }
-        })
-        .await;
-    }
     let message =
         "author: /root\nrecipient: /root/worker\nother_recipients: []\nContent: hello from tests";
 
@@ -1571,7 +1554,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         .await
         .expect("status subscription should succeed");
     if matches!(status_rx.borrow().clone(), AgentStatus::PendingInit) {
-        timeout(ASYNC_TEST_TIMEOUT, async {
+        timeout(Duration::from_secs(5), async {
             loop {
                 status_rx
                     .changed()
@@ -1593,7 +1576,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
     let state_db = child_thread
         .state_db()
         .expect("sqlite state db should be available for nickname resume test");
-    timeout(SLOW_ASYNC_TEST_TIMEOUT, async {
+    timeout(Duration::from_secs(5), async {
         loop {
             if let Ok(Some(metadata)) = state_db.get_thread(child_thread_id).await
                 && metadata.agent_nickname.is_some()
@@ -1680,38 +1663,18 @@ async fn resume_agent_from_rollout_reads_archived_rollout_path() {
         .await
         .expect("child thread should exist");
     persist_thread_for_tree_resume(&child_thread, "persist before archiving").await;
-    let rollout_path = child_thread
-        .rollout_path()
-        .expect("thread should have rollout path");
-    let state_db = child_thread
-        .state_db()
-        .expect("thread should have state db handle");
-
     let _ = harness
         .control
         .shutdown_live_agent(child_thread_id)
         .await
         .expect("child shutdown should succeed");
-
-    let archived_root = harness
-        .config
-        .codex_home
-        .join(crate::ARCHIVED_SESSIONS_SUBDIR);
-    tokio::fs::create_dir_all(&archived_root)
+    let store = LocalThreadStore::new(codex_rollout::RolloutConfig::from_view(&harness.config));
+    store
+        .archive_thread(ArchiveThreadParams {
+            thread_id: child_thread_id,
+        })
         .await
-        .expect("archived root should exist");
-    let archived_rollout_path = archived_root.join(
-        rollout_path
-            .file_name()
-            .expect("rollout file name should be present"),
-    );
-    tokio::fs::rename(&rollout_path, &archived_rollout_path)
-        .await
-        .expect("rollout should move to archived path");
-    state_db
-        .mark_archived(child_thread_id, archived_rollout_path.as_path(), Utc::now())
-        .await
-        .expect("state db archive update should succeed");
+        .expect("child thread should archive");
 
     let resumed_thread_id = harness
         .control

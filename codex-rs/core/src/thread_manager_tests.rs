@@ -1,7 +1,7 @@
 use super::*;
-use crate::codex::make_session_and_context;
 use crate::config::test_config;
 use crate::rollout::RolloutRecorder;
+use crate::session::tests::make_session_and_context;
 use crate::tasks::interrupted_turn_history_marker;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_copilot_provider;
@@ -240,7 +240,7 @@ async fn ignores_session_prefix_messages_when_truncating() {
 #[tokio::test]
 async fn shutdown_all_threads_bounded_submits_shutdown_to_every_thread() {
     let temp_dir = tempdir().expect("tempdir");
-    let mut config = test_config();
+    let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
@@ -286,7 +286,7 @@ async fn thread_manager_non_copilot_sessions_still_use_openai_models_provider() 
         mount_models_once(&other_provider_server, ModelsResponse { models: vec![] }).await;
 
     let temp_dir = tempdir().expect("tempdir");
-    let mut config = test_config();
+    let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
@@ -476,7 +476,7 @@ fn mixed_response_and_legacy_user_event_history_is_mid_turn() {
 #[tokio::test]
 async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_history() {
     let temp_dir = tempdir().expect("tempdir");
-    let mut config = test_config();
+    let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
@@ -579,7 +579,7 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
 #[tokio::test]
 async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
     let temp_dir = tempdir().expect("tempdir");
-    let mut config = test_config();
+    let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");
@@ -672,7 +672,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
 #[tokio::test]
 async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_source() {
     let temp_dir = tempdir().expect("tempdir");
-    let mut config = test_config();
+    let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
     config.cwd = config.codex_home.abs();
     std::fs::create_dir_all(&config.codex_home).expect("create codex home");

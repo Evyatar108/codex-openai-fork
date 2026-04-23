@@ -1,4 +1,3 @@
-use crate::AuthProvider as ApiAuthProvider;
 use crate::TransportError;
 use crate::error::ApiError;
 use crate::rate_limits::parse_promo_message;
@@ -12,7 +11,6 @@ use codex_protocol::error::RetryLimitReachedError;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::error::UsageLimitReachedError;
 use http::HeaderMap;
-use http::HeaderValue;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;

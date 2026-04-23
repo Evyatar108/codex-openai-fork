@@ -8,14 +8,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::codex::TurnContext;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::StdoutStream;
 use crate::exec::execute_exec_request;
 use crate::exec_env::create_env;
 use crate::sandboxing::ExecRequest;
-use crate::spawn::CODEX_SANDBOX_ENV_VAR;
-use crate::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
+use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
 use crate::tools::format_exec_output_str;
 use crate::tools::runtimes::maybe_wrap_shell_lc_with_snapshot;
@@ -34,7 +32,7 @@ use codex_shell_command::parse_command::parse_command;
 
 use super::SessionTask;
 use super::SessionTaskContext;
-use crate::codex::Session;
+use crate::session::session::Session;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
@@ -126,14 +124,10 @@ pub(crate) async fn execute_user_shell_command(
     let use_login_shell = true;
     let session_shell = session.user_shell();
     let display_command = session_shell.derive_exec_args(&command, use_login_shell);
-    let mut exec_env_map = create_env(
+    let exec_env_map = create_env(
         &turn_context.shell_environment_policy,
         Some(session.conversation_id),
     );
-    // These markers describe Codex's own sandbox/runtime state and should not
-    // leak into user-initiated shell commands.
-    exec_env_map.remove(CODEX_SANDBOX_ENV_VAR);
-    exec_env_map.remove(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR);
     let exec_command = maybe_wrap_shell_lc_with_snapshot(
         &display_command,
         session_shell.as_ref(),
@@ -169,12 +163,15 @@ pub(crate) async fn execute_user_shell_command(
         cwd: cwd.clone(),
         env: exec_env_map,
         exec_server_env_config: None,
-        network: turn_context.network.clone(),
+        // `/shell` is the explicit full-access escape hatch, so it must not
+        // inherit a managed proxy from the surrounding session or turn.
+        network: None,
         // TODO(zhao-oai): Now that we have ExecExpiration::Cancellation, we
         // should use that instead of an "arbitrarily large" timeout here.
         expiration: USER_SHELL_TIMEOUT_MS.into(),
         capture_policy: ExecCapturePolicy::ShellTool,
         sandbox: SandboxType::None,
+        windows_sandbox_policy_cwd: cwd.clone(),
         windows_sandbox_level: turn_context.windows_sandbox_level,
         windows_sandbox_private_desktop: turn_context
             .config
