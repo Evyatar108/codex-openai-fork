@@ -61,6 +61,11 @@ pub fn provider_config_flags(model: &str, default_shell: Option<&str>) -> Vec<St
         // Source-level network patching handles isolation; disable codex-core's
         // built-in sandbox so it doesn't retry on sandbox-related errors.
         "sandbox_mode=\"danger-full-access\"".to_string(),
+        // SANDBOX PATCH: remote_control is ChatGPT-only (protocol allows only
+        // chatgpt.com / chatgpt-staging.com / localhost as the enroll target,
+        // and the transport attaches ChatGPT-specific auth). Belt-and-suspenders
+        // to the source-level force-disable in `app-server/src/transport/remote_control/mod.rs`.
+        "features.remote_control=false".to_string(),
         // Disable OpenAI Curated plugins in the sandboxed Copilot bundle.
         "plugins.github@openai-curated.enabled=false".to_string(),
         "plugins.notion@openai-curated.enabled=false".to_string(),

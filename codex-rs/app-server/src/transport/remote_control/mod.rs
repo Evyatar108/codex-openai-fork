@@ -7,8 +7,10 @@ use crate::transport::remote_control::websocket::RemoteControlWebsocket;
 use crate::transport::remote_control::websocket::RemoteControlWebsocketOptions;
 
 pub use self::protocol::ClientId;
+use self::protocol::RemoteControlTarget;
 use self::protocol::ServerEvent;
 use self::protocol::StreamId;
+#[allow(unused_imports)] // SANDBOX PATCH: unused after force-disable of remote_control
 use self::protocol::normalize_remote_control_url;
 use super::CHANNEL_CAPACITY;
 use super::TransportEvent;
@@ -89,11 +91,16 @@ pub(crate) async fn start_remote_control_with_options(
         app_server_client_name_rx,
         initial_enabled,
     } = options;
-    let remote_control_target = if initial_enabled {
-        Some(normalize_remote_control_url(&remote_control_url)?)
-    } else {
-        None
-    };
+    // SANDBOX PATCH: remote_control is ChatGPT-only (protocol::is_allowed_chatgpt_host
+    // restricts the endpoint to chatgpt.com / chatgpt-staging.com / localhost, and the
+    // enroll + websocket paths attach ChatGPT-specific auth). Copilot sessions have no
+    // ChatGPT OAuth, so enabling this here would leak the `chatgpt-account-id` header
+    // to chatgpt.com and/or fail silently. Force-disable regardless of the
+    // `features.remote_control` flag or the `initial_enabled` argument: set target to
+    // None unconditionally so the websocket stays in the "disabled" branch.
+    let _ = initial_enabled;
+    let initial_enabled = false;
+    let remote_control_target: Option<RemoteControlTarget> = None;
     let (enabled_tx, enabled_rx) = watch::channel(initial_enabled);
     let join_handle = tokio::spawn(async move {
         RemoteControlWebsocket::from_options(RemoteControlWebsocketOptions {

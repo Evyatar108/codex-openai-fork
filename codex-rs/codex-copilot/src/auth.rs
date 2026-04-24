@@ -526,7 +526,12 @@ pub(crate) fn build_session_headers(
     device_id: &str,
 ) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, header_value(&format!("Bearer {token}")));
+    // SANDBOX PATCH: mark the Bearer token HeaderValue as sensitive so it is
+    // redacted in Debug / tracing output; guards against accidental token
+    // leakage through any future `tracing::debug!("{:?}", headers)` call.
+    let mut authorization = header_value(&format!("Bearer {token}"));
+    authorization.set_sensitive(true);
+    headers.insert(AUTHORIZATION, authorization);
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(
