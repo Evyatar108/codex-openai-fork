@@ -90,6 +90,9 @@ fn response_event_to_json(event: codex_api::ResponseEvent) -> serde_json::Value 
         codex_api::ResponseEvent::ServerModel(model) => {
             json!({ "type": "response.server_model", "model": model })
         }
+        codex_api::ResponseEvent::ModelVerifications(verifications) => {
+            json!({ "type": "response.model_verifications", "verifications": verifications })
+        }
         codex_api::ResponseEvent::ServerReasoningIncluded(included) => {
             json!({ "type": "response.server_reasoning_included", "included": included })
         }
@@ -325,7 +328,7 @@ mod tests {
         // CopilotModelProvider::api_auth in `codex-model-provider`.
         let transport =
             codex_api::ReqwestTransport::new(codex_login::default_client::build_reqwest_client());
-        let client = copilot_transport::build_copilot_client(api_provider, api_auth, transport);
+        let client = codex_core::copilot_transport::build_copilot_client(api_provider, api_auth, transport);
         let mut stream = client
             .stream(
                 payload,

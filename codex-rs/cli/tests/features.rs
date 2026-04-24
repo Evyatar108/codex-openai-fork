@@ -57,7 +57,8 @@ async fn features_list_is_sorted_alphabetically_by_feature_name() -> Result<()> 
     let config = Config::load_default_with_cli_overrides_for_codex_home(
         codex_home.path().to_path_buf(),
         vec![],
-    )?;
+    )
+    .await?;
     let actual_names = build_feature_rows(&config)
         .into_iter()
         .map(|row| row.name.to_string())

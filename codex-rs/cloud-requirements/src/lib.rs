@@ -50,9 +50,16 @@ const CLOUD_REQUIREMENTS_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const CLOUD_REQUIREMENTS_FETCH_ATTEMPT_METRIC: &str = "codex.cloud_requirements.fetch_attempt";
 const CLOUD_REQUIREMENTS_FETCH_FINAL_METRIC: &str = "codex.cloud_requirements.fetch_final";
 const CLOUD_REQUIREMENTS_LOAD_METRIC: &str = "codex.cloud_requirements.load";
-const CLOUD_REQUIREMENTS_LOAD_FAILED_MESSAGE: &str = "failed to load your workspace-managed config";
-const CLOUD_REQUIREMENTS_PARSE_FAILED_MESSAGE: &str = "Your workspace-managed config is invalid and could not be parsed. Please contact your workspace admin.";
-const CLOUD_REQUIREMENTS_AUTH_RECOVERY_FAILED_MESSAGE: &str = "Your authentication session could not be refreshed automatically. Please log out and sign in again.";
+const CLOUD_REQUIREMENTS_LOAD_FAILED_MESSAGE: &str =
+    "Failed to load cloud requirements (workspace-managed policies).";
+const CLOUD_REQUIREMENTS_PARSE_FAILED_MESSAGE: &str = concat!(
+    "Cloud requirements (workspace-managed policies) are invalid and could not be parsed. ",
+    "Please contact your workspace admin."
+);
+const CLOUD_REQUIREMENTS_AUTH_RECOVERY_FAILED_MESSAGE: &str = concat!(
+    "Your authentication session could not be refreshed automatically. ",
+    "Please log out and sign in again."
+);
 const CLOUD_REQUIREMENTS_CACHE_WRITE_HMAC_KEY: &[u8] =
     b"codex-cloud-requirements-cache-v3-064f8542-75b4-494c-a294-97d3ce597271";
 const CLOUD_REQUIREMENTS_CACHE_READ_HMAC_KEYS: &[&[u8]] =
@@ -195,15 +202,11 @@ trait RequirementsFetcher: Send + Sync {
 
 struct BackendRequirementsFetcher {
     base_url: String,
-    auth_manager: Arc<AuthManager>,
 }
 
 impl BackendRequirementsFetcher {
-    fn new(auth_manager: Arc<AuthManager>, base_url: String) -> Self {
-        Self {
-            base_url,
-            auth_manager,
-        }
+    fn new(base_url: String) -> Self {
+        Self { base_url }
     }
 }
 
@@ -667,11 +670,8 @@ pub fn cloud_requirements_loader(
     codex_home: PathBuf,
 ) -> CloudRequirementsLoader {
     let service = CloudRequirementsService::new(
-        auth_manager.clone(),
-        Arc::new(BackendRequirementsFetcher::new(
-            auth_manager,
-            chatgpt_base_url,
-        )),
+        auth_manager,
+        Arc::new(BackendRequirementsFetcher::new(chatgpt_base_url)),
         codex_home,
         CLOUD_REQUIREMENTS_TIMEOUT,
     );
@@ -708,6 +708,7 @@ pub fn cloud_requirements_loader_for_storage(
         codex_home.clone(),
         enable_codex_api_key_env,
         credentials_store_mode,
+        Some(chatgpt_base_url.clone()),
     );
     cloud_requirements_loader(auth_manager, chatgpt_base_url, codex_home)
 }
@@ -835,6 +836,7 @@ mod tests {
             tmp.path().to_path_buf(),
             /*enable_codex_api_key_env*/ false,
             AuthCredentialsStoreMode::File,
+            /*chatgpt_base_url*/ None,
         ))
     }
 
@@ -859,6 +861,7 @@ mod tests {
             tmp.path().to_path_buf(),
             /*enable_codex_api_key_env*/ false,
             AuthCredentialsStoreMode::File,
+            /*chatgpt_base_url*/ None,
         ))
     }
 
@@ -967,6 +970,7 @@ mod tests {
                 home.path().to_path_buf(),
                 /*enable_codex_api_key_env*/ false,
                 AuthCredentialsStoreMode::File,
+                /*chatgpt_base_url*/ None,
             )),
             _home: home,
         }
@@ -1145,6 +1149,7 @@ mod tests {
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1176,6 +1181,7 @@ mod tests {
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1207,6 +1213,7 @@ mod tests {
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1255,6 +1262,7 @@ mod tests {
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1339,6 +1347,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1371,6 +1380,7 @@ enabled = false
             auth_home.path().to_path_buf(),
             /*enable_codex_api_key_env*/ false,
             AuthCredentialsStoreMode::File,
+            /*chatgpt_base_url*/ None,
         ));
 
         write_auth_json(
@@ -1413,6 +1423,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1443,6 +1454,7 @@ enabled = false
             auth_home.path().to_path_buf(),
             /*enable_codex_api_key_env*/ false,
             AuthCredentialsStoreMode::File,
+            /*chatgpt_base_url*/ None,
         ));
 
         write_auth_json(
@@ -1485,6 +1497,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1573,6 +1586,7 @@ enabled = false
             auth_home.path().to_path_buf(),
             /*enable_codex_api_key_env*/ false,
             AuthCredentialsStoreMode::File,
+            /*chatgpt_base_url*/ None,
         ));
 
         let fetcher = Arc::new(UnauthorizedFetcher {
@@ -1684,6 +1698,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1721,6 +1736,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1778,6 +1794,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1830,6 +1847,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1886,6 +1904,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -1943,6 +1962,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -2000,6 +2020,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -2053,10 +2074,7 @@ enabled = false
             .await
             .expect("cloud requirements task")
             .expect_err("cloud requirements retry exhaustion should fail closed");
-        assert_eq!(
-            err.to_string(),
-            "failed to load your workspace-managed config"
-        );
+        assert_eq!(err.to_string(), CLOUD_REQUIREMENTS_LOAD_FAILED_MESSAGE);
         assert_eq!(err.code(), CloudRequirementsLoadErrorCode::RequestFailed);
         assert_eq!(
             fetcher.request_count.load(Ordering::SeqCst),
@@ -2090,6 +2108,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,
@@ -2119,6 +2138,7 @@ enabled = false
                 allowed_web_search_modes: None,
                 guardian_policy_config: None,
                 feature_requirements: None,
+                hooks: None,
                 mcp_servers: None,
                 apps: None,
                 rules: None,

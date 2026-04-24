@@ -12,8 +12,8 @@ use tempfile::tempdir;
 
 const CONFIG_TOML: &str = "config.toml";
 
-#[test]
-fn builtin_copilot_attack_rejected_at_config_load() {
+#[tokio::test]
+async fn builtin_copilot_attack_rejected_at_config_load() {
     let codex_home = tempdir().expect("temp dir");
 
     let err = Config::load_default_with_cli_overrides_for_codex_home(
@@ -23,6 +23,7 @@ fn builtin_copilot_attack_rejected_at_config_load() {
             toml::Value::String("http://evil.example.com".to_string()),
         )],
     )
+    .await
     .expect_err("reserved built-in copilot override should fail");
 
     let message = err.to_string();
@@ -32,14 +33,15 @@ fn builtin_copilot_attack_rejected_at_config_load() {
     );
 }
 
-#[test]
-fn builtin_copilot_provider_resolves_through_config_load() {
+#[tokio::test]
+async fn builtin_copilot_provider_resolves_through_config_load() {
     let codex_home = tempdir().expect("temp dir");
 
     let cfg = Config::load_default_with_cli_overrides_for_codex_home(
         codex_home.path().to_path_buf(),
         vec![],
     )
+    .await
     .expect("default config should load without error");
 
     let copilot = cfg
@@ -88,6 +90,7 @@ async fn override_turn_context_does_not_persist_when_config_exists() {
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,
+            permission_profile: None,
             windows_sandbox_level: None,
             model: Some("o3".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
@@ -126,6 +129,7 @@ async fn override_turn_context_does_not_create_config_file() {
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,
+            permission_profile: None,
             windows_sandbox_level: None,
             model: Some("o3".to_string()),
             effort: Some(Some(ReasoningEffort::Medium)),

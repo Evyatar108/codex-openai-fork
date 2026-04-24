@@ -1,31 +1,28 @@
+use std::path::Path;
+
 use anyhow::Result;
-use clap::Parser;
-use codex_cli::mcp_cmd::McpCli;
-use codex_cli::mcp_cmd::McpSubcommand;
-use codex_cli::mcp_cmd::RemoveArgs;
-use codex_cli::mcp_cmd::add_server;
-use codex_cli::mcp_cmd::remove_server;
 use codex_config::types::McpServerTransportConfig;
-use codex_core::config::Config;
 use codex_core::config::load_global_mcp_servers;
+use predicates::str::contains;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
+
+fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
+    let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+    cmd.env("CODEX_HOME", codex_home);
+    Ok(cmd)
+}
 
 #[tokio::test]
 async fn add_and_remove_server_updates_global_config() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let config = Config::load_default_with_cli_overrides_for_codex_home(
-        codex_home.path().to_path_buf(),
-        vec![],
-    )?;
 
-    let McpSubcommand::Add(add_args) =
-        McpCli::try_parse_from(["mcp", "add", "docs", "--", "echo", "hello"])?.subcommand
-    else {
-        panic!("expected add subcommand");
-    };
-    let add_output = add_server(&config, add_args).await?;
-    assert!(add_output.contains("Added global MCP server 'docs'."));
+    let mut add_cmd = codex_command(codex_home.path())?;
+    add_cmd
+        .args(["mcp", "add", "docs", "--", "echo", "hello"])
+        .assert()
+        .success()
+        .stdout(contains("Added global MCP server 'docs'."));
 
     let servers = load_global_mcp_servers(codex_home.path()).await?;
     assert_eq!(servers.len(), 1);
@@ -48,26 +45,22 @@ async fn add_and_remove_server_updates_global_config() -> Result<()> {
     }
     assert!(docs.enabled);
 
-    let remove_output = remove_server(
-        codex_home.path(),
-        RemoveArgs {
-            name: "docs".into(),
-        },
-    )
-    .await?;
-    assert!(remove_output.contains("Removed global MCP server 'docs'."));
+    let mut remove_cmd = codex_command(codex_home.path())?;
+    remove_cmd
+        .args(["mcp", "remove", "docs"])
+        .assert()
+        .success()
+        .stdout(contains("Removed global MCP server 'docs'."));
 
     let servers = load_global_mcp_servers(codex_home.path()).await?;
     assert!(servers.is_empty());
 
-    let remove_again_output = remove_server(
-        codex_home.path(),
-        RemoveArgs {
-            name: "docs".into(),
-        },
-    )
-    .await?;
-    assert!(remove_again_output.contains("No MCP server named 'docs' found."));
+    let mut remove_again_cmd = codex_command(codex_home.path())?;
+    remove_again_cmd
+        .args(["mcp", "remove", "docs"])
+        .assert()
+        .success()
+        .stdout(contains("No MCP server named 'docs' found."));
 
     let servers = load_global_mcp_servers(codex_home.path()).await?;
     assert!(servers.is_empty());
@@ -78,28 +71,23 @@ async fn add_and_remove_server_updates_global_config() -> Result<()> {
 #[tokio::test]
 async fn add_with_env_preserves_key_order_and_values() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let config = Config::load_default_with_cli_overrides_for_codex_home(
-        codex_home.path().to_path_buf(),
-        vec![],
-    )?;
 
-    let McpSubcommand::Add(add_args) = McpCli::try_parse_from([
-        "mcp",
-        "add",
-        "envy",
-        "--env",
-        "FOO=bar",
-        "--env",
-        "ALPHA=beta",
-        "--",
-        "python",
-        "server.py",
-    ])?
-    .subcommand
-    else {
-        panic!("expected add subcommand");
-    };
-    add_server(&config, add_args).await?;
+    let mut add_cmd = codex_command(codex_home.path())?;
+    add_cmd
+        .args([
+            "mcp",
+            "add",
+            "envy",
+            "--env",
+            "FOO=bar",
+            "--env",
+            "ALPHA=beta",
+            "--",
+            "python",
+            "server.py",
+        ])
+        .assert()
+        .success();
 
     let servers = load_global_mcp_servers(codex_home.path()).await?;
     let envy = servers.get("envy").expect("server should exist");
@@ -119,18 +107,12 @@ async fn add_with_env_preserves_key_order_and_values() -> Result<()> {
 #[tokio::test]
 async fn add_streamable_http_without_manual_token() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let config = Config::load_default_with_cli_overrides_for_codex_home(
-        codex_home.path().to_path_buf(),
-        vec![],
-    )?;
 
-    let McpSubcommand::Add(add_args) =
-        McpCli::try_parse_from(["mcp", "add", "github", "--url", "https://example.com/mcp"])?
-            .subcommand
-    else {
-        panic!("expected add subcommand");
-    };
-    add_server(&config, add_args).await?;
+    let mut add_cmd = codex_command(codex_home.path())?;
+    add_cmd
+        .args(["mcp", "add", "github", "--url", "https://example.com/mcp"])
+        .assert()
+        .success();
 
     let servers = load_global_mcp_servers(codex_home.path()).await?;
     let github = servers.get("github").expect("github server should exist");
@@ -159,25 +141,20 @@ async fn add_streamable_http_without_manual_token() -> Result<()> {
 #[tokio::test]
 async fn add_streamable_http_with_custom_env_var() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let config = Config::load_default_with_cli_overrides_for_codex_home(
-        codex_home.path().to_path_buf(),
-        vec![],
-    )?;
 
-    let McpSubcommand::Add(add_args) = McpCli::try_parse_from([
-        "mcp",
-        "add",
-        "issues",
-        "--url",
-        "https://example.com/issues",
-        "--bearer-token-env-var",
-        "GITHUB_TOKEN",
-    ])?
-    .subcommand
-    else {
-        panic!("expected add subcommand");
-    };
-    add_server(&config, add_args).await?;
+    let mut add_cmd = codex_command(codex_home.path())?;
+    add_cmd
+        .args([
+            "mcp",
+            "add",
+            "issues",
+            "--url",
+            "https://example.com/issues",
+            "--bearer-token-env-var",
+            "GITHUB_TOKEN",
+        ])
+        .assert()
+        .success();
 
     let servers = load_global_mcp_servers(codex_home.path()).await?;
     let issues = servers.get("issues").expect("issues server should exist");
@@ -203,16 +180,19 @@ async fn add_streamable_http_with_custom_env_var() -> Result<()> {
 async fn add_streamable_http_rejects_removed_flag() -> Result<()> {
     let codex_home = TempDir::new()?;
 
-    let err = McpCli::try_parse_from([
-        "mcp",
-        "add",
-        "github",
-        "--url",
-        "https://example.com/mcp",
-        "--with-bearer-token",
-    ])
-    .expect_err("removed flag should be rejected");
-    assert!(err.to_string().contains("--with-bearer-token"));
+    let mut add_cmd = codex_command(codex_home.path())?;
+    add_cmd
+        .args([
+            "mcp",
+            "add",
+            "github",
+            "--url",
+            "https://example.com/mcp",
+            "--with-bearer-token",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("--with-bearer-token"));
 
     let servers = load_global_mcp_servers(codex_home.path()).await?;
     assert!(servers.is_empty());
@@ -224,22 +204,22 @@ async fn add_streamable_http_rejects_removed_flag() -> Result<()> {
 async fn add_cant_add_command_and_url() -> Result<()> {
     let codex_home = TempDir::new()?;
 
-    let err = McpCli::try_parse_from([
-        "mcp",
-        "add",
-        "github",
-        "--url",
-        "https://example.com/mcp",
-        "--command",
-        "--",
-        "echo",
-        "hello",
-    ])
-    .expect_err("conflicting command/url should fail");
-    assert!(
-        err.to_string()
-            .contains("unexpected argument '--command' found")
-    );
+    let mut add_cmd = codex_command(codex_home.path())?;
+    add_cmd
+        .args([
+            "mcp",
+            "add",
+            "github",
+            "--url",
+            "https://example.com/mcp",
+            "--command",
+            "--",
+            "echo",
+            "hello",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("unexpected argument '--command' found"));
 
     let servers = load_global_mcp_servers(codex_home.path()).await?;
     assert!(servers.is_empty());

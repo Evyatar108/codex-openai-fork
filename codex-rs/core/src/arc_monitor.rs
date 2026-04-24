@@ -15,7 +15,6 @@ use codex_login::CodexAuth;
 use codex_login::default_client::build_reqwest_client;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
-use reqwest::header::AUTHORIZATION;
 
 #[allow(dead_code)]
 const ARC_MONITOR_TIMEOUT: Duration = Duration::from_secs(30);

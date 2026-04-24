@@ -5,7 +5,6 @@
 // the TUI or the tracing stack).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
-mod agent_identity;
 mod apply_patch;
 mod apps;
 mod arc_monitor;
@@ -20,6 +19,7 @@ mod codex_thread;
 mod compact_remote;
 pub mod copilot_transport;
 pub use codex_thread::CodexThread;
+pub use codex_thread::CodexThreadTurnContextOverrides;
 pub use codex_thread::ThreadConfigSnapshot;
 mod agent;
 mod codex_delegate;
