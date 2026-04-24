@@ -39,10 +39,23 @@ pub(crate) struct RemoteControlHandle {
 
 impl RemoteControlHandle {
     pub(crate) fn set_enabled(&self, enabled: bool) {
+        // SANDBOX PATCH: neutralize runtime re-enable. `message_processor::handle_config_mutation`
+        // calls `set_enabled(config.features.enabled(Feature::RemoteControl))` on every
+        // `ConfigWrite` RPC. Letting a `true` reach the watch channel would wake the
+        // websocket's `wait_until_enabled()` → `connect()`, which in turn lazily normalizes
+        // `self.remote_control_url` (plumbed from `config.chatgpt_base_url`) into a fresh
+        // target and enrolls at `wss://chatgpt.com/.../wham/remote/control/server` with
+        // ChatGPT-specific auth. The `initial_enabled = false` + `remote_control_target = None`
+        // overrides in `start_remote_control_with_options` are not enough on their own —
+        // runtime toggles bypass them. Force the handle to always settle at `false`.
+        let _ = enabled;
         self.enabled_tx.send_if_modified(|state| {
-            let changed = *state != enabled;
-            *state = enabled;
-            changed
+            if *state {
+                *state = false;
+                true
+            } else {
+                false
+            }
         });
     }
 }
