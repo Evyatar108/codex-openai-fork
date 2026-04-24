@@ -27,6 +27,14 @@ use crate::provider::ModelProvider;
 /// correct: after a 401/403 the caller drops the old `SharedAuthProvider`, and
 /// the next `api_auth()` rebuilds from a fresh header source (token re-fetched
 /// from GitHub because `invalidate` cleared the disk cache).
+///
+/// NOTE: the `OnceCell<Arc<CopilotAuth>>` itself is NEVER invalidated on 401.
+/// Retry correctness depends entirely on `CopilotHeaderSource::invalidate()`
+/// clearing the on-disk Copilot token so the next
+/// `CopilotHeaderSource::new(auth.clone())` re-fetches from GitHub. If a future
+/// change to `CopilotAuth` caches the token in memory beyond the disk layer,
+/// the retry loop will silently reuse the stale token — add an explicit
+/// `OnceCell::take()` in `on_unauthorized` or a new trait hook in that case.
 pub(crate) struct CopilotModelProvider {
     info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
@@ -133,6 +141,8 @@ mod tests {
 
     use codex_copilot::CopilotAuth;
     use codex_copilot::paths::AppPaths;
+    use codex_login::AuthManager;
+    use codex_login::CodexAuth;
     use codex_model_provider_info::create_copilot_provider;
     use pretty_assertions::assert_eq;
     use reqwest::header::AUTHORIZATION;
@@ -202,6 +212,58 @@ mod tests {
             Some("Bearer copilot-token"),
         );
         assert_eq!(headers.get("ChatGPT-Account-ID"), None);
+
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn api_auth_copilot_wins_over_chatgpt_auth_manager() {
+        // SANDBOX PATCH: Locks in the invariant that even if a ChatGPT `CodexAuth` is
+        // reachable through the `AuthManager`, a Copilot session uses only the
+        // Copilot-session bearer. A future refactor that surfaces `auth()` from the
+        // manager would break this test — catching the regression where
+        // `ChatGPT-Account-ID` could leak onto a Copilot request.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/copilot_internal/v2/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "token": "copilot-token",
+                "expires_at": 4_102_444_800u64,
+                "refresh_in": 3600u64
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_tmp, copilot_auth) = test_copilot_auth(&server);
+        let chatgpt_auth_manager = AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        );
+        let provider = create_copilot_provider();
+        let model_provider = CopilotModelProvider::new(provider, Some(chatgpt_auth_manager));
+        model_provider
+            .inject_copilot_auth_for_tests(copilot_auth)
+            .expect("seed test copilot auth");
+
+        let api_auth = model_provider
+            .api_auth()
+            .await
+            .expect("copilot api_auth should build even with a ChatGPT AuthManager present");
+
+        let mut headers = HeaderMap::new();
+        api_auth.add_auth_headers(&mut headers);
+
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer copilot-token"),
+        );
+        assert_eq!(
+            headers.get("ChatGPT-Account-ID"),
+            None,
+            "ChatGPT-Account-ID must not leak onto a Copilot request",
+        );
 
         server.verify().await;
     }

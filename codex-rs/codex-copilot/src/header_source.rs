@@ -77,9 +77,10 @@ impl CopilotHeaderSource {
     ///
     /// The current unauthorized-retry flow in
     /// `core/src/client.rs::stream_responses_api` relies on `current_client_setup()` ->
-    /// `auth_provider_from_auth()` -> `CopilotHeaderSource::new()` to rebuild the provider on
-    /// every retry, which satisfies this contract. Do not introduce a retry path that reuses an
-    /// older `CopilotHeaderSource` after `invalidate()`.
+    /// `CopilotModelProvider::api_auth()` (in `codex-model-provider`) ->
+    /// `CopilotHeaderSource::new()` to rebuild the provider on every retry, which satisfies
+    /// this contract. Do not introduce a retry path that reuses an older `CopilotHeaderSource`
+    /// after `invalidate()`.
     pub fn invalidate(&self) {
         let _ = self.inner.auth.invalidate_cached_copilot_token();
     }
