@@ -107,34 +107,16 @@ pub fn sign_task_registration_payload(
     Ok(BASE64_STANDARD.encode(signing_key.sign(payload.as_bytes()).to_bytes()))
 }
 
+// SANDBOX PATCH: no HTTP to `{chatgpt_base_url}/v1/agent/<id>/task/register`. Agent identity
+// registration is a ChatGPT OAuth flow; copilot-api launcher forces the Copilot provider and
+// never exercises AgentIdentityAuth. Fail-closed so audit stays clean and any stray caller
+// gets a visible error instead of a silent chatgpt.com call.
 pub async fn register_agent_task(
-    client: &reqwest::Client,
-    chatgpt_base_url: &str,
-    key: AgentIdentityKey<'_>,
+    _client: &reqwest::Client,
+    _chatgpt_base_url: &str,
+    _key: AgentIdentityKey<'_>,
 ) -> Result<String> {
-    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-    let request = RegisterTaskRequest {
-        signature: sign_task_registration_payload(key, &timestamp)?,
-        timestamp,
-    };
-
-    let response = client
-        .post(agent_task_registration_url(
-            chatgpt_base_url,
-            key.agent_runtime_id,
-        ))
-        .timeout(AGENT_TASK_REGISTRATION_TIMEOUT)
-        .json(&request)
-        .send()
-        .await
-        .context("failed to register agent task")?
-        .error_for_status()
-        .context("failed to register agent task")?
-        .json()
-        .await
-        .context("failed to decode agent task registration response")?;
-
-    task_id_from_register_task_response(key, response)
+    anyhow::bail!("agent identity task registration is disabled in the copilot-api build")
 }
 
 fn task_id_from_register_task_response(
