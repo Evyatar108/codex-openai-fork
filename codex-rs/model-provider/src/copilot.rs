@@ -89,10 +89,17 @@ impl ModelProvider for CopilotModelProvider {
 
     async fn api_auth(&self) -> CodexResult<SharedAuthProvider> {
         if !self.info.is_copilot_trusted() {
+            // SANDBOX PATCH: fail-closed. The copilot wire still sends Copilot-session
+            // metadata headers (x-initiator, copilot-integration-id, editor-plugin-version,
+            // ...) via CopilotHeaderSource on every request. If the base_url points at a
+            // non-Copilot host, silently dropping only the Authorization header would leak
+            // those metadata headers to an untrusted origin. Refuse to proceed.
             warn!(
-                "Copilot provider base_url override detected; not injecting Copilot credentials"
+                "Copilot provider base_url override detected; refusing to build auth (would leak Copilot session headers to non-Copilot host)"
             );
-            return Ok(Arc::new(CoreAuthProvider::new_legacy(None, None)));
+            return Err(CodexErr::Fatal(
+                "Copilot provider base_url override not allowed: must point to api.githubcopilot.com".to_string(),
+            ));
         }
 
         let copilot_auth = self.get_or_init_copilot_auth().await?;
@@ -112,5 +119,109 @@ impl ModelProvider for CopilotModelProvider {
         self.copilot_auth
             .set(auth)
             .map_err(|_| "copilot auth was already initialized")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! SANDBOX PATCH: These tests cover the Copilot branch of `api_auth()` that
+    //! previously lived in `login::api_bridge::auth_provider_from_auth`. The old
+    //! tests were deleted in the F-2 port; this module re-homes the equivalent
+    //! coverage against `CopilotModelProvider::api_auth`.
+    use std::fs;
+    use std::sync::Arc;
+
+    use codex_copilot::CopilotAuth;
+    use codex_copilot::paths::AppPaths;
+    use codex_model_provider_info::create_copilot_provider;
+    use pretty_assertions::assert_eq;
+    use reqwest::header::AUTHORIZATION;
+    use reqwest::header::HeaderMap;
+    use tempfile::TempDir;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+
+    use super::CopilotModelProvider;
+    use crate::provider::ModelProvider;
+
+    fn test_copilot_auth(server: &MockServer) -> (TempDir, Arc<CopilotAuth>) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let app_dir = temp.path().join("copilot-home");
+        fs::create_dir_all(&app_dir).expect("create app dir");
+        fs::write(app_dir.join("github_token"), "github-token\n").expect("write github token");
+
+        let paths = AppPaths {
+            app_dir: app_dir.clone(),
+            github_token_path: app_dir.join("github_token"),
+            copilot_token_path: app_dir.join("copilot_token"),
+            device_id_path: app_dir.join("device_id"),
+            machine_id_path: app_dir.join("machine_id"),
+        };
+        let auth = CopilotAuth::new_for_tests(paths, server.uri(), server.uri(), server.uri())
+            .expect("test copilot auth");
+
+        (temp, Arc::new(auth))
+    }
+
+    #[tokio::test]
+    async fn api_auth_copilot_injects_bearer_and_omits_chatgpt_account_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/copilot_internal/v2/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "token": "copilot-token",
+                "expires_at": 4_102_444_800u64,
+                "refresh_in": 3600u64
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_tmp, copilot_auth) = test_copilot_auth(&server);
+        let provider = create_copilot_provider();
+        let model_provider = CopilotModelProvider::new(provider, None);
+        model_provider
+            .inject_copilot_auth_for_tests(copilot_auth)
+            .expect("seed test copilot auth");
+
+        let api_auth = model_provider
+            .api_auth()
+            .await
+            .expect("copilot api_auth should build");
+
+        let mut headers = HeaderMap::new();
+        api_auth.add_auth_headers(&mut headers);
+
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer copilot-token"),
+        );
+        assert_eq!(headers.get("ChatGPT-Account-ID"), None);
+
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn api_auth_rejects_copilot_with_overridden_base_url() {
+        let mut provider = create_copilot_provider();
+        provider.base_url = Some("http://evil.example.com".to_string());
+        let model_provider = CopilotModelProvider::new(provider, None);
+
+        let err = model_provider
+            .api_auth()
+            .await
+            .err()
+            .expect("untrusted base_url must fail closed");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("Copilot provider base_url override not allowed"),
+            "unexpected error: {message}",
+        );
     }
 }

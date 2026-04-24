@@ -2552,8 +2552,12 @@ dependencies = [
  "codex-protocol",
  "http 1.4.0",
  "pretty_assertions",
+ "reqwest",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
