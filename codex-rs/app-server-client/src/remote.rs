@@ -161,13 +161,15 @@ impl RemoteAppServerClient {
             )
         })?;
         if let Some(auth_token) = args.auth_token.as_deref() {
-            let header_value =
+            let mut header_value =
                 HeaderValue::from_str(&format!("Bearer {auth_token}")).map_err(|err| {
                     IoError::new(
                         ErrorKind::InvalidInput,
                         format!("invalid remote authorization header value: {err}"),
                     )
                 })?;
+            // SANDBOX PATCH: mark bearer token sensitive so Debug/tracing redact it.
+            header_value.set_sensitive(true);
             request.headers_mut().insert(AUTHORIZATION, header_value);
         }
         ensure_rustls_crypto_provider();

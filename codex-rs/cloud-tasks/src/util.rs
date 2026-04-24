@@ -95,8 +95,12 @@ pub async fn build_chatgpt_headers() -> HeaderMap {
         if let Some(authorization_header_value) = auth_manager
             .chatgpt_authorization_header_for_auth(&auth)
             .await
-            && let Ok(hv) = HeaderValue::from_str(&authorization_header_value)
+            && let Ok(mut hv) = HeaderValue::from_str(&authorization_header_value)
         {
+            // SANDBOX PATCH: ChatGPT auth header carries an OAuth-derived secret; mark
+            // sensitive so Debug/tracing redact it (commented-out call path today, but
+            // hardens against accidental reactivation).
+            hv.set_sensitive(true);
             headers.insert(AUTHORIZATION, hv);
         }
         if let Some(acc) = auth.get_account_id().or_else(|| {

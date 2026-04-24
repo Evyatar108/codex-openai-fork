@@ -23,8 +23,10 @@ impl BearerAuthProvider {
 impl AuthProvider for BearerAuthProvider {
     fn add_auth_headers(&self, headers: &mut HeaderMap) {
         if let Some(token) = self.token.as_ref()
-            && let Ok(header) = HeaderValue::from_str(&format!("Bearer {token}"))
+            && let Ok(mut header) = HeaderValue::from_str(&format!("Bearer {token}"))
         {
+            // SANDBOX PATCH: mark bearer token sensitive so Debug/tracing redact it.
+            header.set_sensitive(true);
             let _ = headers.insert(http::header::AUTHORIZATION, header);
         }
         if let Some(account_id) = self.account_id.as_ref()
@@ -72,8 +74,11 @@ impl AuthorizationHeaderAuthProvider {
 impl AuthProvider for AuthorizationHeaderAuthProvider {
     fn add_auth_headers(&self, headers: &mut HeaderMap) {
         if let Some(authorization_header_value) = self.authorization_header_value.as_ref()
-            && let Ok(header) = HeaderValue::from_str(authorization_header_value)
+            && let Ok(mut header) = HeaderValue::from_str(authorization_header_value)
         {
+            // SANDBOX PATCH: the caller-supplied Authorization value is a secret (ChatGPT
+            // OAuth-derived header, JWT, etc.); mark sensitive so Debug/tracing redact it.
+            header.set_sensitive(true);
             let _ = headers.insert(http::header::AUTHORIZATION, header);
         }
         if let Some(account_id) = self.account_id.as_ref()
