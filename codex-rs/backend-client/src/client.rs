@@ -204,14 +204,18 @@ impl Client {
             h.insert(USER_AGENT, HeaderValue::from_static("codex-cli"));
         }
         if let Some(value) = &self.authorization_header_value
-            && let Ok(hv) = HeaderValue::from_str(value)
+            && let Ok(mut hv) = HeaderValue::from_str(value)
         {
+            // SANDBOX PATCH: mark authorization HeaderValue sensitive so Debug/tracing redact it.
+            hv.set_sensitive(true);
             h.insert(AUTHORIZATION, hv);
         }
         if let Some(acc) = &self.chatgpt_account_id
             && let Ok(name) = HeaderName::from_bytes(b"ChatGPT-Account-Id")
-            && let Ok(hv) = HeaderValue::from_str(acc)
+            && let Ok(mut hv) = HeaderValue::from_str(acc)
         {
+            // SANDBOX PATCH: account-id is tenant-identifying PII; mark sensitive.
+            hv.set_sensitive(true);
             h.insert(name, hv);
         }
         if self.chatgpt_account_is_fedramp

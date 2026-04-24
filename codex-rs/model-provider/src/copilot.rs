@@ -245,6 +245,16 @@ mod tests {
             .inject_copilot_auth_for_tests(copilot_auth)
             .expect("seed test copilot auth");
 
+        // SANDBOX PATCH: lock in `ModelProvider::auth()` returning `None` for Copilot
+        // sessions. `core/src/client.rs::current_client_setup` reads `provider.auth()`
+        // to decide whether to attach a ChatGPT bearer via `AuthorizationHeaderAuthProvider`;
+        // a regression here would leak ChatGPT auth onto a Copilot request even when
+        // `api_auth()` itself is correct.
+        assert!(
+            model_provider.auth().await.is_none(),
+            "CopilotModelProvider::auth() must surface None even when an AuthManager carries ChatGPT auth",
+        );
+
         let api_auth = model_provider
             .api_auth()
             .await

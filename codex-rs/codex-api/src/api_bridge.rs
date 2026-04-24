@@ -234,8 +234,10 @@ impl crate::auth::AuthProvider for CoreAuthProvider {
             let _ = headers.insert(http::header::AUTHORIZATION, header);
         }
         if let Some(account_id) = self.account_id.as_ref()
-            && let Ok(header) = HeaderValue::from_str(account_id)
+            && let Ok(mut header) = HeaderValue::from_str(account_id)
         {
+            // SANDBOX PATCH: account-id is tenant-identifying PII; mark sensitive.
+            header.set_sensitive(true);
             let _ = headers.insert("ChatGPT-Account-ID", header);
         }
     }

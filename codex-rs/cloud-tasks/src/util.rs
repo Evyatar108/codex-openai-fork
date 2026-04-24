@@ -108,8 +108,10 @@ pub async fn build_chatgpt_headers() -> HeaderMap {
                 .ok()
                 .and_then(|token| extract_chatgpt_account_id(&token))
         }) && let Ok(name) = HeaderName::from_bytes(b"ChatGPT-Account-Id")
-            && let Ok(hv) = HeaderValue::from_str(&acc)
+            && let Ok(mut hv) = HeaderValue::from_str(&acc)
         {
+            // SANDBOX PATCH: account-id is tenant-identifying PII; mark sensitive.
+            hv.set_sensitive(true);
             headers.insert(name, hv);
         }
         if auth.is_fedramp_account()

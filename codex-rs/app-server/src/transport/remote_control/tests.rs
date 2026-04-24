@@ -518,6 +518,11 @@ async fn remote_control_start_allows_missing_auth_when_enabled() {
         .expect("remote control task should join");
 }
 
+// SANDBOX PATCH: `RemoteControlHandle::set_enabled` is force-disabled in the sandbox
+// (see mod.rs) so it can never flip the watch channel to `true`. This upstream test
+// relies on toggle-to-true behavior and cannot pass on the patched tree. Ignored rather
+// than deleted so rebases surface the divergence.
+#[ignore = "SANDBOX PATCH: set_enabled(true) is a no-op; toggle-restart behavior is intentionally disabled"]
 #[tokio::test]
 async fn remote_control_handle_set_enabled_stops_and_restarts_connections() {
     let listener = TcpListener::bind("127.0.0.1:0")
