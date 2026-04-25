@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 pub const DEFAULT_PORT: u16 = 4141;
-pub const DEFAULT_MODEL: &str = "gpt-5.4";
+pub const DEFAULT_MODEL: &str = "gpt-5.5";
 
 pub struct SandboxConfig {
     #[allow(dead_code)]

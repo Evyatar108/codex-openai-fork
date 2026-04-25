@@ -117,7 +117,10 @@ fn write_sandbox_config(path: &Path, default_shell: Option<&str>) -> Result<()> 
     }
     let mut table = Table::new();
     table.insert("copilot_api_port".into(), Value::Integer(4141));
-    table.insert("default_model".into(), Value::String("gpt-5.4".into()));
+    table.insert(
+        "default_model".into(),
+        Value::String(crate::config::DEFAULT_MODEL.into()),
+    );
     if let Some(shell) = default_shell {
         table.insert("default_shell".into(), Value::String(shell.to_string()));
     }
@@ -319,7 +322,7 @@ mod tests {
         write_sandbox_config(&path, Some(r"C:\Program Files\Git\bin\bash.exe")).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("copilot_api_port = 4141"));
-        assert!(content.contains("default_model = \"gpt-5.4\""));
+        assert!(content.contains("default_model = \"gpt-5.5\""));
         assert!(content.contains("default_shell ="));
         assert!(content.contains("bash.exe"));
     }
@@ -331,7 +334,7 @@ mod tests {
         write_sandbox_config(&path, None).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("copilot_api_port = 4141"));
-        assert!(content.contains("default_model = \"gpt-5.4\""));
+        assert!(content.contains("default_model = \"gpt-5.5\""));
         assert!(!content.contains("default_shell"));
     }
 

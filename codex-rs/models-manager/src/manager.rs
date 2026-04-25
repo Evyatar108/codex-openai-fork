@@ -24,7 +24,7 @@ const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 // SANDBOX PATCH: kept public so `model-provider`'s `CopilotModelProvider` can
 // build a static catalog seeded with this slug.
-pub const COPILOT_DEFAULT_MODEL: &str = "gpt-5.4";
+pub const COPILOT_DEFAULT_MODEL: &str = "gpt-5.5";
 
 /// Remote endpoint used by the OpenAI-compatible model manager.
 ///
