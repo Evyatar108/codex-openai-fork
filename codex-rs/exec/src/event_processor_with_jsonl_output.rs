@@ -21,6 +21,14 @@ use serde_json::json;
 pub use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
+
+// CRLF-aware `println!` shadow. Translates `\n` to `\r\n` on Windows so
+// the JSONL emit path below does not break consumers that read line by
+// line on a `\r\n`-terminated stream. (`serde_json::to_string` does not
+// embed raw newlines inside the JSON payload itself, so the only `\n`
+// affected is the line terminator added by `println!`.) No-op on
+// non-Windows.
+use crate::crlf_writer::println;
 use crate::exec_events::AgentMessageItem;
 use crate::exec_events::CollabAgentState;
 use crate::exec_events::CollabAgentStatus;

@@ -2722,7 +2722,15 @@ impl Session {
         if let Some(live_thread) = self.live_thread()
             && let Err(e) = live_thread.append_items(items).await
         {
-            error!("failed to record rollout items: {e:#}");
+            // Late writes that land after the live thread has been torn down (end-of-turn /
+            // shutdown race) surface as `ThreadStoreError::ThreadNotFound`. That is expected
+            // and harmless — log at debug to avoid polluting stderr and the runtime-audit
+            // ERROR-line scan, but keep `error!` for every other failure variant.
+            if matches!(e, codex_thread_store::ThreadStoreError::ThreadNotFound { .. }) {
+                debug!("rollout recorder closed before late write landed: {e:#}");
+            } else {
+                error!("failed to record rollout items: {e:#}");
+            }
         }
     }
 

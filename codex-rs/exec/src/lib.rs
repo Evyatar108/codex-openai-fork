@@ -8,19 +8,35 @@
 // `CODEX_SHUTDOWN_TRACE` environment variable is set; silent otherwise.
 // Useful for diagnosing post-completion hangs without bloating normal
 // runs. Format: `[shutdown-trace] <message>`.
+//
+// Routes through the CRLF-aware writer so that on Windows, the trace
+// lines do not exhibit the cascading-indent bug when redirected to a
+// file or rendered in the console host.
 macro_rules! shutdown_trace {
     ($($arg:tt)*) => {
         if std::env::var_os("CODEX_SHUTDOWN_TRACE").is_some() {
-            eprintln!($($arg)*);
+            $crate::crlf_writer::eprintln!($($arg)*);
         }
     };
 }
 
 mod cli;
+mod console_init;
+pub(crate) mod crlf_writer;
 mod event_processor;
 mod event_processor_with_human_output;
 pub(crate) mod event_processor_with_jsonl_output;
 pub(crate) mod exec_events;
+
+// Crate-wide CRLF-aware shadows of the prelude `eprintln!` / `println!`
+// macros. On Windows these translate `\n` to `\r\n`; on other platforms
+// they are byte-identical to the prelude versions. Imported here so the
+// macros are in scope for the rest of `lib.rs` (which has many
+// pre-existing `eprintln!` call sites that would otherwise hit the
+// prelude version and emit bare LF on Windows).
+use crate::crlf_writer::eprintln;
+#[allow(unused_imports)]
+use crate::crlf_writer::println;
 
 pub use cli::Cli;
 pub use cli::Command;
@@ -228,6 +244,13 @@ fn exec_root_span() -> tracing::Span {
 }
 
 pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
+    // Best-effort: enable virtual-terminal processing on the Windows console
+    // so that bare-LF newlines emitted by `eprintln!`/`println!` are rendered
+    // as full newlines (CR+LF). Without this, each subsequent line starts at
+    // the previous line's last column (the cascading-indent symptom). No-op
+    // on non-Windows; no-op when stdio is redirected to a pipe/file.
+    console_init::init_stdio_for_exec();
+
     if let Err(err) = set_default_originator("codex_exec".to_string()) {
         tracing::warn!(?err, "Failed to set codex exec originator override {err:?}");
     }

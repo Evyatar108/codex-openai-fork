@@ -20,6 +20,13 @@ use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
 
+// CRLF-aware `eprintln!` / `println!` shadows. Translate `\n` to `\r\n`
+// on Windows so the existing call sites below do not emit bare LF, which
+// the Windows console host treats as "cursor down only" and produces the
+// cascading-indent output. No-op on non-Windows.
+use crate::crlf_writer::eprintln;
+use crate::crlf_writer::println;
+
 pub(crate) struct EventProcessorWithHumanOutput {
     bold: Style,
     cyan: Style,
