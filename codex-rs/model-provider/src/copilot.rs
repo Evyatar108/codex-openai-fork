@@ -15,16 +15,16 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
-use codex_models_manager::manager::COPILOT_DEFAULT_MODEL;
+use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
-use codex_models_manager::manager::copilot_synthetic_model_info;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::openai_models::ModelsResponse;
 use tokio::sync::OnceCell;
 use tracing::warn;
 
+use crate::copilot_models_endpoint::CopilotModelsEndpoint;
 use crate::provider::ModelProvider;
 use crate::provider::ProviderAccountResult;
 use crate::provider::ProviderAccountState;
@@ -47,7 +47,7 @@ use crate::provider::ProviderAccountState;
 pub(crate) struct CopilotModelProvider {
     info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
-    copilot_auth: OnceCell<Arc<CopilotAuth>>,
+    copilot_auth: Arc<OnceCell<Arc<CopilotAuth>>>,
 }
 
 impl std::fmt::Debug for CopilotModelProvider {
@@ -66,7 +66,7 @@ impl CopilotModelProvider {
         Self {
             info,
             auth_manager,
-            copilot_auth: OnceCell::new(),
+            copilot_auth: Arc::new(OnceCell::new()),
         }
     }
 
@@ -109,20 +109,38 @@ impl ModelProvider for CopilotModelProvider {
 
     fn models_manager(
         &self,
-        _codex_home: PathBuf,
+        codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
         collaboration_modes_config: CollaborationModesConfig,
     ) -> SharedModelsManager {
-        // SANDBOX PATCH: never expose Copilot sessions to the upstream
-        // OpenAiModelsEndpoint (which would hit `/models` on api.githubcopilot.com).
-        // If the user supplied an explicit `model_catalog`, honor it; otherwise
-        // seed a static catalog with a single synthetic Copilot entry.
-        let model_catalog = config_model_catalog.unwrap_or_else(|| ModelsResponse {
-            models: vec![copilot_synthetic_model_info(COPILOT_DEFAULT_MODEL)],
-        });
-        Arc::new(StaticModelsManager::new(
+        // SANDBOX PATCH: route the Copilot session's model catalog through
+        // `OpenAiModelsManager` driven by `CopilotModelsEndpoint`, which fetches
+        // `/models` from `api.githubcopilot.com` using `CopilotHeaderSource` and
+        // translates the response into `ModelInfo` entries (preferring bundled
+        // metadata for known slugs; synthesizing a minimal entry for new
+        // Copilot-only slugs). When the caller provides an explicit
+        // `model_catalog`, honor it as authoritative.
+        if let Some(model_catalog) = config_model_catalog {
+            return Arc::new(StaticModelsManager::new(
+                self.auth_manager.clone(),
+                model_catalog,
+                collaboration_modes_config,
+            ));
+        }
+
+        let base_url = self
+            .info
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.githubcopilot.com".to_string());
+        let endpoint = Arc::new(CopilotModelsEndpoint::new(
+            base_url,
+            Arc::clone(&self.copilot_auth),
+        ));
+        Arc::new(OpenAiModelsManager::new(
+            codex_home,
+            endpoint,
             self.auth_manager.clone(),
-            model_catalog,
             collaboration_modes_config,
         ))
     }
