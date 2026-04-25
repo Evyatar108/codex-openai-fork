@@ -2,6 +2,7 @@
 // CopilotHeaderSource + CoreAuthProvider.with_copilot, so call sites can use
 // provider.api_auth().await? uniformly without branching on is_copilot().
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,12 +14,20 @@ use codex_copilot::CopilotHeaderSource;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use codex_models_manager::manager::COPILOT_DEFAULT_MODEL;
+use codex_models_manager::manager::SharedModelsManager;
+use codex_models_manager::manager::StaticModelsManager;
+use codex_models_manager::manager::copilot_synthetic_model_info;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::openai_models::ModelsResponse;
 use tokio::sync::OnceCell;
 use tracing::warn;
 
 use crate::provider::ModelProvider;
+use crate::provider::ProviderAccountResult;
+use crate::provider::ProviderAccountState;
 
 /// Runtime model provider for Copilot sessions. Owns the session-scoped
 /// `CopilotAuth` (which caches GitHub/Copilot tokens on disk + in memory) and
@@ -87,6 +96,35 @@ impl ModelProvider for CopilotModelProvider {
         // Copilot sessions do not surface a CodexAuth; api_auth() attaches the
         // Copilot-specific authorization header directly.
         None
+    }
+
+    fn account_state(&self) -> ProviderAccountResult {
+        // Copilot session auth is not surfaced as a `ProviderAccount` variant; the
+        // app-visible state has no email/plan, and we never gate on OpenAI auth.
+        Ok(ProviderAccountState {
+            account: None,
+            requires_openai_auth: false,
+        })
+    }
+
+    fn models_manager(
+        &self,
+        _codex_home: PathBuf,
+        config_model_catalog: Option<ModelsResponse>,
+        collaboration_modes_config: CollaborationModesConfig,
+    ) -> SharedModelsManager {
+        // SANDBOX PATCH: never expose Copilot sessions to the upstream
+        // OpenAiModelsEndpoint (which would hit `/models` on api.githubcopilot.com).
+        // If the user supplied an explicit `model_catalog`, honor it; otherwise
+        // seed a static catalog with a single synthetic Copilot entry.
+        let model_catalog = config_model_catalog.unwrap_or_else(|| ModelsResponse {
+            models: vec![copilot_synthetic_model_info(COPILOT_DEFAULT_MODEL)],
+        });
+        Arc::new(StaticModelsManager::new(
+            self.auth_manager.clone(),
+            model_catalog,
+            collaboration_modes_config,
+        ))
     }
 
     async fn api_provider(&self) -> CodexResult<Provider> {
