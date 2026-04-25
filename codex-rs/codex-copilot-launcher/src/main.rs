@@ -39,8 +39,10 @@ fn run() -> anyhow::Result<()> {
     // Provider flags MUST come last so they always win — later -c values
     // override earlier ones for the same key, ensuring the built-in Copilot
     // provider selection and sandbox defaults win over user-supplied flags.
-    let provider_flags =
-        config::provider_config_flags(&cfg.default_model, cfg.default_shell.as_deref());
+    //
+    // SANDBOX PATCH: model is intentionally NOT among the forced flags.
+    // codex-core resolves `model` from `~/.codex/config.toml` natively.
+    let provider_flags = config::provider_config_flags(cfg.default_shell.as_deref());
     let mut final_args: Vec<String> = args;
     for flag in &provider_flags {
         final_args.push("-c".to_string());

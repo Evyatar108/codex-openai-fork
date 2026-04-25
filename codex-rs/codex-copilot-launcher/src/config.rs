@@ -1,21 +1,25 @@
 use std::path::PathBuf;
 
-pub const DEFAULT_PORT: u16 = 4141;
-pub const DEFAULT_MODEL: &str = "gpt-5.5";
-
 pub struct SandboxConfig {
-    #[allow(dead_code)]
-    pub copilot_api_port: u16,
-    pub default_model: String,
     pub default_shell: Option<String>,
 }
 
 /// Load configuration from `~/.codex-copilot/config.toml`.
 /// Returns defaults if the file is missing or unparseable.
+///
+/// Recognized keys:
+/// - `default_shell` (string): absolute path to the shell binary to pin
+///   for tool-exec turns. Optional.
+///
+/// NOT read here:
+/// - `model`: codex-core reads `~/.codex/config.toml::model` natively.
+///   The launcher used to force `-c model=<launcher-default>` on every
+///   run, which silently overrode the user's choice.
+/// - `copilot_api_port`: leftover from the v5 loopback model-service era.
+///   The launcher no longer binds a port; existing `copilot_api_port = ...`
+///   keys in old config files are ignored.
 pub fn load_config() -> SandboxConfig {
     let defaults = SandboxConfig {
-        copilot_api_port: DEFAULT_PORT,
-        default_model: DEFAULT_MODEL.to_string(),
         default_shell: None,
     };
 
@@ -35,16 +39,6 @@ pub fn load_config() -> SandboxConfig {
     };
 
     SandboxConfig {
-        copilot_api_port: table
-            .get("copilot_api_port")
-            .and_then(|v| v.as_integer())
-            .and_then(|v| u16::try_from(v).ok())
-            .unwrap_or(DEFAULT_PORT),
-        default_model: table
-            .get("default_model")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
         default_shell: table
             .get("default_shell")
             .and_then(|v| v.as_str())
@@ -54,9 +48,12 @@ pub fn load_config() -> SandboxConfig {
 
 /// Build the list of `-c` flag values for configuring codex-core to use
 /// the built-in Copilot provider.
-pub fn provider_config_flags(model: &str, default_shell: Option<&str>) -> Vec<String> {
+///
+/// `model` is intentionally NOT included here — codex-core reads
+/// `~/.codex/config.toml::model` natively, and provider `-c` flags would
+/// override it.
+pub fn provider_config_flags(default_shell: Option<&str>) -> Vec<String> {
     let mut flags = vec![
-        format!("model={model}"),
         "model_provider=copilot".to_string(),
         // Source-level network patching handles isolation; disable codex-core's
         // built-in sandbox so it doesn't retry on sandbox-related errors.
@@ -110,7 +107,7 @@ mod tests {
 
     #[test]
     fn provider_flags_always_emit_sandbox_mode() {
-        let flags = provider_config_flags("gpt-5.4", None);
+        let flags = provider_config_flags(None);
         assert!(
             flags
                 .iter()
@@ -121,7 +118,7 @@ mod tests {
 
     #[test]
     fn provider_flags_emit_sandbox_mode_with_shell() {
-        let flags = provider_config_flags("gpt-5.4", Some(r"C:\Program Files\Git\bin\bash.exe"));
+        let flags = provider_config_flags(Some(r"C:\Program Files\Git\bin\bash.exe"));
         assert!(
             flags
                 .iter()
@@ -136,7 +133,7 @@ mod tests {
 
     #[test]
     fn provider_flags_do_not_emit_gateway_era_overrides() {
-        let flags = provider_config_flags("gpt-5.4", None);
+        let flags = provider_config_flags(None);
 
         for forbidden in [
             "model_providers.copilot.base_url",
@@ -149,6 +146,18 @@ mod tests {
                 "unexpected gateway-era override {forbidden} in {flags:?}"
             );
         }
+    }
+
+    #[test]
+    fn provider_flags_do_not_force_model() {
+        // SANDBOX PATCH: model selection must be read from ~/.codex/config.toml
+        // by codex-core, not forced by the launcher. A `-c model=...` flag here
+        // would silently override the user's config.
+        let flags = provider_config_flags(None);
+        assert!(
+            flags.iter().all(|flag| !flag.starts_with("model=")),
+            "launcher must not force model selection: {flags:?}"
+        );
     }
 
     #[test]

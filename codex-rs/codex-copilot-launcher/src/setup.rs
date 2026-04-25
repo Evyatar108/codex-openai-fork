@@ -116,11 +116,10 @@ fn write_sandbox_config(path: &Path, default_shell: Option<&str>) -> Result<()> 
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let mut table = Table::new();
-    table.insert("copilot_api_port".into(), Value::Integer(4141));
-    table.insert(
-        "default_model".into(),
-        Value::String(crate::config::DEFAULT_MODEL.into()),
-    );
+    // SANDBOX PATCH: model selection is read from `~/.codex/config.toml` by
+    // codex-core, not from this file. Do not write `default_model` here.
+    // SANDBOX PATCH: `copilot_api_port` is a v5-era loopback artifact;
+    // nothing binds a port in v6. Do not write it.
     if let Some(shell) = default_shell {
         table.insert("default_shell".into(), Value::String(shell.to_string()));
     }
@@ -180,9 +179,13 @@ fn prompt_for_other_path() -> Result<Option<String>> {
     Ok(Some(pb.to_string_lossy().into_owned()))
 }
 
-/// Detect Git Bash. Checks (in order): `C:\Program Files\Git\bin\bash.exe`,
-/// `C:\Program Files (x86)\Git\bin\bash.exe`,
-/// `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`, then `where bash`.
+/// Detect Git Bash. Checks (in order):
+/// 1. `C:\Program Files\Git\bin\bash.exe`
+/// 2. `C:\Program Files (x86)\Git\bin\bash.exe`
+/// 3. `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`
+/// 4. `where git` → resolve `<git-root>\bin\bash.exe` (typical Git for
+///    Windows install layout: `git.exe` is in `Git\cmd\`, bash in `Git\bin\`).
+/// 5. `where bash` (last-resort PATH lookup; covers MSYS2-standalone setups).
 pub(crate) fn detect_git_bash() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = vec![
         PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
@@ -200,6 +203,9 @@ pub(crate) fn detect_git_bash() -> Option<PathBuf> {
     if let Some(p) = first_existing(&candidates) {
         return Some(p);
     }
+    if let Some(p) = where_git_to_bash() {
+        return Some(p);
+    }
     where_bash()
 }
 
@@ -207,9 +213,36 @@ fn first_existing(paths: &[PathBuf]) -> Option<PathBuf> {
     paths.iter().find(|p| p.exists()).cloned()
 }
 
+/// Locate `git.exe` on PATH and resolve the sibling `bash.exe` via the
+/// Git for Windows directory layout. `git.exe` lives in `<root>\cmd\` on
+/// most installs (and in `<root>\bin\` on a few); bash is at
+/// `<root>\bin\bash.exe`. Also probes `<root>\usr\bin\bash.exe` (the
+/// MSYS2-style location used by some portable installs).
+fn where_git_to_bash() -> Option<PathBuf> {
+    let git = where_program("git")?;
+    let parent = git.parent()?;
+    let candidates = [
+        // git.exe in cmd/ → ../bin/bash.exe
+        parent.parent().map(|p| p.join("bin").join("bash.exe")),
+        // git.exe in bin/ → ./bash.exe
+        Some(parent.join("bash.exe")),
+        // MSYS2-style portable git → ../usr/bin/bash.exe
+        parent
+            .parent()
+            .map(|p| p.join("usr").join("bin").join("bash.exe")),
+    ];
+    candidates.into_iter().flatten().find(|p| p.exists())
+}
+
 fn where_bash() -> Option<PathBuf> {
-    let program = if cfg!(windows) { "where" } else { "which" };
-    let output = Command::new(program).arg("bash").output().ok()?;
+    where_program("bash")
+}
+
+/// Resolve `<program>` via `where` (Windows) / `which` (Unix). Returns the
+/// first existing absolute path, or `None`.
+fn where_program(program: &str) -> Option<PathBuf> {
+    let resolver = if cfg!(windows) { "where" } else { "which" };
+    let output = Command::new(resolver).arg(program).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -276,6 +309,41 @@ mod tests {
     }
 
     #[test]
+    fn where_git_to_bash_resolves_cmd_layout() {
+        // Simulate `where git` returning <root>\cmd\git.exe by hand-constructing
+        // the layout in a tempdir and asserting the candidate-search picks
+        // <root>\bin\bash.exe. This tests the path-resolution logic directly,
+        // independent of the host's PATH.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let cmd_dir = root.join("cmd");
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&cmd_dir).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let bash = bin_dir.join("bash.exe");
+        std::fs::write(&bash, "").unwrap();
+        let git = cmd_dir.join("git.exe");
+        std::fs::write(&git, "").unwrap();
+
+        // Manually exercise the candidate list (`where_git_to_bash` shells out
+        // to `where`, which we cannot stub portably from a unit test).
+        let parent = git.parent().unwrap();
+        let candidates: Vec<PathBuf> = [
+            parent.parent().map(|p| p.join("bin").join("bash.exe")),
+            Some(parent.join("bash.exe")),
+            parent
+                .parent()
+                .map(|p| p.join("usr").join("bin").join("bash.exe")),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|p| p.exists())
+        .collect();
+
+        assert_eq!(candidates.first(), Some(&bash));
+    }
+
+    #[test]
     fn detect_git_bash_uses_localappdata() {
         let dir = tempdir().unwrap();
         let fake_bash = dir
@@ -321,8 +389,12 @@ mod tests {
         let path = dir.path().join("nested").join("config.toml");
         write_sandbox_config(&path, Some(r"C:\Program Files\Git\bin\bash.exe")).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("copilot_api_port = 4141"));
-        assert!(content.contains("default_model = \"gpt-5.5\""));
+        // SANDBOX PATCH: launcher must NOT write `default_model` — that key is
+        // read from `~/.codex/config.toml` by codex-core natively.
+        assert!(!content.contains("default_model"));
+        // SANDBOX PATCH: `copilot_api_port` is a v5-era loopback artifact and
+        // must not be re-introduced.
+        assert!(!content.contains("copilot_api_port"));
         assert!(content.contains("default_shell ="));
         assert!(content.contains("bash.exe"));
     }
@@ -333,8 +405,10 @@ mod tests {
         let path = dir.path().join("config.toml");
         write_sandbox_config(&path, None).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("copilot_api_port = 4141"));
-        assert!(content.contains("default_model = \"gpt-5.5\""));
+        // SANDBOX PATCH: launcher must NOT write `default_model` or
+        // `copilot_api_port`.
+        assert!(!content.contains("default_model"));
+        assert!(!content.contains("copilot_api_port"));
         assert!(!content.contains("default_shell"));
     }
 
