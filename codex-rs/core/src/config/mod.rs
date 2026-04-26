@@ -3140,7 +3140,13 @@ impl Config {
             windows_wsl_setup_acknowledged: cfg.windows_wsl_setup_acknowledged.unwrap_or(false),
             notices,
             check_for_update_on_startup,
-            disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
+            // Sandbox-fork default: paste-burst heuristic OFF. The heuristic holds the first
+            // ASCII keystroke for ~30 ms on Windows (8 ms elsewhere) waiting to see if a fast
+            // burst follows, which adds perceptible per-keystroke latency. Bracketed paste
+            // (enabled in `tui::tui::EnableBracketedPaste`) already frames pastes correctly on
+            // every modern terminal, so the heuristic is redundant. Users on terminals without
+            // bracketed-paste support can opt back in via `disable_paste_burst = false`.
+            disable_paste_burst: cfg.disable_paste_burst.unwrap_or(true),
             analytics_enabled: config_profile
                 .analytics
                 .as_ref()
