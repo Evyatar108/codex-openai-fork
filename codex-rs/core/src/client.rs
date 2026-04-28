@@ -1741,27 +1741,28 @@ where
                             usage.total_tokens,
                         );
                     }
-                    inference_trace_attempt.record_completed(
-                        &response_id,
-                        &token_usage,
-                        &items_added,
-                    );
                     if let Some(sender) = tx_last_response.take() {
                         let _ = sender.send(LastResponse {
                             response_id: response_id.clone(),
-                            items_added: std::mem::take(&mut items_added),
+                            items_added: items_added.clone(),
                         });
                     }
                     if tx_event
                         .send(Ok(ResponseEvent::Completed {
-                            response_id,
-                            token_usage,
+                            response_id: response_id.clone(),
+                            token_usage: token_usage.clone(),
                         }))
                         .await
                         .is_err()
                     {
                         return;
                     }
+                    inference_trace_attempt.record_completed(
+                        &response_id,
+                        &token_usage,
+                        &items_added,
+                    );
+                    items_added.clear();
                 }
                 Ok(event) => {
                     if tx_event.send(Ok(event)).await.is_err() {
