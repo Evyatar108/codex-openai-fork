@@ -323,8 +323,16 @@ impl Session {
                     )
                     .await;
                 let sess = session_ctx.clone_session();
+                if !task_cancellation_token.is_cancelled() {
+                    // Emit completion before waiting on the rollout durability barrier. The
+                    // terminal event is queued for persistence by send_event(), and the flush
+                    // below still provides best-effort durability, but clients should not remain
+                    // visually busy while the filesystem writer catches up.
+                    sess.on_task_finished(Arc::clone(&ctx_for_finish), last_agent_message)
+                        .await;
+                }
                 if let Err(err) = sess.flush_rollout().await {
-                    warn!("failed to flush rollout before completing turn: {err}");
+                    warn!("failed to flush rollout after completing turn: {err}");
                     sess.send_event(
                         ctx_for_finish.as_ref(),
                         EventMsg::Warning(WarningEvent {
@@ -334,11 +342,6 @@ impl Session {
                         }),
                     )
                     .await;
-                }
-                if !task_cancellation_token.is_cancelled() {
-                    // Emit completion uniformly from spawn site so all tasks share the same lifecycle.
-                    sess.on_task_finished(Arc::clone(&ctx_for_finish), last_agent_message)
-                        .await;
                 }
                 done_clone.notify_waiters();
             }
