@@ -1,7 +1,114 @@
 use super::*;
+use crate::exec::ExecCapturePolicy;
+use crate::exec::ExecExpiration;
+use crate::sandboxing::ExecRequest;
+use crate::session::session::Session;
+use crate::session::tests::make_session_and_context;
+use crate::session::turn_context::TurnContext;
+use crate::tools::context::ExecCommandToolOutput;
+use crate::unified_exec::AwaitBackgroundCompletionRequest;
+use crate::unified_exec::NoopSpawnLifecycle;
+use crate::unified_exec::UnifiedExecContext;
+use codex_sandboxing::SandboxType;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 use tokio::time::Duration;
 use tokio::time::Instant;
+
+async fn test_session_and_turn() -> (Arc<Session>, Arc<TurnContext>) {
+    let (session, turn) = make_session_and_context().await;
+    (Arc::new(session), Arc::new(turn))
+}
+
+fn test_exec_request(
+    turn: &TurnContext,
+    command: Vec<String>,
+    cwd: AbsolutePathBuf,
+) -> ExecRequest {
+    ExecRequest::new(
+        command,
+        cwd,
+        std::env::vars().collect(),
+        /*network*/ None,
+        ExecExpiration::DefaultTimeout,
+        ExecCapturePolicy::ShellTool,
+        SandboxType::None,
+        turn.windows_sandbox_level,
+        /*windows_sandbox_private_desktop*/ false,
+        turn.sandbox_policy.get().clone(),
+        turn.file_system_sandbox_policy.clone(),
+        turn.network_sandbox_policy,
+        /*arg0*/ None,
+    )
+}
+
+async fn spawn_background_process(
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
+    cmd: &str,
+) -> Result<i32, UnifiedExecError> {
+    let manager = &session.services.unified_exec_manager;
+    let process_id = manager.allocate_process_id().await;
+    let command = vec!["bash".to_string(), "-lc".to_string(), cmd.to_string()];
+    let request = test_exec_request(turn, command.clone(), turn.cwd.clone());
+    let process = Arc::new(
+        manager
+            .open_session_with_exec_env(
+                process_id,
+                &request,
+                /*tty*/ false,
+                Box::new(NoopSpawnLifecycle),
+                turn.environment.as_ref().expect("turn environment"),
+            )
+            .await?,
+    );
+
+    let context = UnifiedExecContext::new(
+        Arc::clone(session),
+        Arc::clone(turn),
+        "await-call".to_string(),
+    );
+    let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+    start_streaming_output(&process, &context, Arc::clone(&transcript));
+    let started_at = Instant::now();
+
+    let entry = ProcessEntry {
+        process,
+        transcript,
+        call_id: context.call_id,
+        process_id,
+        hook_command: cmd.to_string(),
+        tty: false,
+        network_approval_id: None,
+        session: Arc::downgrade(session),
+        last_used: started_at,
+    };
+    manager
+        .process_store
+        .lock()
+        .await
+        .processes
+        .insert(process_id, entry);
+
+    Ok(process_id)
+}
+
+async fn await_background_completion(
+    session: &Arc<Session>,
+    process_id: i32,
+    timeout_ms: Option<u64>,
+) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+    session
+        .services
+        .unified_exec_manager
+        .await_background_completion(AwaitBackgroundCompletionRequest {
+            process_id,
+            timeout_ms,
+            max_output_tokens: None,
+        })
+        .await
+}
 
 #[test]
 fn unified_exec_env_injects_defaults() {
@@ -285,4 +392,69 @@ fn pruning_protects_recent_processes_even_if_exited() {
 
     // (10) is exited but among the last 8; we should drop the LRU outside that set.
     assert_eq!(candidate, Some(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn await_background_completion_waits_for_exit_and_returns_exit_code() -> anyhow::Result<()> {
+    let (session, turn) = test_session_and_turn().await;
+    let process_id = spawn_background_process(
+        &session,
+        &turn,
+        "sleep 0.2; printf 'await-finished'; exit 7",
+    )
+    .await?;
+
+    let output = await_background_completion(&session, process_id, Some(2_500)).await?;
+
+    assert_eq!(output.process_id, None);
+    assert_eq!(output.exit_code, Some(7));
+    assert!(
+        output.truncated_output().contains("await-finished"),
+        "await should return the aggregated background transcript"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn await_background_completion_timeout_returns_buffered_output() -> anyhow::Result<()> {
+    let (session, turn) = test_session_and_turn().await;
+    let process_id = spawn_background_process(
+        &session,
+        &turn,
+        "sleep 0.05; printf 'before-timeout'; sleep 2; printf 'after-timeout'",
+    )
+    .await?;
+
+    let output = await_background_completion(&session, process_id, Some(500)).await?;
+
+    assert_eq!(output.process_id, Some(process_id));
+    assert_eq!(output.exit_code, None);
+    let text = output.truncated_output();
+    assert!(
+        text.contains("before-timeout"),
+        "timeout response should include already buffered transcript"
+    );
+    assert!(
+        !text.contains("after-timeout"),
+        "timeout response should return before process completion"
+    );
+
+    await_background_completion(&session, process_id, Some(2_500)).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn await_background_completion_unknown_process_returns_error() {
+    let (session, _) = test_session_and_turn().await;
+
+    let err = await_background_completion(&session, 98_765, Some(10))
+        .await
+        .expect_err("expected unknown process error");
+
+    match err {
+        UnifiedExecError::UnknownProcessId { process_id } => assert_eq!(process_id, 98_765),
+        other => panic!("expected UnknownProcessId, got {other:?}"),
+    }
 }
