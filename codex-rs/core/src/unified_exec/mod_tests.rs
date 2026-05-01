@@ -107,6 +107,7 @@ async fn exec_command_with_tty(
     if process_started_alive {
         let entry = ProcessEntry {
             process: Arc::clone(&process),
+            transcript: Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default())),
             call_id: context.call_id.clone(),
             process_id,
             hook_command: cmd.to_string(),

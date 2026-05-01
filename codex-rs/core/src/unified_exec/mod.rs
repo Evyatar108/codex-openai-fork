@@ -111,6 +111,13 @@ pub(crate) struct WriteStdinRequest<'a> {
     pub max_output_tokens: Option<usize>,
 }
 
+#[derive(Debug)]
+pub(crate) struct AwaitBackgroundCompletionRequest {
+    pub process_id: i32,
+    pub timeout_ms: Option<u64>,
+    pub max_output_tokens: Option<usize>,
+}
+
 #[derive(Default)]
 pub(crate) struct ProcessStore {
     processes: HashMap<i32, ProcessEntry>,
@@ -137,6 +144,10 @@ impl UnifiedExecProcessManager {
                 .max(MIN_EMPTY_YIELD_TIME_MS),
         }
     }
+
+    pub fn max_background_wait_ms(&self) -> u64 {
+        self.max_write_stdin_yield_time_ms
+    }
 }
 
 impl Default for UnifiedExecProcessManager {
@@ -147,6 +158,7 @@ impl Default for UnifiedExecProcessManager {
 
 struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
+    transcript: Arc<Mutex<head_tail_buffer::HeadTailBuffer>>,
     call_id: String,
     process_id: i32,
     hook_command: String,

@@ -27,6 +27,7 @@ use crate::tools::runtimes::unified_exec::UnifiedExecRequest as UnifiedExecToolR
 use crate::tools::runtimes::unified_exec::UnifiedExecRuntime;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
+use crate::unified_exec::AwaitBackgroundCompletionRequest;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
 use crate::unified_exec::MAX_YIELD_TIME_MS;
@@ -39,6 +40,7 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WARNING_UNIFIED_EXEC_PROCESSES;
 use crate::unified_exec::WriteStdinRequest;
+use crate::unified_exec::async_watcher::TRAILING_OUTPUT_GRACE;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::spawn_exit_watcher;
@@ -177,6 +179,13 @@ struct PreparedProcessHandles {
     hook_command: String,
     process_id: i32,
     tty: bool,
+}
+
+struct PreparedBackgroundCompletion {
+    process: Arc<UnifiedExecProcess>,
+    cancellation_token: CancellationToken,
+    transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
+    hook_command: String,
 }
 
 fn exec_server_process_id(process_id: i32) -> String {
@@ -738,6 +747,78 @@ impl UnifiedExecProcessManager {
         Ok(response)
     }
 
+    pub(crate) async fn await_background_completion(
+        &self,
+        request: AwaitBackgroundCompletionRequest,
+    ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+        let process_id = request.process_id;
+        let PreparedBackgroundCompletion {
+            process,
+            cancellation_token,
+            transcript,
+            hook_command,
+        } = self.prepare_background_completion(process_id).await?;
+
+        let wait_ms = request
+            .timeout_ms
+            .unwrap_or_else(|| self.max_background_wait_ms())
+            .min(self.max_background_wait_ms());
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(wait_ms);
+        let observed_exit = process.has_exited()
+            || tokio::time::timeout_at(deadline, cancellation_token.cancelled())
+                .await
+                .is_ok();
+
+        if observed_exit {
+            tokio::time::sleep(TRAILING_OUTPUT_GRACE).await;
+        }
+
+        let wall_time = Instant::now().saturating_duration_since(start);
+        let collected = {
+            let guard = transcript.lock().await;
+            guard.to_bytes()
+        };
+        let text = String::from_utf8_lossy(&collected).to_string();
+        let original_token_count = approx_token_count(&text);
+        let chunk_id = generate_chunk_id();
+
+        if observed_exit && let Some(message) = process.failure_message() {
+            self.release_process_id(process_id).await;
+            return Err(UnifiedExecError::process_failed(message));
+        }
+
+        let status = self.refresh_process_state(process_id).await;
+        let (response_process_id, exit_code, event_call_id) = match status {
+            ProcessStatus::Alive {
+                exit_code,
+                call_id,
+                process_id,
+            } => (Some(process_id), exit_code, call_id),
+            ProcessStatus::Exited { exit_code, entry } => {
+                let call_id = entry.call_id.clone();
+                (None, exit_code, call_id)
+            }
+            ProcessStatus::Unknown => {
+                return Err(UnifiedExecError::UnknownProcessId {
+                    process_id: request.process_id,
+                });
+            }
+        };
+
+        Ok(ExecCommandToolOutput {
+            event_call_id,
+            chunk_id,
+            wall_time,
+            raw_output: collected,
+            max_output_tokens: request.max_output_tokens,
+            process_id: response_process_id,
+            exit_code,
+            original_token_count: Some(original_token_count),
+            hook_command: Some(hook_command),
+        })
+    }
+
     async fn refresh_process_state(&self, process_id: i32) -> ProcessStatus {
         {
             let mut store = self.process_store.lock().await;
@@ -805,6 +886,25 @@ impl UnifiedExecProcessManager {
         })
     }
 
+    async fn prepare_background_completion(
+        &self,
+        process_id: i32,
+    ) -> Result<PreparedBackgroundCompletion, UnifiedExecError> {
+        let mut store = self.process_store.lock().await;
+        let entry = store
+            .processes
+            .get_mut(&process_id)
+            .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
+        entry.last_used = Instant::now();
+
+        Ok(PreparedBackgroundCompletion {
+            process: Arc::clone(&entry.process),
+            cancellation_token: entry.process.cancellation_token(),
+            transcript: Arc::clone(&entry.transcript),
+            hook_command: entry.hook_command.clone(),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn store_process(
         &self,
@@ -821,6 +921,7 @@ impl UnifiedExecProcessManager {
     ) {
         let entry = ProcessEntry {
             process: Arc::clone(&process),
+            transcript: Arc::clone(&transcript),
             call_id: context.call_id.clone(),
             process_id,
             hook_command,

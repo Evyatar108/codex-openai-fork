@@ -209,9 +209,52 @@ fn write_stdin_tool_matches_expected_spec() {
         tool,
         ToolSpec::Function(ResponsesApiTool {
             name: "write_stdin".to_string(),
-            description:
-                "Writes characters to an existing unified exec session and returns recent output."
+            description: "Writes characters to an existing unified exec session and returns recent output. Use await_background_completion to wait until a background process is done."
+                .to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                properties,
+                Some(vec!["session_id".to_string()]),
+                Some(false.into())
+            ),
+            output_schema: Some(unified_exec_output_schema()),
+        })
+    );
+}
+
+#[test]
+fn await_background_completion_tool_matches_expected_spec() {
+    let tool = create_await_background_completion_tool();
+
+    let properties = BTreeMap::from([
+        (
+            "session_id".to_string(),
+            JsonSchema::number(Some(
+                "Identifier of the running unified exec session.".to_string(),
+            )),
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::number(Some(
+                "Maximum time to wait (in milliseconds) for the background process to exit."
                     .to_string(),
+            )),
+        ),
+        (
+            "max_output_tokens".to_string(),
+            JsonSchema::number(Some(
+                "Maximum number of tokens to return. Excess output will be truncated.".to_string(),
+            )),
+        ),
+    ]);
+
+    assert_eq!(
+        tool,
+        ToolSpec::Function(ResponsesApiTool {
+            name: "await_background_completion".to_string(),
+            description: "Waits for a background unified exec session to finish and returns its aggregated output."
+                .to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(

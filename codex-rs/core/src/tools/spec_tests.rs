@@ -374,7 +374,7 @@ async fn assert_default_model_tools(
     expected_tail: &[&str],
 ) {
     let mut expected = if features.enabled(Feature::UnifiedExec) {
-        vec!["exec_command", "write_stdin"]
+        vec!["exec_command", "write_stdin", "await_background_completion"]
     } else {
         vec![shell_tool]
     };
@@ -443,6 +443,7 @@ async fn test_build_specs_gpt5_codex_unified_exec_web_search() {
         &[
             "exec_command",
             "write_stdin",
+            "await_background_completion",
             "update_plan",
             "request_user_input",
             "apply_patch",
@@ -470,6 +471,7 @@ async fn test_build_specs_gpt51_codex_unified_exec_web_search() {
         &[
             "exec_command",
             "write_stdin",
+            "await_background_completion",
             "update_plan",
             "request_user_input",
             "apply_patch",
@@ -597,6 +599,7 @@ async fn test_gpt_5_1_codex_max_unified_exec_web_search() {
         &[
             "exec_command",
             "write_stdin",
+            "await_background_completion",
             "update_plan",
             "request_user_input",
             "apply_patch",
@@ -639,7 +642,12 @@ async fn test_build_specs_default_shell_present() {
     .build();
 
     // Only check the shell variant and a couple of core tools.
-    let mut subset = vec!["exec_command", "write_stdin", "update_plan"];
+    let mut subset = vec![
+        "exec_command",
+        "write_stdin",
+        "await_background_completion",
+        "update_plan",
+    ];
     if let Some(shell_tool) = shell_tool_name(&tools_config) {
         subset.push(shell_tool);
     }

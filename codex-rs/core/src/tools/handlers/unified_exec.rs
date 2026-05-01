@@ -19,6 +19,7 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
+use crate::unified_exec::AwaitBackgroundCompletionRequest;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecError;
@@ -75,6 +76,16 @@ struct WriteStdinArgs {
     chars: String,
     #[serde(default = "default_write_stdin_yield_time_ms")]
     yield_time_ms: u64,
+    #[serde(default)]
+    max_output_tokens: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AwaitBackgroundCompletionArgs {
+    // The model is trained on `session_id`.
+    session_id: i32,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<usize>,
 }
@@ -405,6 +416,23 @@ impl ToolHandler for UnifiedExecHandler {
                     .await;
 
                 response
+            }
+            "await_background_completion" => {
+                let args: AwaitBackgroundCompletionArgs = parse_arguments(&arguments)?;
+                let max_output_tokens =
+                    effective_max_output_tokens(args.max_output_tokens, turn.truncation_policy);
+                manager
+                    .await_background_completion(AwaitBackgroundCompletionRequest {
+                        process_id: args.session_id,
+                        timeout_ms: args.timeout_ms,
+                        max_output_tokens: Some(max_output_tokens),
+                    })
+                    .await
+                    .map_err(|err| {
+                        FunctionCallError::RespondToModel(format!(
+                            "await_background_completion failed: {err}"
+                        ))
+                    })?
             }
             other => {
                 return Err(FunctionCallError::RespondToModel(format!(

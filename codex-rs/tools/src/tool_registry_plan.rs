@@ -23,6 +23,7 @@ use crate::collect_tool_search_source_infos;
 use crate::collect_tool_suggest_entries;
 use crate::create_apply_patch_freeform_tool;
 use crate::create_apply_patch_json_tool;
+use crate::create_await_background_completion_tool;
 use crate::create_close_agent_tool_v1;
 use crate::create_close_agent_tool_v2;
 use crate::create_code_mode_tool;
@@ -167,8 +168,14 @@ pub fn build_tool_registry_plan(
                     /*supports_parallel_tool_calls*/ false,
                     config.code_mode_enabled,
                 );
+                plan.push_spec(
+                    create_await_background_completion_tool(),
+                    /*supports_parallel_tool_calls*/ false,
+                    config.code_mode_enabled,
+                );
                 plan.register_handler("exec_command", ToolHandlerKind::UnifiedExec);
                 plan.register_handler("write_stdin", ToolHandlerKind::UnifiedExec);
+                plan.register_handler("await_background_completion", ToolHandlerKind::UnifiedExec);
             }
             ConfigShellToolType::Disabled => {}
             ConfigShellToolType::ShellCommand => {
