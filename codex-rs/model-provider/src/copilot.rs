@@ -14,7 +14,6 @@ use codex_copilot::CopilotHeaderSource;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
-use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
@@ -111,7 +110,6 @@ impl ModelProvider for CopilotModelProvider {
         &self,
         codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
-        collaboration_modes_config: CollaborationModesConfig,
     ) -> SharedModelsManager {
         // SANDBOX PATCH: route the Copilot session's model catalog through
         // `OpenAiModelsManager` driven by `CopilotModelsEndpoint`, which fetches
@@ -124,7 +122,6 @@ impl ModelProvider for CopilotModelProvider {
             return Arc::new(StaticModelsManager::new(
                 self.auth_manager.clone(),
                 model_catalog,
-                collaboration_modes_config,
             ));
         }
 
@@ -141,7 +138,6 @@ impl ModelProvider for CopilotModelProvider {
             codex_home,
             endpoint,
             self.auth_manager.clone(),
-            collaboration_modes_config,
         ))
     }
 

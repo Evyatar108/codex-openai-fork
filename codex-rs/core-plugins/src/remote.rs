@@ -33,6 +33,14 @@ pub struct RemoteMarketplace {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RemoteInstalledPlugin {
+    pub marketplace_name: String,
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct RemotePluginSummary {
     pub id: String,
     pub name: String,
@@ -49,6 +57,8 @@ pub struct RemotePluginDetail {
     pub marketplace_display_name: String,
     pub summary: RemotePluginSummary,
     pub description: Option<String>,
+    pub release_version: Option<String>,
+    pub bundle_download_url: Option<String>,
     pub skills: Vec<RemotePluginSkill>,
     pub app_ids: Vec<String>,
 }
@@ -121,6 +131,8 @@ pub enum RemotePluginCatalogError {
         expected_enabled: bool,
         actual_enabled: bool,
     },
+    #[error("failed to update remote plugin cache: {0}")]
+    CacheRemove(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
@@ -384,6 +396,15 @@ pub async fn fetch_remote_marketplaces(
     }
 }
 
+// SANDBOX PATCH: return empty installed plugins list — no HTTP requests to /ps/plugins/installed/*.
+// Remote plugin catalog is a ChatGPT Business/Enterprise feature; copilot-api does not use it.
+pub async fn fetch_remote_installed_plugins(
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+) -> Result<Vec<RemoteInstalledPlugin>, RemotePluginCatalogError> {
+    Ok(Vec::new())
+}
+
 // SANDBOX PATCH: reject plugin detail fetch — no HTTP requests to /ps/plugins/{id}.
 pub async fn fetch_remote_plugin_detail(
     _config: &RemotePluginServiceConfig,
@@ -448,10 +469,32 @@ pub async fn fetch_remote_plugin_detail(
         marketplace_display_name: scope.marketplace_display_name().to_string(),
         summary: build_remote_plugin_summary(&plugin, installed_plugin.as_ref()),
         description: non_empty_string(Some(&plugin.release.description)),
+        release_version: None,
+        bundle_download_url: None,
         skills,
         app_ids: plugin.release.app_ids,
     })
     }
+}
+
+// SANDBOX PATCH: reject plugin detail fetch with download URLs — no HTTP requests.
+pub async fn fetch_remote_plugin_detail_with_download_urls(
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _marketplace_name: &str,
+    _plugin_id: &str,
+) -> Result<RemotePluginDetail, RemotePluginCatalogError> {
+    Err(RemotePluginCatalogError::AuthRequired)
+}
+
+// SANDBOX PATCH: reject plugin uninstall — no HTTP requests to ChatGPT plugin API.
+pub async fn uninstall_remote_plugin(
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _codex_home: std::path::PathBuf,
+    _plugin_id: &str,
+) -> Result<(), RemotePluginCatalogError> {
+    Err(RemotePluginCatalogError::AuthRequired)
 }
 
 pub async fn install_remote_plugin(
