@@ -54,7 +54,7 @@ use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 
 use codex_features::Feature;
-use codex_protocol::models::ContentItem;
+use crate::util::escape_xml_text;
 pub(crate) use compact::CompactTask;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
@@ -198,13 +198,6 @@ fn xml_tag_value<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let start = text.find(&open)? + open.len();
     let end = text[start..].find(&close)? + start;
     Some(&text[start..end])
-}
-
-fn escape_xml_text(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 fn emit_turn_network_proxy_metric(

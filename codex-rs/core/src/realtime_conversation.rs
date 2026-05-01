@@ -58,6 +58,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+use crate::util::escape_xml_text;
 
 const AUDIO_IN_QUEUE_CAPACITY: usize = 256;
 const USER_TEXT_IN_QUEUE_CAPACITY: usize = 64;
@@ -928,13 +929,6 @@ fn wrap_realtime_delegation_input(input: &str, transcript_delta: Option<&str>) -
     }
 
     format!("<realtime_delegation>\n  <input>{input}</input>\n</realtime_delegation>")
-}
-
-fn escape_xml_text(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 fn realtime_api_key(auth: Option<&CodexAuth>, provider: &ModelProviderInfo) -> CodexResult<String> {

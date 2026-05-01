@@ -100,6 +100,13 @@ pub(crate) fn error_or_panic(message: impl std::string::ToString) {
     }
 }
 
+pub(crate) fn escape_xml_text(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 pub fn resolve_path(base: &Path, path: &PathBuf) -> PathBuf {
     if path.is_absolute() {
         path.clone()

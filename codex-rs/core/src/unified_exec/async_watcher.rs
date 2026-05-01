@@ -15,6 +15,7 @@ use super::BackgroundCompletionEvent;
 use super::UnifiedExecContext;
 use super::process::UnifiedExecProcess;
 use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
+use crate::util::escape_xml_text;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::events::ToolEmitter;
@@ -190,13 +191,6 @@ pub(crate) fn background_completion_message(event: BackgroundCompletionEvent) ->
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text }],
     }
-}
-
-fn escape_xml_text(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 async fn process_chunk(
