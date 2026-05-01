@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
 
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -118,6 +119,12 @@ pub(crate) struct AwaitBackgroundCompletionRequest {
     pub max_output_tokens: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BackgroundCompletionEvent {
+    pub process_id: i32,
+    pub exit_code: i32,
+}
+
 #[derive(Default)]
 pub(crate) struct ProcessStore {
     processes: HashMap<i32, ProcessEntry>,
@@ -159,6 +166,7 @@ impl Default for UnifiedExecProcessManager {
 struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
     transcript: Arc<Mutex<head_tail_buffer::HeadTailBuffer>>,
+    notified: Arc<AtomicBool>,
     call_id: String,
     process_id: i32,
     hook_command: String,

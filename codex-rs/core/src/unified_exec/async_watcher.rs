@@ -1,5 +1,6 @@
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use tokio::sync::Mutex;
 use tokio::time::Duration;
@@ -113,12 +114,16 @@ pub(crate) fn spawn_exit_watcher(
     cwd: AbsolutePathBuf,
     process_id: i32,
     transcript: Arc<Mutex<HeadTailBuffer>>,
+    notified: Arc<AtomicBool>,
     started_at: Instant,
 ) {
     let exit_token = process.cancellation_token();
     let output_drained = process.output_drained_notify();
 
     tokio::spawn(async move {
+        // Keep the shared dedup flag alive for the completion watcher path.
+        let _notification_dedup = notified;
+
         exit_token.cancelled().await;
         output_drained.notified().await;
 

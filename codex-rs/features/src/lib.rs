@@ -91,6 +91,8 @@ pub enum Feature {
     JsReplToolsOnly,
     /// Use the single unified PTY-backed exec tool.
     UnifiedExec,
+    /// Notify the model when background unified exec processes complete.
+    BackgroundProcessNotification,
     /// Route shell tool execution through the zsh exec bridge.
     ShellZshFork,
     /// Reflow transcript scrollback when the terminal is resized.
@@ -652,6 +654,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "unified_exec",
         stage: Stage::Stable,
         default_enabled: !cfg!(windows),
+    },
+    FeatureSpec {
+        id: Feature::BackgroundProcessNotification,
+        key: "background_process_notification",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ShellZshFork,

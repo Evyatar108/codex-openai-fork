@@ -919,9 +919,11 @@ impl UnifiedExecProcessManager {
         network_approval: Option<DeferredNetworkApproval>,
         transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
     ) {
+        let notified = Arc::new(AtomicBool::new(false));
         let entry = ProcessEntry {
             process: Arc::clone(&process),
             transcript: Arc::clone(&transcript),
+            notified: Arc::clone(&notified),
             call_id: context.call_id.clone(),
             process_id,
             hook_command,
@@ -962,6 +964,7 @@ impl UnifiedExecProcessManager {
             cwd,
             process_id,
             transcript,
+            Arc::clone(&notified),
             started_at,
         );
     }
