@@ -4524,7 +4524,24 @@ impl ChatComposer {
         let is_zellij = self.is_zellij;
         let style = user_message_style();
         let textarea_style = style.fg(ratatui::style::Color::Reset);
-        Block::default().style(style).render_ref(composer_rect, buf);
+        // Color only the content rows (text + images), not the top/bottom margin rows.
+        let content_top = if !remote_images_rect.is_empty() {
+            remote_images_rect.y
+        } else {
+            textarea_rect.y
+        };
+        let content_height = (textarea_rect.y + textarea_rect.height).saturating_sub(content_top);
+        if content_height > 0 {
+            buf.set_style(
+                Rect {
+                    x: composer_rect.x,
+                    y: content_top,
+                    width: composer_rect.width,
+                    height: content_height,
+                },
+                style,
+            );
+        }
         if !remote_images_rect.is_empty() {
             Paragraph::new(self.remote_images_lines(remote_images_rect.width))
                 .style(style)
