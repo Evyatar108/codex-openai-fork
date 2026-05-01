@@ -40,7 +40,6 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WARNING_UNIFIED_EXEC_PROCESSES;
 use crate::unified_exec::WriteStdinRequest;
-use crate::unified_exec::async_watcher::TRAILING_OUTPUT_GRACE;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::spawn_exit_watcher;
@@ -780,7 +779,7 @@ impl UnifiedExecProcessManager {
 
         if observed_exit {
             let _ = notified.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire);
-            tokio::time::sleep(TRAILING_OUTPUT_GRACE).await;
+            process.output_drained_notify().notified().await;
         }
 
         let wall_time = Instant::now().saturating_duration_since(start);
