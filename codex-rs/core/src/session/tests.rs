@@ -3616,6 +3616,21 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     (session, turn_context)
 }
 
+pub(crate) async fn make_session_and_context_with_feature(
+    feature: Feature,
+) -> (Session, TurnContext) {
+    let (mut session, mut turn_context) = make_session_and_context().await;
+    session
+        .features
+        .enable(feature)
+        .expect("test config should allow feature");
+    turn_context
+        .features
+        .enable(feature)
+        .expect("test config should allow feature");
+    (session, turn_context)
+}
+
 async fn make_session_with_config(
     mutator: impl FnOnce(&mut Config),
 ) -> anyhow::Result<Arc<Session>> {

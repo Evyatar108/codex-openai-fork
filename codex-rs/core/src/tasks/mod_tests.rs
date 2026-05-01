@@ -6,6 +6,8 @@ use codex_otel::SessionTelemetry;
 use codex_otel::TURN_MEMORY_METRIC;
 use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_protocol::ThreadId;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::SessionSource;
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
@@ -15,6 +17,36 @@ use opentelemetry_sdk::metrics::data::MetricData;
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+
+fn notification(task_id: i32, exit_code: i32) -> ResponseInputItem {
+    ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: format!(
+                "<task_notification><task_id>{task_id}</task_id><status>completed</status><exit_code>{exit_code}</exit_code><summary>Background shell command completed (exit code {exit_code})</summary></task_notification>"
+            ),
+        }],
+    }
+}
+
+fn message(text: &str) -> ResponseInputItem {
+    ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: text.to_string(),
+        }],
+    }
+}
+
+fn text(item: &ResponseInputItem) -> &str {
+    let ResponseInputItem::Message { content, .. } = item else {
+        panic!("expected message item");
+    };
+    let [ContentItem::InputText { text }] = content.as_slice() else {
+        panic!("expected single input text item");
+    };
+    text
+}
 
 fn test_session_telemetry() -> SessionTelemetry {
     let exporter = InMemoryMetricExporter::default();
@@ -96,6 +128,26 @@ fn emit_turn_network_proxy_metric_records_active_turn() {
             ("tmp_mem_enabled".to_string(), "true".to_string()),
         ])
     );
+}
+
+#[test]
+fn coalesce_background_notifications_merges_multiple_messages() {
+    let output = super::coalesce_background_notifications(vec![
+        notification(101, 0),
+        message("ordinary queued input"),
+        notification(202, 7),
+        notification(303, -1),
+    ]);
+
+    assert_eq!(output.len(), 2);
+    let coalesced = text(&output[0]);
+    assert!(coalesced.starts_with("<task_notification>"));
+    assert!(coalesced.contains("<summary>3 background shell commands completed</summary>"));
+    assert!(coalesced.contains("<tasks>"));
+    assert!(coalesced.contains("<task><task_id>101</task_id><exit_code>0</exit_code></task>"));
+    assert!(coalesced.contains("<task><task_id>202</task_id><exit_code>7</exit_code></task>"));
+    assert!(coalesced.contains("<task><task_id>303</task_id><exit_code>-1</exit_code></task>"));
+    assert_eq!(text(&output[1]), "ordinary queued input");
 }
 
 #[test]

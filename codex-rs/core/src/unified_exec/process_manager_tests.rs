@@ -4,20 +4,32 @@ use crate::exec::ExecExpiration;
 use crate::sandboxing::ExecRequest;
 use crate::session::session::Session;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_feature;
 use crate::session::turn_context::TurnContext;
+use crate::state::ActiveTurn;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::unified_exec::AwaitBackgroundCompletionRequest;
 use crate::unified_exec::NoopSpawnLifecycle;
 use crate::unified_exec::UnifiedExecContext;
+use codex_features::Feature;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseInputItem;
 use codex_sandboxing::SandboxType;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::time::Duration;
 use tokio::time::Instant;
 
 async fn test_session_and_turn() -> (Arc<Session>, Arc<TurnContext>) {
     let (session, turn) = make_session_and_context().await;
+    (Arc::new(session), Arc::new(turn))
+}
+
+async fn test_session_and_turn_with_background_notifications() -> (Arc<Session>, Arc<TurnContext>) {
+    let (session, turn) =
+        make_session_and_context_with_feature(Feature::BackgroundProcessNotification).await;
     (Arc::new(session), Arc::new(turn))
 }
 
@@ -48,6 +60,23 @@ async fn spawn_background_process(
     turn: &Arc<TurnContext>,
     cmd: &str,
 ) -> Result<i32, UnifiedExecError> {
+    spawn_background_process_inner(session, turn, cmd, /*spawn_watcher*/ false).await
+}
+
+async fn spawn_background_process_with_exit_watcher(
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
+    cmd: &str,
+) -> Result<i32, UnifiedExecError> {
+    spawn_background_process_inner(session, turn, cmd, /*spawn_watcher*/ true).await
+}
+
+async fn spawn_background_process_inner(
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
+    cmd: &str,
+    spawn_watcher: bool,
+) -> Result<i32, UnifiedExecError> {
     let manager = &session.services.unified_exec_manager;
     let process_id = manager.allocate_process_id().await;
     let command = vec!["bash".to_string(), "-lc".to_string(), cmd.to_string()];
@@ -72,10 +101,12 @@ async fn spawn_background_process(
     let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
     start_streaming_output(&process, &context, Arc::clone(&transcript));
     let started_at = Instant::now();
+    let notified = Arc::new(AtomicBool::new(false));
 
     let entry = ProcessEntry {
-        process,
-        transcript,
+        process: Arc::clone(&process),
+        transcript: Arc::clone(&transcript),
+        notified: Arc::clone(&notified),
         call_id: context.call_id,
         process_id,
         hook_command: cmd.to_string(),
@@ -90,6 +121,21 @@ async fn spawn_background_process(
         .await
         .processes
         .insert(process_id, entry);
+
+    if spawn_watcher {
+        spawn_exit_watcher(
+            process,
+            Arc::clone(session),
+            Arc::clone(turn),
+            "notify-call".to_string(),
+            command,
+            turn.cwd.clone(),
+            process_id,
+            transcript,
+            notified,
+            started_at,
+        );
+    }
 
     Ok(process_id)
 }
@@ -108,6 +154,28 @@ async fn await_background_completion(
             max_output_tokens: None,
         })
         .await
+}
+
+async fn wait_for_queued_next_turn_items(session: &Session) -> Vec<ResponseInputItem> {
+    for _ in 0..50 {
+        if session.has_queued_response_items_for_next_turn().await {
+            return session.take_queued_response_items_for_next_turn().await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    session.take_queued_response_items_for_next_turn().await
+}
+
+fn input_text(item: &ResponseInputItem) -> &str {
+    let ResponseInputItem::Message { role, content } = item else {
+        panic!("expected message item");
+    };
+    assert_eq!(role, "user");
+    let [ContentItem::InputText { text }] = content.as_slice() else {
+        panic!("expected single input text content item");
+    };
+    text
 }
 
 #[test]
@@ -457,4 +525,82 @@ async fn await_background_completion_unknown_process_returns_error() {
         UnifiedExecError::UnknownProcessId { process_id } => assert_eq!(process_id, 98_765),
         other => panic!("expected UnknownProcessId, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_process_exit_enqueues_notification_for_next_turn() -> anyhow::Result<()> {
+    let (session, turn) = test_session_and_turn_with_background_notifications().await;
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+
+    let process_id =
+        spawn_background_process_with_exit_watcher(&session, &turn, "printf 'notify-done'; exit 3")
+            .await?;
+
+    let queued_items = wait_for_queued_next_turn_items(&session).await;
+
+    assert_eq!(queued_items.len(), 1);
+    let text = input_text(&queued_items[0]);
+    assert!(text.contains(&format!("<task_id>{process_id}</task_id>")));
+    assert!(text.contains("<status>completed</status>"));
+    assert!(text.contains("<exit_code>3</exit_code>"));
+    assert!(text.contains("Background shell command completed (exit code 3)"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn await_background_completion_dedups_watcher_notification() -> anyhow::Result<()> {
+    let (session, turn) = test_session_and_turn_with_background_notifications().await;
+    let process_id = spawn_background_process_with_exit_watcher(
+        &session,
+        &turn,
+        "sleep 0.05; printf 'dedup-done'; exit 4",
+    )
+    .await?;
+
+    let output = await_background_completion(&session, process_id, Some(2_500)).await?;
+    assert_eq!(output.exit_code, Some(4));
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert!(
+        session
+            .take_queued_response_items_for_next_turn()
+            .await
+            .is_empty(),
+        "watcher should not enqueue a second notification after await wins dedup"
+    );
+    assert!(
+        session.active_turn.lock().await.is_none(),
+        "duplicate watcher notification would wake an idle turn"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_process_notification_wakes_idle_session() -> anyhow::Result<()> {
+    let (session, turn) = test_session_and_turn_with_background_notifications().await;
+
+    spawn_background_process_with_exit_watcher(&session, &turn, "printf 'wake-done'; exit 6")
+        .await?;
+
+    for _ in 0..50 {
+        if session.active_turn.lock().await.is_some() {
+            assert!(
+                session
+                    .take_queued_response_items_for_next_turn()
+                    .await
+                    .is_empty(),
+                "queued notification should be drained into the synthetic turn"
+            );
+            session
+                .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)
+                .await;
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    panic!("background notification did not wake an idle session");
 }
