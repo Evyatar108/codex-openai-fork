@@ -24,11 +24,13 @@ use crate::facts::TurnTokenUsageFact;
 #[allow(unused_imports)]
 use crate::reducer::AnalyticsReducer;
 use codex_app_server_protocol::ClientRequest;
-use codex_app_server_protocol::ClientResponse;
+use codex_app_server_protocol::ClientResponsePayload;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ServerResponse;
 use codex_login::AuthManager;
 use codex_login::default_client::create_client;
 use codex_plugin::PluginTelemetryMetadata;
@@ -51,8 +53,7 @@ pub(crate) struct AnalyticsEventsQueue {
 
 #[derive(Clone)]
 pub struct AnalyticsEventsClient {
-    queue: AnalyticsEventsQueue,
-    analytics_enabled: Option<bool>,
+    queue: Option<AnalyticsEventsQueue>,
 }
 
 impl AnalyticsEventsQueue {
@@ -117,9 +118,13 @@ impl AnalyticsEventsClient {
         analytics_enabled: Option<bool>,
     ) -> Self {
         Self {
-            queue: AnalyticsEventsQueue::new(Arc::clone(&auth_manager), base_url),
-            analytics_enabled,
+            queue: (analytics_enabled != Some(false))
+                .then(|| AnalyticsEventsQueue::new(Arc::clone(&auth_manager), base_url)),
         }
+    }
+
+    pub fn disabled() -> Self {
+        Self { queue: None }
     }
 
     pub fn track_skill_invocations(
@@ -179,16 +184,30 @@ impl AnalyticsEventsClient {
         )));
     }
 
-    pub fn track_request(&self, connection_id: u64, request_id: RequestId, request: ClientRequest) {
-        self.record_fact(AnalyticsFact::Request {
+    pub fn track_request(
+        &self,
+        connection_id: u64,
+        request_id: RequestId,
+        request: &ClientRequest,
+    ) {
+        if !matches!(
+            request,
+            ClientRequest::TurnStart { .. } | ClientRequest::TurnSteer { .. }
+        ) {
+            return;
+        }
+        self.record_fact(AnalyticsFact::ClientRequest {
             connection_id,
             request_id,
-            request: Box::new(request),
+            request: Box::new(request.clone()),
         });
     }
 
     pub fn track_app_used(&self, tracking: TrackEventsContext, app: AppInvocation) {
-        if !self.queue.should_enqueue_app_used(&tracking, &app) {
+        let Some(queue) = self.queue.as_ref() else {
+            return;
+        };
+        if !queue.should_enqueue_app_used(&tracking, &app) {
             return;
         }
         self.record_fact(AnalyticsFact::Custom(CustomAnalyticsFact::AppUsed(
@@ -203,7 +222,10 @@ impl AnalyticsEventsClient {
     }
 
     pub fn track_plugin_used(&self, tracking: TrackEventsContext, plugin: PluginTelemetryMetadata) {
-        if !self.queue.should_enqueue_plugin_used(&tracking, &plugin) {
+        let Some(queue) = self.queue.as_ref() else {
+            return;
+        };
+        if !queue.should_enqueue_plugin_used(&tracking, &plugin) {
             return;
         }
         self.record_fact(AnalyticsFact::Custom(CustomAnalyticsFact::PluginUsed(
@@ -266,15 +288,30 @@ impl AnalyticsEventsClient {
     }
 
     pub(crate) fn record_fact(&self, input: AnalyticsFact) {
-        if self.analytics_enabled == Some(false) {
-            return;
+        if let Some(queue) = self.queue.as_ref() {
+            queue.try_send(input);
         }
-        self.queue.try_send(input);
     }
 
-    pub fn track_response(&self, connection_id: u64, response: ClientResponse) {
-        self.record_fact(AnalyticsFact::Response {
+    pub fn track_response(
+        &self,
+        connection_id: u64,
+        request_id: RequestId,
+        response: ClientResponsePayload,
+    ) {
+        if !matches!(
+            response,
+            ClientResponsePayload::ThreadStart(_)
+                | ClientResponsePayload::ThreadResume(_)
+                | ClientResponsePayload::ThreadFork(_)
+                | ClientResponsePayload::TurnStart(_)
+                | ClientResponsePayload::TurnSteer(_)
+        ) {
+            return;
+        }
+        self.record_fact(AnalyticsFact::ClientResponse {
             connection_id,
+            request_id,
             response: Box::new(response),
         });
     }
@@ -296,6 +333,19 @@ impl AnalyticsEventsClient {
 
     pub fn track_notification(&self, notification: ServerNotification) {
         self.record_fact(AnalyticsFact::Notification(Box::new(notification)));
+    }
+
+    pub fn track_server_request(&self, connection_id: u64, request: ServerRequest) {
+        self.record_fact(AnalyticsFact::ServerRequest {
+            connection_id,
+            request: Box::new(request),
+        });
+    }
+
+    pub fn track_server_response(&self, response: ServerResponse) {
+        self.record_fact(AnalyticsFact::ServerResponse {
+            response: Box::new(response),
+        });
     }
 }
 
@@ -341,3 +391,7 @@ async fn send_track_events(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod tests;

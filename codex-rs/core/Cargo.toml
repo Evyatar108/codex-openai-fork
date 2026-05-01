@@ -45,6 +45,7 @@ codex-exec-server = { workspace = true }
 codex-features = { workspace = true }
 codex-feedback = { workspace = true }
 codex-login = { workspace = true }
+codex-memories-read = { workspace = true }
 codex-mcp = { workspace = true }
 codex-model-provider-info = { workspace = true }
 codex-models-manager = { workspace = true }
@@ -74,7 +75,6 @@ codex-utils-path = { workspace = true }
 codex-utils-plugins = { workspace = true }
 codex-utils-pty = { workspace = true }
 codex-utils-readiness = { workspace = true }
-codex-secrets = { workspace = true }
 codex-utils-string = { workspace = true }
 codex-utils-stream-parser = { workspace = true }
 codex-utils-template = { workspace = true }
@@ -125,9 +125,6 @@ uuid = { workspace = true, features = ["serde", "v4", "v5"] }
 which = { workspace = true }
 whoami = { workspace = true }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "0.9"
-
 # Build OpenSSL from source for musl builds.
 [target.x86_64-unknown-linux-musl.dependencies]
 openssl-sys = { workspace = true, features = ["vendored"] }
@@ -144,6 +141,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }
+
 
 [target.'cfg(unix)'.dependencies]
 codex-shell-escalation = { workspace = true }
