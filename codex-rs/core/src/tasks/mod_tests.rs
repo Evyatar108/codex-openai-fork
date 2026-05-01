@@ -131,12 +131,13 @@ fn emit_turn_network_proxy_metric_records_active_turn() {
 }
 
 #[test]
-fn coalesce_background_notifications_merges_multiple_messages() {
+fn coalesce_background_notifications_merges_consecutive_run() {
+    // [notif-A, notif-B, notif-C, ordinary-input] → [coalesced(A+B+C), ordinary-input]
     let output = super::coalesce_background_notifications(vec![
         notification(101, 0),
-        message("ordinary queued input"),
         notification(202, 7),
         notification(303, -1),
+        message("ordinary queued input"),
     ]);
 
     assert_eq!(output.len(), 2);
@@ -148,6 +149,27 @@ fn coalesce_background_notifications_merges_multiple_messages() {
     assert!(coalesced.contains("<task><task_id>202</task_id><exit_code>7</exit_code></task>"));
     assert!(coalesced.contains("<task><task_id>303</task_id><exit_code>-1</exit_code></task>"));
     assert_eq!(text(&output[1]), "ordinary queued input");
+}
+
+#[test]
+fn coalesce_background_notifications_preserves_order_across_ordinary_input() {
+    // [notif-A, ordinary-input, notif-B, notif-C] must NOT move notif-B/C before ordinary-input.
+    // notif-A is a solo run (passes through), notif-B+notif-C form a run and get coalesced.
+    let output = super::coalesce_background_notifications(vec![
+        notification(101, 0),
+        message("ordinary queued input"),
+        notification(202, 7),
+        notification(303, -1),
+    ]);
+
+    assert_eq!(output.len(), 3);
+    assert_eq!(text(&output[0]), text(&notification(101, 0)));
+    assert_eq!(text(&output[1]), "ordinary queued input");
+    let coalesced = text(&output[2]);
+    assert!(coalesced.starts_with("<task_notification>"));
+    assert!(coalesced.contains("<summary>2 background shell commands completed</summary>"));
+    assert!(coalesced.contains("<task><task_id>202</task_id><exit_code>7</exit_code></task>"));
+    assert!(coalesced.contains("<task><task_id>303</task_id><exit_code>-1</exit_code></task>"));
 }
 
 #[test]

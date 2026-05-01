@@ -114,24 +114,27 @@ pub(crate) fn interrupted_turn_history_marker(
 pub(crate) fn coalesce_background_notifications(
     items: Vec<ResponseInputItem>,
 ) -> Vec<ResponseInputItem> {
-    let notifications = items
+    let total_notifications = items
         .iter()
-        .filter_map(background_notification_task)
-        .collect::<Vec<_>>();
-    if notifications.len() <= 1 {
+        .filter(|item| background_notification_task(item).is_some())
+        .count();
+    if total_notifications <= 1 {
         return items;
     }
 
-    let mut coalesced = Some(coalesced_background_notification_message(&notifications));
-    let mut inserted = false;
-    let mut output = Vec::with_capacity(items.len() - notifications.len() + 1);
-    for item in items {
+    let mut output = Vec::with_capacity(items.len());
+    let mut iter = items.into_iter().peekable();
+    while let Some(item) = iter.next() {
         if background_notification_task(&item).is_some() {
-            if !inserted {
-                if let Some(item) = coalesced.take() {
-                    output.push(item);
-                }
-                inserted = true;
+            let mut run = vec![background_notification_task(&item).unwrap()];
+            while iter.peek().is_some_and(|next| background_notification_task(next).is_some()) {
+                let next = iter.next().unwrap();
+                run.push(background_notification_task(&next).unwrap());
+            }
+            if run.len() == 1 {
+                output.push(item);
+            } else {
+                output.push(coalesced_background_notification_message(&run));
             }
         } else {
             output.push(item);
