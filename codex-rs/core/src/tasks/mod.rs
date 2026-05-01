@@ -41,6 +41,7 @@ use codex_otel::TURN_MEMORY_METRIC;
 use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_otel::TURN_TOKEN_USAGE_METRIC;
 use codex_otel::TURN_TOOL_CALL_METRIC;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
@@ -108,6 +109,99 @@ pub(crate) fn interrupted_turn_history_marker(
             })
         }
     }
+}
+
+pub(crate) fn coalesce_background_notifications(
+    items: Vec<ResponseInputItem>,
+) -> Vec<ResponseInputItem> {
+    let notifications = items
+        .iter()
+        .filter_map(background_notification_task)
+        .collect::<Vec<_>>();
+    if notifications.len() <= 1 {
+        return items;
+    }
+
+    let mut coalesced = Some(coalesced_background_notification_message(&notifications));
+    let mut inserted = false;
+    let mut output = Vec::with_capacity(items.len() - notifications.len() + 1);
+    for item in items {
+        if background_notification_task(&item).is_some() {
+            if !inserted {
+                if let Some(item) = coalesced.take() {
+                    output.push(item);
+                }
+                inserted = true;
+            }
+        } else {
+            output.push(item);
+        }
+    }
+
+    output
+}
+
+fn background_notification_task(item: &ResponseInputItem) -> Option<(String, String)> {
+    let ResponseInputItem::Message { role, content } = item else {
+        return None;
+    };
+    if role != "user" || content.len() != 1 {
+        return None;
+    }
+    let ContentItem::InputText { text } = &content[0] else {
+        return None;
+    };
+    if !text.starts_with("<task_notification>")
+        || !text.ends_with("</task_notification>")
+        || !text.contains("<status>completed</status>")
+    {
+        return None;
+    }
+
+    Some((
+        xml_tag_value(text, "task_id")?.to_string(),
+        xml_tag_value(text, "exit_code")?.to_string(),
+    ))
+}
+
+fn coalesced_background_notification_message(
+    notifications: &[(String, String)],
+) -> ResponseInputItem {
+    let mut tasks = String::new();
+    for (task_id, exit_code) in notifications {
+        tasks.push_str("<task><task_id>");
+        tasks.push_str(task_id);
+        tasks.push_str("</task_id><exit_code>");
+        tasks.push_str(exit_code);
+        tasks.push_str("</exit_code></task>");
+    }
+
+    let summary = escape_xml_text(&format!(
+        "{} background shell commands completed",
+        notifications.len()
+    ));
+    let text = format!(
+        "<task_notification><status>completed</status><summary>{summary}</summary><tasks>{tasks}</tasks></task_notification>"
+    );
+    ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText { text }],
+    }
+}
+
+fn xml_tag_value<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&close)? + start;
+    Some(&text[start..end])
+}
+
+fn escape_xml_text(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn emit_turn_network_proxy_metric(
@@ -339,7 +433,9 @@ impl Session {
         {
             warn!("failed to apply goal runtime turn-start event: {err}");
         }
-        let queued_response_items = self.take_queued_response_items_for_next_turn().await;
+        let queued_response_items = coalesce_background_notifications(
+            self.take_queued_response_items_for_next_turn().await,
+        );
         let mailbox_items = self.get_pending_input().await;
         let turn_state = {
             let mut active = self.active_turn.lock().await;

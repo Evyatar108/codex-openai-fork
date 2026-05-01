@@ -1,12 +1,17 @@
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
+use codex_features::Feature;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseInputItem;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio::time::Sleep;
 
+use super::BackgroundCompletionEvent;
 use super::UnifiedExecContext;
 use super::process::UnifiedExecProcess;
 use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
@@ -121,9 +126,6 @@ pub(crate) fn spawn_exit_watcher(
     let output_drained = process.output_drained_notify();
 
     tokio::spawn(async move {
-        // Keep the shared dedup flag alive for the completion watcher path.
-        let _notification_dedup = notified;
-
         exit_token.cancelled().await;
         output_drained.notified().await;
 
@@ -145,8 +147,8 @@ pub(crate) fn spawn_exit_watcher(
         } else {
             let exit_code = process.exit_code().unwrap_or(-1);
             emit_exec_end_for_unified_exec(
-                session_ref,
-                turn_ref,
+                Arc::clone(&session_ref),
+                Arc::clone(&turn_ref),
                 call_id,
                 command,
                 cwd,
@@ -157,8 +159,44 @@ pub(crate) fn spawn_exit_watcher(
                 duration,
             )
             .await;
+            if session_ref.enabled(Feature::BackgroundProcessNotification)
+                && notified
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                let message = background_completion_message(BackgroundCompletionEvent {
+                    process_id,
+                    exit_code,
+                });
+                session_ref
+                    .queue_response_items_for_next_turn(vec![message])
+                    .await;
+                session_ref.maybe_start_turn_for_pending_work().await;
+            }
         }
     });
+}
+
+pub(crate) fn background_completion_message(event: BackgroundCompletionEvent) -> ResponseInputItem {
+    let task_id = escape_xml_text(&event.process_id.to_string());
+    let exit_code = escape_xml_text(&event.exit_code.to_string());
+    let summary = escape_xml_text(&format!(
+        "Background shell command completed (exit code {exit_code})"
+    ));
+    let text = format!(
+        "<task_notification><task_id>{task_id}</task_id><status>completed</status><exit_code>{exit_code}</exit_code><summary>{summary}</summary></task_notification>"
+    );
+    ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText { text }],
+    }
+}
+
+fn escape_xml_text(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 async fn process_chunk(

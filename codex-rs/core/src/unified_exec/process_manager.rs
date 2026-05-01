@@ -176,6 +176,7 @@ struct PreparedProcessHandles {
     pause_state: Option<watch::Receiver<bool>>,
     session: Option<Arc<crate::session::session::Session>>,
     network_approval: Option<DeferredNetworkApproval>,
+    notified: Arc<AtomicBool>,
     hook_command: String,
     process_id: i32,
     tty: bool,
@@ -185,6 +186,7 @@ struct PreparedBackgroundCompletion {
     process: Arc<UnifiedExecProcess>,
     cancellation_token: CancellationToken,
     transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
+    notified: Arc<AtomicBool>,
     hook_command: String,
 }
 
@@ -619,6 +621,7 @@ impl UnifiedExecProcessManager {
             pause_state,
             session,
             network_approval,
+            notified,
             hook_command,
             process_id,
             tty,
@@ -674,6 +677,9 @@ impl UnifiedExecProcessManager {
         )
         .await;
         let wall_time = Instant::now().saturating_duration_since(start);
+        if process.has_exited() {
+            let _ = notified.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire);
+        }
 
         let text = String::from_utf8_lossy(&collected).to_string();
         let original_token_count = approx_token_count(&text);
@@ -717,6 +723,7 @@ impl UnifiedExecProcessManager {
                 process_id,
             } => (Some(process_id), exit_code, call_id),
             ProcessStatus::Exited { exit_code, entry } => {
+                entry.notified.store(true, Ordering::Release);
                 let call_id = entry.call_id.clone();
                 if let Err(message) =
                     finish_network_approval_after_process_exit_for_entry(&entry).await
@@ -756,6 +763,7 @@ impl UnifiedExecProcessManager {
             process,
             cancellation_token,
             transcript,
+            notified,
             hook_command,
         } = self.prepare_background_completion(process_id).await?;
 
@@ -771,6 +779,7 @@ impl UnifiedExecProcessManager {
                 .is_ok();
 
         if observed_exit {
+            let _ = notified.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire);
             tokio::time::sleep(TRAILING_OUTPUT_GRACE).await;
         }
 
@@ -796,6 +805,7 @@ impl UnifiedExecProcessManager {
                 process_id,
             } => (Some(process_id), exit_code, call_id),
             ProcessStatus::Exited { exit_code, entry } => {
+                entry.notified.store(true, Ordering::Release);
                 let call_id = entry.call_id.clone();
                 (None, exit_code, call_id)
             }
@@ -880,6 +890,7 @@ impl UnifiedExecProcessManager {
             pause_state,
             session,
             network_approval: entry.network_approval.clone(),
+            notified: Arc::clone(&entry.notified),
             hook_command: entry.hook_command.clone(),
             process_id: entry.process_id,
             tty: entry.tty,
@@ -901,6 +912,7 @@ impl UnifiedExecProcessManager {
             process: Arc::clone(&entry.process),
             cancellation_token: entry.process.cancellation_token(),
             transcript: Arc::clone(&entry.transcript),
+            notified: Arc::clone(&entry.notified),
             hook_command: entry.hook_command.clone(),
         })
     }
