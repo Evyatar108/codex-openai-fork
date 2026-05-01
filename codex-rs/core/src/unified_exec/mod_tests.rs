@@ -18,6 +18,7 @@ use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::time::Duration;
 use tokio::time::Instant;
 
@@ -108,6 +109,7 @@ async fn exec_command_with_tty(
         let entry = ProcessEntry {
             process: Arc::clone(&process),
             transcript: Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default())),
+            notified: Arc::new(AtomicBool::new(false)),
             call_id: context.call_id.clone(),
             process_id,
             hook_command: cmd.to_string(),
