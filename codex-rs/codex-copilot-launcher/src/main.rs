@@ -34,6 +34,18 @@ pub(crate) unsafe fn apply_auto_load_claude_md_env(resolved: bool) {
     }
 }
 
+pub(crate) fn configure_launcher_env(cfg: &config::SandboxConfig) {
+    // SAFETY: single-threaded launcher, all mutations happen before codex-core is exec'd.
+    unsafe {
+        std::env::set_var("OPENAI_API_KEY", "sk-sandbox-copilot-api-handles-auth");
+        apply_auto_load_claude_md_env(should_export_auto_load_claude_md(cfg));
+        std::env::remove_var("HTTP_PROXY");
+        std::env::remove_var("HTTPS_PROXY");
+        std::env::remove_var("http_proxy");
+        std::env::remove_var("https_proxy");
+    }
+}
+
 fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -64,14 +76,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     // Set env — unsafe in Rust 2024 edition (single-threaded at this point, safe in practice)
-    unsafe {
-        std::env::set_var("OPENAI_API_KEY", "sk-sandbox-copilot-api-handles-auth");
-        apply_auto_load_claude_md_env(should_export_auto_load_claude_md(&cfg));
-        std::env::remove_var("HTTP_PROXY");
-        std::env::remove_var("HTTPS_PROXY");
-        std::env::remove_var("http_proxy");
-        std::env::remove_var("https_proxy");
-    }
+    configure_launcher_env(&cfg);
 
     // Clean ~/.codex/.tmp/ (curated plugin cache)
     if let Some(home) = dirs::home_dir() {
@@ -116,6 +121,7 @@ mod tests {
 
     use super::apply_auto_load_claude_md_env;
     use super::config::SandboxConfig;
+    use super::configure_launcher_env;
     use super::is_passthrough;
     use super::should_export_auto_load_claude_md;
 
@@ -243,5 +249,60 @@ mod tests {
             unsafe { apply_auto_load_claude_md_env(false) };
             assert_eq!(std::env::var(CLAUDE_MD_ENV), Err(VarError::NotPresent));
         }
+    }
+
+    /// Verifies that configure_launcher_env() — the function called by run() —
+    /// correctly wires should_export_auto_load_claude_md into apply_auto_load_claude_md_env.
+    /// Catches regressions where the helpers exist but are not composed in run().
+    #[test]
+    #[serial]
+    fn configure_launcher_env_exports_claude_md_when_enabled() {
+        let _guard = EnvGuard::new(CLAUDE_MD_ENV);
+        // SAFETY: serial env test isolates and restores this variable.
+        unsafe { std::env::remove_var(CLAUDE_MD_ENV) };
+
+        let cfg = SandboxConfig {
+            default_shell: None,
+            auto_load_claude_md: Some(true),
+        };
+        configure_launcher_env(&cfg);
+
+        assert_eq!(std::env::var(CLAUDE_MD_ENV), Ok("1".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn configure_launcher_env_clears_claude_md_when_disabled() {
+        let _guard = EnvGuard::new(CLAUDE_MD_ENV);
+        // SAFETY: serial env test isolates and restores this variable.
+        unsafe { std::env::set_var(CLAUDE_MD_ENV, "1") };
+
+        let cfg = SandboxConfig {
+            default_shell: None,
+            auto_load_claude_md: Some(false),
+        };
+        configure_launcher_env(&cfg);
+
+        assert_eq!(std::env::var(CLAUDE_MD_ENV), Err(VarError::NotPresent));
+    }
+
+    #[test]
+    #[serial]
+    fn configure_launcher_env_exports_claude_md_when_unset_default() {
+        let _guard = EnvGuard::new(CLAUDE_MD_ENV);
+        // SAFETY: serial env test isolates and restores this variable.
+        unsafe { std::env::remove_var(CLAUDE_MD_ENV) };
+
+        let cfg = SandboxConfig {
+            default_shell: None,
+            auto_load_claude_md: None,
+        };
+        configure_launcher_env(&cfg);
+
+        assert_eq!(
+            std::env::var(CLAUDE_MD_ENV),
+            Ok("1".to_string()),
+            "auto_load_claude_md absent should default to enabled"
+        );
     }
 }
