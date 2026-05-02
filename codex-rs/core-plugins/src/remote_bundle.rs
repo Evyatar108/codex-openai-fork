@@ -219,10 +219,18 @@ fn is_loopback_url(url: &Url) -> bool {
     }
 }
 
+// SANDBOX PATCH: belt-and-suspenders guard. The only call site gates on
+// fetch_remote_plugin_detail_with_download_urls() which returns Err(AuthRequired)
+// and short-circuits before we get here. Direct invocation would reach chatgpt.com.
 pub async fn download_and_install_remote_plugin_bundle(
     codex_home: PathBuf,
     bundle: ValidatedRemotePluginBundle,
 ) -> Result<PluginInstallResult, RemotePluginBundleInstallError> {
+    let _ = (codex_home, bundle);
+    return Err(RemotePluginBundleInstallError::InvalidBundle(
+        "remote plugin bundle download is disabled in the copilot-api build".to_string(),
+    ));
+    #[allow(unreachable_code)]
     let bundle_bytes = download_remote_plugin_bundle_with_limit(
         &bundle.bundle_download_url,
         /*max_bytes*/ REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES,
