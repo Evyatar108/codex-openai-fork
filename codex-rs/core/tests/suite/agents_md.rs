@@ -7,6 +7,34 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::test_codex;
+use serial_test::serial;
+
+const AUTO_LOAD_CLAUDE_MD_ENV: &str = "CODEX_AUTO_LOAD_CLAUDE_MD";
+
+struct AutoLoadClaudeMdEnvGuard {
+    prior: Option<std::ffi::OsString>,
+}
+
+impl AutoLoadClaudeMdEnvGuard {
+    fn new() -> Self {
+        Self {
+            prior: std::env::var_os(AUTO_LOAD_CLAUDE_MD_ENV),
+        }
+    }
+}
+
+impl Drop for AutoLoadClaudeMdEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: env-mutating tests using this guard are serialized, so the
+        // process environment is restored before another such test runs.
+        unsafe {
+            match &self.prior {
+                Some(value) => std::env::set_var(AUTO_LOAD_CLAUDE_MD_ENV, value),
+                None => std::env::remove_var(AUTO_LOAD_CLAUDE_MD_ENV),
+            }
+        }
+    }
+}
 
 async fn agents_instructions(mut builder: TestCodexBuilder) -> Result<String> {
     let server = start_mock_server().await;
@@ -135,6 +163,91 @@ async fn agents_docs_are_concatenated_from_project_root_to_cwd() -> Result<()> {
     assert!(
         root_pos < child_pos,
         "expected root doc before child doc: {instructions}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn claude_md_and_user_fallback_compose_with_agents_precedence() -> Result<()> {
+    let _guard = AutoLoadClaudeMdEnvGuard::new();
+    // SAFETY: this env-mutating test is serialized and restores the previous
+    // value with `AutoLoadClaudeMdEnvGuard` before returning.
+    unsafe {
+        std::env::set_var(AUTO_LOAD_CLAUDE_MD_ENV, "1");
+    }
+
+    let instructions = agents_instructions(
+        test_codex()
+            .with_config(|config| {
+                config.cwd = config.cwd.join("intermediate/cwd");
+                config.project_doc_fallback_filenames = vec!["WORKFLOW.md".to_string()];
+            })
+            .with_workspace_setup(|cwd, fs| async move {
+                let intermediate = cwd
+                    .parent()
+                    .expect("cwd should have an intermediate parent");
+                let root = intermediate
+                    .parent()
+                    .expect("intermediate should have a project root parent");
+
+                fs.create_directory(
+                    &cwd,
+                    CreateDirectoryOptions { recursive: true },
+                    /*sandbox*/ None,
+                )
+                .await?;
+                fs.write_file(
+                    &root.join(".git"),
+                    b"gitdir: /tmp/mock-git-dir\n".to_vec(),
+                    /*sandbox*/ None,
+                )
+                .await?;
+                fs.write_file(
+                    &root.join("WORKFLOW.md"),
+                    b"WORKFLOW-ROOT-CONTENT".to_vec(),
+                    /*sandbox*/ None,
+                )
+                .await?;
+                fs.write_file(
+                    &intermediate.join("CLAUDE.md"),
+                    b"CLAUDE-INTERMEDIATE-CONTENT".to_vec(),
+                    /*sandbox*/ None,
+                )
+                .await?;
+                fs.write_file(
+                    &cwd.join("AGENTS.md"),
+                    b"AGENTS-CWD-CONTENT".to_vec(),
+                    /*sandbox*/ None,
+                )
+                .await?;
+                fs.write_file(
+                    &cwd.join("CLAUDE.md"),
+                    b"CLAUDE-CWD-CONTENT".to_vec(),
+                    /*sandbox*/ None,
+                )
+                .await?;
+                Ok::<(), anyhow::Error>(())
+            }),
+    )
+    .await?;
+
+    assert!(
+        instructions.contains("WORKFLOW-ROOT-CONTENT"),
+        "expected root fallback content: {instructions}"
+    );
+    assert!(
+        instructions.contains("CLAUDE-INTERMEDIATE-CONTENT"),
+        "expected intermediate CLAUDE.md content: {instructions}"
+    );
+    assert!(
+        instructions.contains("AGENTS-CWD-CONTENT"),
+        "expected cwd AGENTS.md content: {instructions}"
+    );
+    assert!(
+        !instructions.contains("CLAUDE-CWD-CONTENT"),
+        "expected cwd CLAUDE.md to be ignored when AGENTS.md is present: {instructions}"
     );
 
     Ok(())

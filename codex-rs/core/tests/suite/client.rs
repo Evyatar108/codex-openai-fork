@@ -1053,7 +1053,6 @@ async fn stream_model_client_turn(
         content: vec![ContentItem::InputText {
             text: text.to_string(),
         }],
-        end_turn: None,
         phase: None,
     });
 
