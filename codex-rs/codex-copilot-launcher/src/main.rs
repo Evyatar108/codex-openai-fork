@@ -20,6 +20,20 @@ fn is_passthrough(args: &[String]) -> bool {
         .any(|arg| matches!(arg.as_str(), "--version" | "-V" | "--help" | "-h"))
 }
 
+pub(crate) fn should_export_auto_load_claude_md(cfg: &config::SandboxConfig) -> bool {
+    cfg.auto_load_claude_md.unwrap_or(true)
+}
+
+pub(crate) unsafe fn apply_auto_load_claude_md_env(resolved: bool) {
+    if resolved {
+        // SAFETY: launcher mutates process env before spawning codex-core.
+        unsafe { std::env::set_var("CODEX_AUTO_LOAD_CLAUDE_MD", "1") };
+    } else {
+        // SAFETY: launcher mutates process env before spawning codex-core.
+        unsafe { std::env::remove_var("CODEX_AUTO_LOAD_CLAUDE_MD") };
+    }
+}
+
 fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -52,6 +66,7 @@ fn run() -> anyhow::Result<()> {
     // Set env — unsafe in Rust 2024 edition (single-threaded at this point, safe in practice)
     unsafe {
         std::env::set_var("OPENAI_API_KEY", "sk-sandbox-copilot-api-handles-auth");
+        apply_auto_load_claude_md_env(should_export_auto_load_claude_md(&cfg));
         std::env::remove_var("HTTP_PROXY");
         std::env::remove_var("HTTPS_PROXY");
         std::env::remove_var("http_proxy");
@@ -94,7 +109,46 @@ fn exec_codex_core(codex_core: &std::path::Path, args: &[String]) -> anyhow::Res
 
 #[cfg(test)]
 mod tests {
+    use std::env::VarError;
+    use std::ffi::OsString;
+
+    use serial_test::serial;
+
+    use super::apply_auto_load_claude_md_env;
+    use super::config::SandboxConfig;
     use super::is_passthrough;
+    use super::should_export_auto_load_claude_md;
+
+    const CLAUDE_MD_ENV: &str = "CODEX_AUTO_LOAD_CLAUDE_MD";
+
+    struct EnvGuard {
+        key: &'static str,
+        prior: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn new(key: &'static str) -> Self {
+            Self {
+                key,
+                prior: std::env::var_os(key),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(value) => {
+                    // SAFETY: serial env test restores the snapshotted variable.
+                    unsafe { std::env::set_var(self.key, value) };
+                }
+                None => {
+                    // SAFETY: serial env test restores the snapshotted variable.
+                    unsafe { std::env::remove_var(self.key) };
+                }
+            }
+        }
+    }
 
     #[test]
     fn login_is_passthrough_arg() {
@@ -144,5 +198,50 @@ mod tests {
         ];
 
         assert!(is_passthrough(&args));
+    }
+
+    #[test]
+    fn should_export_auto_load_claude_md_resolution() {
+        for (auto_load_claude_md, expected) in
+            [(None, true), (Some(true), true), (Some(false), false)]
+        {
+            let cfg = SandboxConfig {
+                default_shell: None,
+                auto_load_claude_md,
+            };
+
+            assert_eq!(should_export_auto_load_claude_md(&cfg), expected);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn apply_auto_load_claude_md_env_set_and_clear() {
+        {
+            let _guard = EnvGuard::new(CLAUDE_MD_ENV);
+            // SAFETY: serial env test isolates and restores this variable.
+            unsafe { std::env::remove_var(CLAUDE_MD_ENV) };
+            // SAFETY: helper intentionally mutates process env for this launcher toggle.
+            unsafe { apply_auto_load_claude_md_env(true) };
+            assert_eq!(std::env::var(CLAUDE_MD_ENV), Ok("1".to_string()));
+        }
+
+        {
+            let _guard = EnvGuard::new(CLAUDE_MD_ENV);
+            // SAFETY: serial env test isolates and restores this variable.
+            unsafe { std::env::set_var(CLAUDE_MD_ENV, "1") };
+            // SAFETY: helper intentionally mutates process env for this launcher toggle.
+            unsafe { apply_auto_load_claude_md_env(false) };
+            assert_eq!(std::env::var(CLAUDE_MD_ENV), Err(VarError::NotPresent));
+        }
+
+        {
+            let _guard = EnvGuard::new(CLAUDE_MD_ENV);
+            // SAFETY: serial env test isolates and restores this variable.
+            unsafe { std::env::remove_var(CLAUDE_MD_ENV) };
+            // SAFETY: helper intentionally mutates process env for this launcher toggle.
+            unsafe { apply_auto_load_claude_md_env(false) };
+            assert_eq!(std::env::var(CLAUDE_MD_ENV), Err(VarError::NotPresent));
+        }
     }
 }
