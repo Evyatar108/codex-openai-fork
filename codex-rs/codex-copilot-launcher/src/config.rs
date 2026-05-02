@@ -75,26 +75,8 @@ pub fn provider_config_flags(default_shell: Option<&str>) -> Vec<String> {
     ];
     if let Some(shell) = default_shell {
         flags.push(format!("default_shell={shell}"));
-        // Cygwin/MSYS2-based shells (Git Bash, MSYS2 bash) crash under ConPTY
-        // with "CreateFileMapping ... Win32 error 5" during shared memory init.
-        // Disable the ConPTY-based UnifiedExec path and fall back to the classic
-        // ShellCommand path which uses tokio::process::Command (pipe-based I/O).
-        if is_cygwin_shell(shell) {
-            flags.push("features.unified_exec=false".to_string());
-        }
     }
     flags
-}
-
-/// Returns true if the shell path points to a Cygwin/MSYS2-based executable.
-/// On Windows, bash/sh/zsh are always Cygwin-based (Git for Windows, MSYS2).
-fn is_cygwin_shell(shell_path: &str) -> bool {
-    let lower = shell_path.to_ascii_lowercase();
-    let name = std::path::Path::new(&lower)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    matches!(name, "bash" | "sh" | "zsh")
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -126,8 +108,8 @@ mod tests {
             "expected sandbox_mode flag in {flags:?}"
         );
         assert!(
-            flags.iter().any(|f| f == "features.unified_exec=false"),
-            "expected unified_exec=false for bash in {flags:?}"
+            flags.iter().all(|f| f != "features.unified_exec=false"),
+            "launcher must not force unified_exec=false for bash — pipe mode (tty=false default) is safe on Cygwin: {flags:?}"
         );
     }
 
@@ -160,13 +142,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn is_cygwin_shell_detects_bash() {
-        assert!(is_cygwin_shell(r"C:\Program Files\Git\bin\bash.exe"));
-        assert!(is_cygwin_shell("/usr/bin/bash"));
-        assert!(is_cygwin_shell("/usr/bin/zsh"));
-        assert!(!is_cygwin_shell(
-            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        ));
-    }
 }
