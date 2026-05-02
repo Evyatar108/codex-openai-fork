@@ -26,6 +26,7 @@ fn notification(task_id: i32, exit_code: i32) -> ResponseInputItem {
                 "<task_notification><task_id>{task_id}</task_id><status>completed</status><exit_code>{exit_code}</exit_code><summary>Background shell command completed (exit code {exit_code})</summary></task_notification>"
             ),
         }],
+        phase: None,
     }
 }
 
@@ -35,6 +36,7 @@ fn message(text: &str) -> ResponseInputItem {
         content: vec![ContentItem::InputText {
             text: text.to_string(),
         }],
+        phase: None,
     }
 }
 

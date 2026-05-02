@@ -48,9 +48,7 @@ fn test_exec_request(
         SandboxType::None,
         turn.windows_sandbox_level,
         /*windows_sandbox_private_desktop*/ false,
-        turn.sandbox_policy.get().clone(),
-        turn.file_system_sandbox_policy.clone(),
-        turn.network_sandbox_policy,
+        turn.permission_profile(),
         /*arg0*/ None,
     )
 }
@@ -111,7 +109,7 @@ async fn spawn_background_process_inner(
         process_id,
         hook_command: cmd.to_string(),
         tty: false,
-        network_approval_id: None,
+        network_approval: None,
         session: Arc::downgrade(session),
         last_used: started_at,
     };
@@ -168,7 +166,7 @@ async fn wait_for_queued_next_turn_items(session: &Session) -> Vec<ResponseInput
 }
 
 fn input_text(item: &ResponseInputItem) -> &str {
-    let ResponseInputItem::Message { role, content } = item else {
+    let ResponseInputItem::Message { role, content, .. } = item else {
         panic!("expected message item");
     };
     assert_eq!(role, "user");

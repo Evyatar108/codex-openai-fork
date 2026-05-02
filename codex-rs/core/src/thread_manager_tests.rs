@@ -5,11 +5,8 @@ use crate::session::session::SessionSettingsUpdate;
 use crate::session::tests::make_session_and_context;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
-use codex_model_provider_info::WireApi;
-use codex_model_provider_info::create_copilot_provider;
-use codex_model_provider_info::create_oss_provider_with_base_url;
-use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_features::Feature;
+use codex_model_provider_info::create_copilot_provider;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemReasoningSummary;
@@ -534,7 +531,6 @@ async fn thread_manager_passes_copilot_provider_to_models_manager() {
         &config,
         auth_manager,
         SessionSource::Exec,
-        CollaborationModesConfig::default(),
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
     );

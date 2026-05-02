@@ -374,7 +374,8 @@ mod tests {
     #[tokio::test]
     async fn compaction_skipped_for_copilot() {
         let server = MockServer::start().await;
-        let (mut session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+        let (mut session, mut turn_context) =
+            crate::session::tests::make_session_and_context().await;
         session.services.model_client = ModelClient::new(
             Some(session.services.auth_manager.clone()),
             session.conversation_id,
@@ -402,7 +403,6 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "before compact".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             },
             ResponseItem::Message {
@@ -411,7 +411,6 @@ mod tests {
                 content: vec![ContentItem::OutputText {
                     text: "assistant reply".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             },
         ];

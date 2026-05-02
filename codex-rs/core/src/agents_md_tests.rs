@@ -6,9 +6,44 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::PathBufExt;
 use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
+use serial_test::serial;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
+
+const AUTO_LOAD_CLAUDE_MD_ENV: &str = "CODEX_AUTO_LOAD_CLAUDE_MD";
+
+struct AutoLoadClaudeMdEnvGuard {
+    prior: Option<std::ffi::OsString>,
+}
+
+impl AutoLoadClaudeMdEnvGuard {
+    fn new() -> Self {
+        Self {
+            prior: std::env::var_os(AUTO_LOAD_CLAUDE_MD_ENV),
+        }
+    }
+}
+
+impl Drop for AutoLoadClaudeMdEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: env-mutating tests using this guard are serialized, so the
+        // process environment is restored before another such test runs.
+        unsafe {
+            match &self.prior {
+                Some(value) => std::env::set_var(AUTO_LOAD_CLAUDE_MD_ENV, value),
+                None => std::env::remove_var(AUTO_LOAD_CLAUDE_MD_ENV),
+            }
+        }
+    }
+}
+
+fn claude_md_candidate_count(candidates: &[String]) -> usize {
+    candidates
+        .iter()
+        .filter(|candidate| candidate.as_str() == CLAUDE_MD_FILENAME)
+        .count()
+}
 
 async fn get_user_instructions(config: &Config) -> Option<String> {
     AgentsMdManager::new(config)
@@ -83,6 +118,106 @@ async fn make_config_with_project_root_markers(
     config.project_doc_max_bytes = limit;
     config.user_instructions = instructions.map(ToOwned::to_owned);
     config
+}
+
+#[test]
+fn parse_auto_load_claude_md_value_truthiness() {
+    let cases = [
+        ("1", true),
+        ("true", true),
+        ("True", true),
+        ("TRUE", true),
+        ("TrUe", true),
+        ("0", false),
+        ("", false),
+        ("yes", false),
+        ("on", false),
+        ("false", false),
+        ("False", false),
+        (" 1", false),
+        ("1 ", false),
+        ("truthy", false),
+    ];
+
+    for (raw, expected) in cases {
+        assert_eq!(parse_auto_load_claude_md_value(raw), expected, "{raw:?}");
+    }
+}
+
+#[test]
+#[serial]
+fn auto_load_claude_md_enabled_reads_env() {
+    let _guard = AutoLoadClaudeMdEnvGuard::new();
+
+    // SAFETY: this env-mutating test is serialized and restores the previous
+    // value with `AutoLoadClaudeMdEnvGuard` before returning.
+    unsafe {
+        std::env::set_var(AUTO_LOAD_CLAUDE_MD_ENV, "1");
+    }
+    assert!(auto_load_claude_md_enabled());
+
+    // SAFETY: this env-mutating test is serialized and restores the previous
+    // value with `AutoLoadClaudeMdEnvGuard` before returning.
+    unsafe {
+        std::env::remove_var(AUTO_LOAD_CLAUDE_MD_ENV);
+    }
+    assert!(!auto_load_claude_md_enabled());
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_filenames_appends_claude_md_when_env_set_and_dedups() {
+    let _guard = AutoLoadClaudeMdEnvGuard::new();
+    // SAFETY: this env-mutating test is serialized and restores the previous
+    // value with `AutoLoadClaudeMdEnvGuard` before returning.
+    unsafe {
+        std::env::set_var(AUTO_LOAD_CLAUDE_MD_ENV, "1");
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let manager = AgentsMdManager::new(&cfg);
+    let candidates = manager.candidate_filenames();
+    assert_eq!(claude_md_candidate_count(&candidates), 1);
+
+    let cfg = make_config_with_fallback(
+        &tmp,
+        /*limit*/ 4096,
+        /*instructions*/ None,
+        &[CLAUDE_MD_FILENAME],
+    )
+    .await;
+    let manager = AgentsMdManager::new(&cfg);
+    let candidates = manager.candidate_filenames();
+    assert_eq!(claude_md_candidate_count(&candidates), 1);
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_filenames_omits_claude_md_when_env_unset() {
+    let _guard = AutoLoadClaudeMdEnvGuard::new();
+    // SAFETY: this env-mutating test is serialized and restores the previous
+    // value with `AutoLoadClaudeMdEnvGuard` before returning.
+    unsafe {
+        std::env::remove_var(AUTO_LOAD_CLAUDE_MD_ENV);
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let manager = AgentsMdManager::new(&cfg);
+    let candidates = manager.candidate_filenames();
+    assert_eq!(claude_md_candidate_count(&candidates), 0);
+
+    let cfg = make_config_with_fallback(
+        &tmp,
+        /*limit*/ 4096,
+        /*instructions*/ None,
+        &["WORKFLOW.md"],
+    )
+    .await;
+    let manager = AgentsMdManager::new(&cfg);
+    let candidates = manager.candidate_filenames();
+    assert_eq!(claude_md_candidate_count(&candidates), 0);
 }
 
 /// AGENTS.md missing – should yield `None`.

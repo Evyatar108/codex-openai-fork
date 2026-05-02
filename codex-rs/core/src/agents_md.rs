@@ -26,6 +26,7 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use dunce::canonicalize as normalize_path;
+use std::env;
 use std::io;
 use toml::Value as TomlValue;
 use tracing::error;
@@ -37,6 +38,20 @@ pub(crate) const HIERARCHICAL_AGENTS_MESSAGE: &str =
 pub const DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
 /// Preferred local override for AGENTS.md instructions.
 pub const LOCAL_AGENTS_MD_FILENAME: &str = "AGENTS.override.md";
+/// Launcher-gated fallback filename for CLAUDE.md instructions.
+pub(crate) const CLAUDE_MD_FILENAME: &str = "CLAUDE.md";
+
+pub(crate) fn parse_auto_load_claude_md_value(raw: &str) -> bool {
+    raw == "1" || raw.eq_ignore_ascii_case("true")
+}
+
+pub(crate) fn auto_load_claude_md_enabled() -> bool {
+    match env::var("CODEX_AUTO_LOAD_CLAUDE_MD") {
+        Ok(raw) => !raw.is_empty() && parse_auto_load_claude_md_value(&raw),
+        Err(env::VarError::NotPresent) => false,
+        Err(env::VarError::NotUnicode(_)) => false,
+    }
+}
 
 /// When both `Config::instructions` and AGENTS.md docs are present, they will
 /// be concatenated with the following separator.
@@ -286,7 +301,7 @@ impl<'a> AgentsMdManager<'a> {
         let candidate_filenames = self.candidate_filenames();
         for d in search_dirs {
             for name in &candidate_filenames {
-                let candidate = d.join(name);
+                let candidate = d.join(name.as_str());
                 match fs.get_metadata(&candidate, /*sandbox*/ None).await {
                     Ok(md) if md.is_file => {
                         found.push(candidate);
@@ -302,19 +317,21 @@ impl<'a> AgentsMdManager<'a> {
         Ok(found)
     }
 
-    fn candidate_filenames(&self) -> Vec<&str> {
-        let mut names: Vec<&str> =
-            Vec::with_capacity(2 + self.config.project_doc_fallback_filenames.len());
-        names.push(LOCAL_AGENTS_MD_FILENAME);
-        names.push(DEFAULT_AGENTS_MD_FILENAME);
+    fn candidate_filenames(&self) -> Vec<String> {
+        let mut names: Vec<String> =
+            Vec::with_capacity(3 + self.config.project_doc_fallback_filenames.len());
+        names.push(LOCAL_AGENTS_MD_FILENAME.to_string());
+        names.push(DEFAULT_AGENTS_MD_FILENAME.to_string());
         for candidate in &self.config.project_doc_fallback_filenames {
-            let candidate = candidate.as_str();
             if candidate.is_empty() {
                 continue;
             }
-            if !names.contains(&candidate) {
-                names.push(candidate);
+            if !names.contains(candidate) {
+                names.push(candidate.clone());
             }
+        }
+        if auto_load_claude_md_enabled() && !names.iter().any(|n| n == CLAUDE_MD_FILENAME) {
+            names.push(CLAUDE_MD_FILENAME.to_string());
         }
         names
     }
