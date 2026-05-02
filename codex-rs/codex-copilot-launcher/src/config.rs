@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 pub struct SandboxConfig {
     pub default_shell: Option<String>,
+    pub auto_load_claude_md: Option<bool>,
 }
 
 /// Load configuration from `~/.codex-copilot/config.toml`.
@@ -10,6 +11,9 @@ pub struct SandboxConfig {
 /// Recognized keys:
 /// - `default_shell` (string): absolute path to the shell binary to pin
 ///   for tool-exec turns. Optional.
+/// - `auto_load_claude_md` (bool): controls whether the launcher asks
+///   codex-core to load `CLAUDE.md` where `AGENTS.md` is absent. Optional;
+///   unset resolves to enabled by the launcher.
 ///
 /// NOT read here:
 /// - `model`: codex-core reads `~/.codex/config.toml::model` natively.
@@ -19,18 +23,23 @@ pub struct SandboxConfig {
 ///   The launcher no longer binds a port; existing `copilot_api_port = ...`
 ///   keys in old config files are ignored.
 pub fn load_config() -> SandboxConfig {
-    let defaults = SandboxConfig {
-        default_shell: None,
-    };
-
     let config_path = match config_path() {
         Some(p) => p,
-        None => return defaults,
+        None => return parse_sandbox_config(""),
     };
 
     let content = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
-        Err(_) => return defaults,
+        Err(_) => return parse_sandbox_config(""),
+    };
+
+    parse_sandbox_config(&content)
+}
+
+pub(crate) fn parse_sandbox_config(content: &str) -> SandboxConfig {
+    let defaults = SandboxConfig {
+        default_shell: None,
+        auto_load_claude_md: None,
     };
 
     let table: toml::Table = match content.parse() {
@@ -43,6 +52,7 @@ pub fn load_config() -> SandboxConfig {
             .get("default_shell")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        auto_load_claude_md: table.get("auto_load_claude_md").and_then(|v| v.as_bool()),
     }
 }
 
@@ -142,4 +152,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn auto_load_claude_md_default_when_unset() {
+        let empty = parse_sandbox_config("");
+        assert_eq!(empty.auto_load_claude_md, None);
+        assert!(empty.auto_load_claude_md.unwrap_or(true));
+
+        let shell_only =
+            parse_sandbox_config(r#"default_shell = "C:\\Program Files\\Git\\bin\\bash.exe""#);
+        assert_eq!(shell_only.auto_load_claude_md, None);
+        assert!(shell_only.auto_load_claude_md.unwrap_or(true));
+    }
+
+    #[test]
+    fn auto_load_claude_md_parses_true() {
+        let cfg = parse_sandbox_config("auto_load_claude_md = true");
+        assert_eq!(cfg.auto_load_claude_md, Some(true));
+    }
+
+    #[test]
+    fn auto_load_claude_md_parses_false() {
+        let cfg = parse_sandbox_config("auto_load_claude_md = false");
+        assert_eq!(cfg.auto_load_claude_md, Some(false));
+    }
 }

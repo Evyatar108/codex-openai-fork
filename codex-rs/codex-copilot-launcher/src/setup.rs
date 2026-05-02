@@ -287,6 +287,7 @@ fn run_login_with(codex_core: &Path, force: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::parse_sandbox_config;
     use tempfile::tempdir;
 
     #[test]
@@ -410,6 +411,24 @@ mod tests {
         assert!(!content.contains("default_model"));
         assert!(!content.contains("copilot_api_port"));
         assert!(!content.contains("default_shell"));
+    }
+
+    #[test]
+    fn write_sandbox_config_omits_auto_load_claude_md() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        write_sandbox_config(&path, None).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("auto_load_claude_md"));
+        let cfg = parse_sandbox_config(&content);
+        assert!(cfg.auto_load_claude_md.unwrap_or(true));
+
+        write_sandbox_config(&path, Some(r"C:\Program Files\Git\bin\bash.exe")).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("auto_load_claude_md"));
+        let cfg = parse_sandbox_config(&content);
+        assert!(cfg.auto_load_claude_md.unwrap_or(true));
     }
 
     #[test]
