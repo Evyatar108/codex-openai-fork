@@ -145,7 +145,7 @@ pub(crate) fn coalesce_background_notifications(
 }
 
 fn background_notification_task(item: &ResponseInputItem) -> Option<(String, String)> {
-    let ResponseInputItem::Message { role, content } = item else {
+    let ResponseInputItem::Message { role, content, .. } = item else {
         return None;
     };
     if role != "user" || content.len() != 1 {
@@ -189,6 +189,7 @@ fn coalesced_background_notification_message(
     ResponseInputItem::Message {
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text }],
+        phase: None,
     }
 }
 

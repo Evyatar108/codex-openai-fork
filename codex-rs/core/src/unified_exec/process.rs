@@ -80,6 +80,7 @@ pub(crate) struct UnifiedExecProcess {
     output_closed_notify: Arc<Notify>,
     cancellation_token: CancellationToken,
     output_drained: Arc<Notify>,
+    output_drained_flag: Arc<AtomicBool>,
     state_tx: watch::Sender<ProcessState>,
     state_rx: watch::Receiver<ProcessState>,
     output_task: Option<JoinHandle<()>>,
@@ -109,6 +110,7 @@ impl UnifiedExecProcess {
         let output_closed_notify = Arc::new(Notify::new());
         let cancellation_token = CancellationToken::new();
         let output_drained = Arc::new(Notify::new());
+        let output_drained_flag = Arc::new(AtomicBool::new(false));
         let (output_tx, _) = broadcast::channel(64);
         let (state_tx, state_rx) = watch::channel(ProcessState::default());
 
@@ -121,6 +123,7 @@ impl UnifiedExecProcess {
             output_closed_notify,
             cancellation_token,
             output_drained,
+            output_drained_flag,
             state_tx,
             state_rx,
             output_task: None,
@@ -174,6 +177,10 @@ impl UnifiedExecProcess {
 
     pub(super) fn output_drained_notify(&self) -> Arc<Notify> {
         Arc::clone(&self.output_drained)
+    }
+
+    pub(super) fn output_drained_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.output_drained_flag)
     }
 
     pub(super) fn has_exited(&self) -> bool {

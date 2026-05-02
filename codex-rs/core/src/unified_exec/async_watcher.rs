@@ -51,6 +51,7 @@ pub(crate) fn start_streaming_output(
 ) {
     let mut receiver = process.output_receiver();
     let output_drained = process.output_drained_notify();
+    let output_drained_flag = process.output_drained_flag();
     let exit_token = process.cancellation_token();
 
     let session_ref = Arc::clone(&context.session);
@@ -77,7 +78,8 @@ pub(crate) fn start_streaming_output(
                         sleep.as_mut().await;
                     }
                 }, if grace_sleep.is_some() => {
-                    output_drained.notify_one();
+                    output_drained_flag.store(true, std::sync::atomic::Ordering::Release);
+                    output_drained.notify_waiters();
                     break;
                 }
 
@@ -88,7 +90,8 @@ pub(crate) fn start_streaming_output(
                             continue;
                         },
                         Err(RecvError::Closed) => {
-                            output_drained.notify_one();
+                            output_drained_flag.store(true, std::sync::atomic::Ordering::Release);
+                            output_drained.notify_waiters();
                             break;
                         }
                     };
@@ -190,6 +193,7 @@ pub(crate) fn background_completion_message(event: BackgroundCompletionEvent) ->
     ResponseInputItem::Message {
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text }],
+        phase: None,
     }
 }
 

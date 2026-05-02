@@ -779,7 +779,9 @@ impl UnifiedExecProcessManager {
 
         if observed_exit {
             let _ = notified.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire);
-            process.output_drained_notify().notified().await;
+            if !process.output_drained_flag().load(Ordering::Acquire) {
+                process.output_drained_notify().notified().await;
+            }
         }
 
         let wall_time = Instant::now().saturating_duration_since(start);
