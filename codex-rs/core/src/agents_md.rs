@@ -47,7 +47,7 @@ pub(crate) fn parse_auto_load_claude_md_value(raw: &str) -> bool {
 
 pub(crate) fn auto_load_claude_md_enabled() -> bool {
     match env::var("CODEX_AUTO_LOAD_CLAUDE_MD") {
-        Ok(raw) => !raw.is_empty() && parse_auto_load_claude_md_value(&raw),
+        Ok(raw) => parse_auto_load_claude_md_value(&raw),
         Err(env::VarError::NotPresent) => false,
         Err(env::VarError::NotUnicode(_)) => false,
     }
