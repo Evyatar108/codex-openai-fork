@@ -5,7 +5,7 @@ mod setup;
 use std::process::Command;
 
 const PROJECT_DOC_FALLBACK_KEY: &str = "project_doc_fallback_filenames";
-const AUTO_LOAD_WARN: &str = "WARN: auto_load_claude_md is overriding ~/.codex/config.toml project_doc_fallback_filenames with [\"CLAUDE.md\"]; set auto_load_claude_md = false in ~/.codex-copilot/config.toml to keep your configured project_doc_fallback_filenames.";
+const AUTO_LOAD_WARN: &str = "WARN: auto_load_claude_md is overriding your project_doc_fallback_filenames with [\"CLAUDE.md\"]; set auto_load_claude_md = false in ~/.codex-copilot/config.toml to keep your configured project_doc_fallback_filenames.";
 
 fn main() {
     if let Err(e) = run() {
