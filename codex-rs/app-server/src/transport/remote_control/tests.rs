@@ -162,6 +162,7 @@ async fn expect_remote_control_status_snapshot(
     );
 }
 
+#[ignore = "patched fork force-disables remote_control per AGENTS.override.md:80-84"]
 #[tokio::test]
 async fn remote_control_transport_manages_virtual_clients_and_routes_messages() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -438,6 +439,7 @@ async fn remote_control_transport_manages_virtual_clients_and_routes_messages() 
     let _ = remote_task.await;
 }
 
+#[ignore = "patched fork force-disables remote_control per AGENTS.override.md:80-84"]
 #[tokio::test]
 async fn remote_control_transport_reconnects_after_disconnect() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -679,7 +681,7 @@ async fn remote_control_set_enabled_forced_false() {
 // (see mod.rs) so it can never flip the watch channel to `true`. This upstream test
 // relies on toggle-to-true behavior and cannot pass on the patched tree. Ignored rather
 // than deleted so rebases surface the divergence.
-#[ignore = "SANDBOX PATCH: set_enabled(true) is a no-op; toggle-restart behavior is intentionally disabled"]
+#[ignore = "patched fork force-disables remote_control per AGENTS.override.md:80-84"]
 #[tokio::test]
 async fn remote_control_start_reports_missing_state_db_as_disabled_when_enabled() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -728,6 +730,7 @@ async fn remote_control_start_reports_missing_state_db_as_disabled_when_enabled(
         .expect("remote control task should join");
 }
 
+#[ignore = "patched fork force-disables remote_control per AGENTS.override.md:80-84"]
 #[tokio::test]
 async fn remote_control_handle_set_enabled_stops_and_restarts_connections() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -812,6 +815,7 @@ async fn remote_control_handle_set_enabled_stops_and_restarts_connections() {
     let _ = remote_task.await;
 }
 
+#[ignore = "patched fork force-disables remote_control per AGENTS.override.md:80-84"]
 #[tokio::test]
 async fn remote_control_transport_clears_outgoing_buffer_when_backend_acks() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -986,6 +990,7 @@ async fn remote_control_transport_clears_outgoing_buffer_when_backend_acks() {
     let _ = remote_task.await;
 }
 
+#[ignore = "patched fork force-disables remote_control per AGENTS.override.md:80-84"]
 #[tokio::test]
 async fn remote_control_http_mode_enrolls_before_connecting() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1192,6 +1197,7 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
     let _ = remote_task.await;
 }
 
+#[ignore = "patched fork force-disables remote_control per AGENTS.override.md:80-84"]
 #[tokio::test]
 async fn remote_control_http_mode_reuses_persisted_enrollment_before_reenrolling() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1258,6 +1264,7 @@ async fn remote_control_http_mode_reuses_persisted_enrollment_before_reenrolling
     let _ = remote_task.await;
 }
 
+#[ignore = "patched fork force-disables remote_control per AGENTS.override.md:80-84"]
 #[tokio::test]
 async fn remote_control_stdio_mode_waits_for_client_name_before_connecting() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1316,6 +1323,7 @@ async fn remote_control_stdio_mode_waits_for_client_name_before_connecting() {
     let _ = remote_task.await;
 }
 
+#[ignore = "patched fork force-disables remote_control per AGENTS.override.md:80-84"]
 #[tokio::test]
 async fn remote_control_waits_for_account_id_before_enrolling() {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1395,6 +1403,7 @@ async fn remote_control_waits_for_account_id_before_enrolling() {
     let _ = remote_task.await;
 }
 
+#[ignore = "patched fork force-disables remote_control per AGENTS.override.md:80-84"]
 #[tokio::test]
 async fn remote_control_http_mode_clears_stale_persisted_enrollment_after_404() {
     let listener = TcpListener::bind("127.0.0.1:0")
