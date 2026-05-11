@@ -2887,6 +2887,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-invariant-tests"
+version = "0.128.0-copilot-api.3"
+dependencies = [
+ "anyhow",
+ "codex-core",
+ "codex-protocol",
+ "pretty_assertions",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "codex-keyring-store"
 version = "0.128.0-copilot-api.3"
 dependencies = [

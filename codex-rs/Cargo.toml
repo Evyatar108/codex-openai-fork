@@ -107,6 +107,7 @@ members = [
     "codex-copilot",
     "codex-copilot-launcher",
     "model-provider",
+    "../../../../codex-rs-overlay/codex-invariant-tests",
 ]
 resolver = "2"
 
