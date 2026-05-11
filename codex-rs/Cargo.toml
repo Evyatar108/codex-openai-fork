@@ -104,8 +104,8 @@ members = [
     "uds",
     "codex-experimental-api-macros",
     "plugin",
-    "codex-copilot",
-    "codex-copilot-launcher",
+    "../../../../codex-rs-overlay/codex-copilot",
+    "../../../../codex-rs-overlay/codex-copilot-launcher",
     "model-provider",
     "../../../../codex-rs-overlay/codex-invariant-tests",
 ]
@@ -139,7 +139,7 @@ codex-async-utils = { path = "async-utils" }
 codex-backend-client = { path = "backend-client" }
 codex-chatgpt = { path = "chatgpt" }
 codex-cli = { path = "cli" }
-codex-copilot = { path = "codex-copilot" }
+codex-copilot = { path = "../../../../codex-rs-overlay/codex-copilot" }
 codex-client = { path = "codex-client" }
 codex-collaboration-mode-templates = { path = "collaboration-mode-templates" }
 codex-cloud-requirements = { path = "cloud-requirements" }
