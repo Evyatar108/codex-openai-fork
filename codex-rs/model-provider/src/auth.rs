@@ -34,12 +34,14 @@ impl AuthProvider for AgentIdentityAuthProvider {
         .map_err(std::io::Error::other);
 
         if let Ok(header_value) = header_value
-            && let Ok(header) = HeaderValue::from_str(&header_value)
+            && let Ok(mut header) = HeaderValue::from_str(&header_value)
         {
+            header.set_sensitive(true);
             let _ = headers.insert(http::header::AUTHORIZATION, header);
         }
 
-        if let Ok(header) = HeaderValue::from_str(self.auth.account_id()) {
+        if let Ok(mut header) = HeaderValue::from_str(self.auth.account_id()) {
+            header.set_sensitive(true);
             let _ = headers.insert("ChatGPT-Account-ID", header);
         }
 

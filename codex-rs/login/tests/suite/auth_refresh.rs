@@ -31,7 +31,7 @@ async fn refresh_token_methods_are_noops_under_sandbox_patch() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
-    let ctx = RefreshTokenTestContext::new(&server)?;
+    let ctx = RefreshTokenTestContext::new(&server).await?;
     let stale_refresh = Utc::now() - Duration::days(9);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
@@ -41,7 +41,7 @@ async fn refresh_token_methods_are_noops_under_sandbox_patch() -> Result<()> {
         last_refresh: Some(stale_refresh),
         agent_identity: None,
     };
-    ctx.write_auth(&initial_auth)?;
+    ctx.write_auth(&initial_auth).await?;
 
     ctx.auth_manager.refresh_token_from_authority().await?;
     ctx.auth_manager.refresh_token().await?;
@@ -71,7 +71,7 @@ async fn auth_keeps_stale_cached_auth_when_disk_changes() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
-    let ctx = RefreshTokenTestContext::new(&server)?;
+    let ctx = RefreshTokenTestContext::new(&server).await?;
     let stale_refresh = Utc::now() - Duration::days(9);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
@@ -81,7 +81,7 @@ async fn auth_keeps_stale_cached_auth_when_disk_changes() -> Result<()> {
         last_refresh: Some(stale_refresh),
         agent_identity: None,
     };
-    ctx.write_auth(&initial_auth)?;
+    ctx.write_auth(&initial_auth).await?;
 
     let disk_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
@@ -121,7 +121,7 @@ async fn unauthorized_recovery_reloads_disk_auth_then_noops_refresh() -> Result<
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
-    let ctx = RefreshTokenTestContext::new(&server)?;
+    let ctx = RefreshTokenTestContext::new(&server).await?;
     let initial_last_refresh = Utc::now() - Duration::days(1);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
@@ -131,7 +131,7 @@ async fn unauthorized_recovery_reloads_disk_auth_then_noops_refresh() -> Result<
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
     };
-    ctx.write_auth(&initial_auth)?;
+    ctx.write_auth(&initial_auth).await?;
 
     let disk_tokens = build_tokens("disk-access-token", "disk-refresh-token");
     let disk_auth = AuthDotJson {
@@ -181,7 +181,7 @@ async fn unauthorized_recovery_still_errors_on_account_mismatch() -> Result<()> 
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
-    let ctx = RefreshTokenTestContext::new(&server)?;
+    let ctx = RefreshTokenTestContext::new(&server).await?;
     let initial_last_refresh = Utc::now() - Duration::days(1);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
@@ -191,7 +191,7 @@ async fn unauthorized_recovery_still_errors_on_account_mismatch() -> Result<()> 
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
     };
-    ctx.write_auth(&initial_auth)?;
+    ctx.write_auth(&initial_auth).await?;
 
     let mut disk_tokens = build_tokens("disk-access-token", "disk-refresh-token");
     disk_tokens.account_id = Some("other-account".to_string());
@@ -243,7 +243,7 @@ struct RefreshTokenTestContext {
 }
 
 impl RefreshTokenTestContext {
-    fn new(server: &MockServer) -> Result<Self> {
+    async fn new(server: &MockServer) -> Result<Self> {
         let codex_home = TempDir::new()?;
         let endpoint = format!("{}/oauth/token", server.uri());
         let env_guard = EnvGuard::set(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, endpoint);
@@ -252,7 +252,8 @@ impl RefreshTokenTestContext {
             /*enable_codex_api_key_env*/ false,
             AuthCredentialsStoreMode::File,
             /*chatgpt_base_url*/ None,
-        );
+        )
+        .await;
 
         Ok(Self {
             codex_home,
@@ -267,13 +268,13 @@ impl RefreshTokenTestContext {
             .context("auth.json should exist")
     }
 
-    fn write_auth(&self, auth_dot_json: &AuthDotJson) -> Result<()> {
+    async fn write_auth(&self, auth_dot_json: &AuthDotJson) -> Result<()> {
         save_auth(
             self.codex_home.path(),
             auth_dot_json,
             AuthCredentialsStoreMode::File,
         )?;
-        self.auth_manager.reload();
+        self.auth_manager.reload().await;
         Ok(())
     }
 }

@@ -141,6 +141,7 @@ arboard = { workspace = true }
 
 
 [dev-dependencies]
+codex-app-server-client = { workspace = true, features = ["test-support"] }
 codex-cli = { workspace = true }
 codex-mcp = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
