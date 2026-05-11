@@ -451,6 +451,13 @@ fn is_copilot_matches_builtin_provider() {
 }
 
 #[test]
+fn copilot_provider_disables_websockets() {
+    let provider = create_copilot_provider();
+
+    assert!(!provider.supports_websockets);
+}
+
+#[test]
 fn is_copilot_rejects_different_id() {
     let provider = ModelProviderInfo {
         id: "my_copilot".into(),
@@ -500,4 +507,16 @@ fn is_copilot_rejects_renamed_builtin() {
     };
 
     assert!(provider.is_copilot());
+}
+
+#[test]
+fn is_copilot_is_id_based_not_name_based() {
+    let mut provider_named_copilot = create_oss_provider_with_base_url(
+        "corp-provider",
+        "https://api.githubcopilot.com/v1",
+        WireApi::Responses,
+    );
+    provider_named_copilot.name = "Copilot".to_string();
+
+    assert!(!provider_named_copilot.is_copilot());
 }

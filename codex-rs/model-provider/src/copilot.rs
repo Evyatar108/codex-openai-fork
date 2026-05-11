@@ -348,4 +348,23 @@ mod tests {
             "unexpected error: {message}",
         );
     }
+
+    #[tokio::test]
+    async fn api_auth_rejects_copilot_with_untrusted_https_base_url() {
+        let mut provider = create_copilot_provider();
+        provider.base_url = Some("https://evil.example.com".to_string());
+        let model_provider = CopilotModelProvider::new(provider, None);
+
+        let err = model_provider
+            .api_auth()
+            .await
+            .err()
+            .expect("untrusted https base_url must fail closed");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("Copilot provider base_url override not allowed"),
+            "unexpected error: {message}",
+        );
+    }
 }

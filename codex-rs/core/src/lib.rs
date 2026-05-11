@@ -177,6 +177,25 @@ pub use rollout::find_thread_path_by_id_str;
 pub use rollout::parse_cursor;
 pub use rollout::read_head_for_summary;
 pub use rollout::read_session_meta_line;
+
+#[cfg(test)]
+mod lib_tests {
+    #[test]
+    fn test_support_cfg_gate_is_preserved() {
+        let source = include_str!("lib.rs");
+        let cfg_index = source
+            .find("#[cfg(any(test, feature = \"test-support\"))]")
+            .expect("test_support cfg gate should exist");
+        let module_index = source
+            .find("pub mod test_support;")
+            .expect("test_support module declaration should exist");
+
+        assert!(
+            cfg_index < module_index,
+            "pub mod test_support must stay gated behind #[cfg(any(test, feature = \"test-support\"))]",
+        );
+    }
+}
 pub use rollout::rollout_date_parts;
 mod function_tool;
 mod state;

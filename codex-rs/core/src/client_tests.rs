@@ -366,6 +366,26 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
 }
 
 #[test]
+fn completed_before_trace_io() {
+    let source = include_str!("client.rs");
+    let completed_arm = source
+        .find("Ok(ResponseEvent::Completed {")
+        .expect("completed arm should exist");
+    let completed_arm_source = &source[completed_arm..];
+    let send_completed = completed_arm_source
+        .find(".send(Ok(ResponseEvent::Completed")
+        .expect("completed arm should forward ResponseEvent::Completed");
+    let record_completed = completed_arm_source
+        .find("inference_trace_attempt.record_completed")
+        .expect("completed arm should record rollout trace completion");
+
+    assert!(
+        send_completed < record_completed,
+        "ResponseEvent::Completed must be forwarded before rollout trace I/O",
+    );
+}
+
+#[test]
 fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
     let auth_context = AuthRequestTelemetryContext::new(
         Some(AuthMode::Chatgpt),
