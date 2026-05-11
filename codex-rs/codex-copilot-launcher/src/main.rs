@@ -68,7 +68,7 @@ fn run() -> anyhow::Result<()> {
     //
     // SANDBOX PATCH: model is intentionally NOT among the forced flags.
     // codex-core resolves `model` from `~/.codex/config.toml` natively.
-    let provider_flags = config::provider_config_flags(cfg.default_shell.as_deref());
+    let provider_flags = config::provider_config_flags(&cfg);
     let mut final_args: Vec<String> = args;
     for flag in &provider_flags {
         final_args.push("-c".to_string());

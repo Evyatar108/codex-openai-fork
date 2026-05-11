@@ -62,7 +62,7 @@ pub(crate) fn parse_sandbox_config(content: &str) -> SandboxConfig {
 /// `model` is intentionally NOT included here — codex-core reads
 /// `~/.codex/config.toml::model` natively, and provider `-c` flags would
 /// override it.
-pub fn provider_config_flags(default_shell: Option<&str>) -> Vec<String> {
+pub fn provider_config_flags(cfg: &SandboxConfig) -> Vec<String> {
     let mut flags = vec![
         "model_provider=copilot".to_string(),
         // Source-level network patching handles isolation; disable codex-core's
@@ -83,8 +83,11 @@ pub fn provider_config_flags(default_shell: Option<&str>) -> Vec<String> {
         "plugins.linear@openai-curated.enabled=false".to_string(),
         "plugins.figma@openai-curated.enabled=false".to_string(),
     ];
-    if let Some(shell) = default_shell {
+    if let Some(shell) = cfg.default_shell.as_deref() {
         flags.push(format!("default_shell={shell}"));
+    }
+    if cfg.auto_load_claude_md.unwrap_or(true) {
+        flags.push("project_doc_fallback_filenames=[\"CLAUDE.md\"]".to_string());
     }
     flags
 }
@@ -99,7 +102,11 @@ mod tests {
 
     #[test]
     fn provider_flags_always_emit_sandbox_mode() {
-        let flags = provider_config_flags(None);
+        let cfg = SandboxConfig {
+            default_shell: None,
+            auto_load_claude_md: Some(false),
+        };
+        let flags = provider_config_flags(&cfg);
         assert!(
             flags
                 .iter()
@@ -110,7 +117,11 @@ mod tests {
 
     #[test]
     fn provider_flags_emit_sandbox_mode_with_shell() {
-        let flags = provider_config_flags(Some(r"C:\Program Files\Git\bin\bash.exe"));
+        let cfg = SandboxConfig {
+            default_shell: Some(r"C:\Program Files\Git\bin\bash.exe".to_string()),
+            auto_load_claude_md: Some(false),
+        };
+        let flags = provider_config_flags(&cfg);
         assert!(
             flags
                 .iter()
@@ -125,7 +136,11 @@ mod tests {
 
     #[test]
     fn provider_flags_do_not_emit_gateway_era_overrides() {
-        let flags = provider_config_flags(None);
+        let cfg = SandboxConfig {
+            default_shell: None,
+            auto_load_claude_md: Some(false),
+        };
+        let flags = provider_config_flags(&cfg);
 
         for forbidden in [
             "model_providers.copilot.base_url",
@@ -145,10 +160,63 @@ mod tests {
         // SANDBOX PATCH: model selection must be read from ~/.codex/config.toml
         // by codex-core, not forced by the launcher. A `-c model=...` flag here
         // would silently override the user's config.
-        let flags = provider_config_flags(None);
+        let cfg = SandboxConfig {
+            default_shell: None,
+            auto_load_claude_md: Some(false),
+        };
+        let flags = provider_config_flags(&cfg);
         assert!(
             flags.iter().all(|flag| !flag.starts_with("model=")),
             "launcher must not force model selection: {flags:?}"
+        );
+    }
+
+    #[test]
+    fn provider_flags_emit_fallback_when_auto_load_enabled() {
+        let cfg = SandboxConfig {
+            default_shell: Some(r"C:\Program Files\Git\bin\bash.exe".to_string()),
+            auto_load_claude_md: Some(true),
+        };
+
+        let flags = provider_config_flags(&cfg);
+
+        assert_eq!(
+            flags.last().map(String::as_str),
+            Some("project_doc_fallback_filenames=[\"CLAUDE.md\"]"),
+            "CLAUDE.md fallback must be the final provider flag: {flags:?}"
+        );
+    }
+
+    #[test]
+    fn provider_flags_omit_fallback_when_auto_load_disabled() {
+        let cfg = SandboxConfig {
+            default_shell: None,
+            auto_load_claude_md: Some(false),
+        };
+
+        let flags = provider_config_flags(&cfg);
+
+        assert!(
+            flags
+                .iter()
+                .all(|flag| !flag.starts_with("project_doc_fallback_filenames=")),
+            "CLAUDE.md fallback should be omitted when auto_load_claude_md=false: {flags:?}"
+        );
+    }
+
+    #[test]
+    fn provider_flags_emit_fallback_when_auto_load_unset_default() {
+        let cfg = SandboxConfig {
+            default_shell: None,
+            auto_load_claude_md: None,
+        };
+
+        let flags = provider_config_flags(&cfg);
+
+        assert_eq!(
+            flags.last().map(String::as_str),
+            Some("project_doc_fallback_filenames=[\"CLAUDE.md\"]"),
+            "auto_load_claude_md absent should default to CLAUDE.md fallback enabled: {flags:?}"
         );
     }
 
