@@ -1,2 +1,12 @@
 codex-rs/app-server-protocol/schema/** linguist-generated
 codex-rs/hooks/schema/generated/** linguist-generated
+
+# Upstream-canonical paths - auto-merge in upstream's favor.
+# Driver registration required: run scripts/setup-merge-drivers.sh from repo root.
+codex-rs/app-server-protocol/schema/json/**         merge=theirs
+codex-rs/app-server-protocol/schema/typescript/**   merge=theirs
+sdk/python/**                                       merge=theirs
+# sdk/typescript/** is intentionally NOT merge=theirs; fork commits
+# 0ccf4ae9e8, d65a5b67f0, and 822e790b6f carry local SDK changes.
+.devcontainer/Dockerfile                            merge=theirs
+.devcontainer/devcontainer.json                     merge=theirs
