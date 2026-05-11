@@ -190,6 +190,13 @@ fn attach_windows_job(child: &Child) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    // STRUCTURAL-ONLY INVARIANT TEST.
+    // This test asserts that specific source-text patterns exist in the production code
+    // via include_str!() + .find(). It does NOT exercise behavior — a regression that
+    // changes BEHAVIOR while preserving the source text WILL NOT be caught. Behavioral
+    // coverage of the Windows job-object spawn ordering is intentionally deferred
+    // (Plan Risk #4). If you are investigating a real bug here, add a separate
+    // behavioral test that drives the Windows spawn path through the runtime.
     #[cfg(windows)]
     #[test]
     fn windows_spawn_child_async_attaches_job_wrapper() {

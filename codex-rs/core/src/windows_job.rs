@@ -217,6 +217,13 @@ pub fn close_job_on_child_exit(source_handle: HANDLE, job: JobHandle) -> io::Res
 #[cfg(test)]
 #[cfg(windows)]
 mod tests {
+    // STRUCTURAL-ONLY INVARIANT TEST.
+    // This test asserts that specific source-text patterns exist in the production code
+    // via include_str!() + .find(). It does NOT exercise behavior — a regression that
+    // changes BEHAVIOR while preserving the source text WILL NOT be caught. Behavioral
+    // coverage of the Windows job-object assignment ordering is intentionally deferred
+    // (Plan Risk #4). If you are investigating a real bug here, add a separate
+    // behavioral test that drives the Windows job-object attach flow through the runtime.
     #[test]
     fn windows_job_resume_follows_assignment_in_attach_flow() {
         let source = include_str!("spawn.rs");

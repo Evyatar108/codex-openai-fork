@@ -365,6 +365,13 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
     Ok(())
 }
 
+// STRUCTURAL-ONLY INVARIANT TEST.
+// This test asserts that specific source-text patterns exist in the production code via
+// include_str!() + .find(). It does NOT exercise behavior — a regression that changes
+// BEHAVIOR while preserving the source text WILL NOT be caught. Behavioral coverage of
+// this ordering invariant is intentionally deferred (Plan Risk #4). If you are
+// investigating a real bug here, add a separate behavioral test that drives the
+// completed-event path through the runtime.
 #[test]
 fn completed_before_trace_io() {
     let source = include_str!("client.rs");

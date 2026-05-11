@@ -180,6 +180,13 @@ pub use rollout::read_session_meta_line;
 
 #[cfg(test)]
 mod lib_tests {
+    // STRUCTURAL-ONLY INVARIANT TEST.
+    // This test asserts that specific source-text patterns exist in the production code
+    // via include_str!() + .find(). It does NOT exercise behavior — a regression that
+    // changes BEHAVIOR while preserving the source text WILL NOT be caught. Behavioral
+    // coverage of the test-support cfg gate is intentionally deferred (Plan Risk #4).
+    // If you are investigating a real bug here, verify the cfg gate is correctly
+    // applied at compile time by attempting to build without the test-support feature.
     #[test]
     fn test_support_cfg_gate_is_preserved() {
         let source = include_str!("lib.rs");
