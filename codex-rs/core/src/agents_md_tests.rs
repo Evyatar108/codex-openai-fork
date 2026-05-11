@@ -571,6 +571,80 @@ async fn apps_feature_does_not_append_to_agents_md_user_instructions() {
     assert_eq!(res, "base doc");
 }
 
+/// CLAUDE.md (configured as a fallback) is loaded when AGENTS.override.md and AGENTS.md are
+/// absent, but is NOT loaded when AGENTS.override.md or AGENTS.md exist in the same directory.
+#[tokio::test]
+async fn claude_md_fallback_found_only_when_agents_md_absent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let claude_md = tmp.path().join("CLAUDE.md");
+    let agents_override_md = tmp.path().join(LOCAL_AGENTS_MD_FILENAME);
+    let agents_md = tmp.path().join(DEFAULT_AGENTS_MD_FILENAME);
+
+    const CLAUDE_MARKER: &str = "claude-marker-content";
+    const OVERRIDE_MARKER: &str = "override-marker-content";
+    const AGENTS_MARKER: &str = "agents-marker-content";
+
+    // Step 1: only CLAUDE.md exists — it should be loaded.
+    fs::write(&claude_md, CLAUDE_MARKER).unwrap();
+    let cfg = make_config_with_fallback(
+        &tmp,
+        /*limit*/ 4096,
+        /*instructions*/ None,
+        &["CLAUDE.md"],
+    )
+    .await;
+    let res = get_user_instructions(&cfg)
+        .await
+        .expect("CLAUDE.md fallback should be loaded when AGENTS files are absent");
+    assert!(
+        res.contains(CLAUDE_MARKER),
+        "Expected CLAUDE.md marker in result, got: {res:?}"
+    );
+
+    // Step 2: AGENTS.override.md is added — it should win; CLAUDE.md must NOT be in the output.
+    fs::write(&agents_override_md, OVERRIDE_MARKER).unwrap();
+    let cfg = make_config_with_fallback(
+        &tmp,
+        /*limit*/ 4096,
+        /*instructions*/ None,
+        &["CLAUDE.md"],
+    )
+    .await;
+    let res = get_user_instructions(&cfg)
+        .await
+        .expect("AGENTS.override.md should be loaded when present");
+    assert!(
+        res.contains(OVERRIDE_MARKER),
+        "Expected AGENTS.override.md marker in result, got: {res:?}"
+    );
+    assert!(
+        !res.contains(CLAUDE_MARKER),
+        "CLAUDE.md should NOT be loaded when AGENTS.override.md is present, got: {res:?}"
+    );
+
+    // Step 3: remove AGENTS.override.md, add AGENTS.md — it should win; CLAUDE.md must NOT be loaded.
+    fs::remove_file(&agents_override_md).unwrap();
+    fs::write(&agents_md, AGENTS_MARKER).unwrap();
+    let cfg = make_config_with_fallback(
+        &tmp,
+        /*limit*/ 4096,
+        /*instructions*/ None,
+        &["CLAUDE.md"],
+    )
+    .await;
+    let res = get_user_instructions(&cfg)
+        .await
+        .expect("AGENTS.md should be loaded when present");
+    assert!(
+        res.contains(AGENTS_MARKER),
+        "Expected AGENTS.md marker in result, got: {res:?}"
+    );
+    assert!(
+        !res.contains(CLAUDE_MARKER),
+        "CLAUDE.md should NOT be loaded when AGENTS.md is present, got: {res:?}"
+    );
+}
+
 fn create_skill(codex_home: PathBuf, name: &str, description: &str) {
     let skill_dir = codex_home.join(format!("skills/{name}"));
     fs::create_dir_all(&skill_dir).unwrap();
