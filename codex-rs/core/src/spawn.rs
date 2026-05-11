@@ -133,7 +133,6 @@ pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io
     // JobObject kills grandchildren when the immediate child dies.
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         // CREATE_SUSPENDED so grandchildren cannot spawn before we assign
         // the child to the Job Object.
         cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
@@ -153,8 +152,9 @@ pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io
             tracing::warn!("windows job-object attach failed; spawning without it: {err}");
             // The child was spawned CREATE_SUSPENDED; resume it now so tool
             // execution can proceed.
-            if let Some(raw) =
-                child.raw_handle().map(|h| h as windows_sys::Win32::Foundation::HANDLE)
+            if let Some(raw) = child
+                .raw_handle()
+                .map(|h| h as windows_sys::Win32::Foundation::HANDLE)
             {
                 if let Err(resume_err) = crate::windows_job::resume_process(raw) {
                     tracing::error!(
@@ -174,11 +174,9 @@ pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io
 /// child exits.
 #[cfg(windows)]
 fn attach_windows_job(child: &Child) -> std::io::Result<()> {
-    let raw_handle = child
-        .raw_handle()
-        .ok_or_else(|| {
-            std::io::Error::other("tokio::process::Child has no raw_handle on Windows")
-        })? as windows_sys::Win32::Foundation::HANDLE;
+    let raw_handle = child.raw_handle().ok_or_else(|| {
+        std::io::Error::other("tokio::process::Child has no raw_handle on Windows")
+    })? as windows_sys::Win32::Foundation::HANDLE;
     let job = crate::windows_job::create_kill_on_close_job()?;
     crate::windows_job::assign_process_to_job(&job, raw_handle)?;
     crate::windows_job::resume_process(raw_handle)?;
@@ -188,4 +186,27 @@ fn attach_windows_job(child: &Child) -> std::io::Result<()> {
     // Child's handle before the watcher runs.
     crate::windows_job::close_job_on_child_exit(raw_handle, job)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn windows_spawn_child_async_attaches_job_wrapper() {
+        let source = include_str!("spawn.rs");
+        let create_suspended = source
+            .find("cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED)")
+            .expect("Windows spawn should create the child suspended");
+        let spawn_child = source
+            .find("let child = cmd.kill_on_drop(true).spawn()?;")
+            .expect("spawn_child_async should spawn exactly once through tokio Command");
+        let attach_job = source
+            .find("attach_windows_job(&child)")
+            .expect("Windows spawn should attach the job wrapper after spawning");
+
+        assert!(
+            create_suspended < spawn_child && spawn_child < attach_job,
+            "Windows tool-exec spawn must create a suspended child, then attach the Job Object wrapper",
+        );
+    }
 }

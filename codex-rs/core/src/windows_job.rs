@@ -31,19 +31,18 @@ use std::ptr;
 
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::DuplicateHandle;
-use windows_sys::Win32::Foundation::DUPLICATE_SAME_ACCESS;
 use windows_sys::Win32::Foundation::FALSE;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
 use windows_sys::Win32::System::JobObjects::JobObjectExtendedLimitInformation;
 use windows_sys::Win32::System::JobObjects::SetInformationJobObject;
-use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
-use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
-use windows_sys::Win32::System::Threading::WaitForSingleObject;
 use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
+use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
 // `NtResumeProcess` resumes every thread previously suspended via
 // `CREATE_SUSPENDED`. It is exported by `ntdll.dll` and has been stable for
@@ -213,4 +212,34 @@ pub fn close_job_on_child_exit(source_handle: HANDLE, job: JobHandle) -> io::Res
         drop(job);
     });
     Ok(())
+}
+
+#[cfg(test)]
+#[cfg(windows)]
+mod tests {
+    #[test]
+    fn windows_job_resume_follows_assignment_in_attach_flow() {
+        let source = include_str!("spawn.rs");
+        let attach_fn = source
+            .find("fn attach_windows_job(child: &Child) -> std::io::Result<()> {")
+            .expect("attach_windows_job should exist");
+        let attach_source = &source[attach_fn..];
+        let create_job = attach_source
+            .find("crate::windows_job::create_kill_on_close_job()")
+            .expect("attach flow should create a kill-on-close job");
+        let assign_job = attach_source
+            .find("crate::windows_job::assign_process_to_job(&job, raw_handle)")
+            .expect("attach flow should assign the process to the job");
+        let resume = attach_source
+            .find("crate::windows_job::resume_process(raw_handle)")
+            .expect("attach flow should resume the suspended child");
+        let close_on_exit = attach_source
+            .find("crate::windows_job::close_job_on_child_exit(raw_handle, job)")
+            .expect("attach flow should install the job-close watcher");
+
+        assert!(
+            create_job < assign_job && assign_job < resume && resume < close_on_exit,
+            "Windows child process must be assigned to the Job Object before it is resumed",
+        );
+    }
 }
