@@ -206,6 +206,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         model_providers,
         project_doc_max_bytes: 32 * 1024,
         project_doc_fallback_filenames: Vec::new(),
+        default_shell: None,
         tool_output_token_limit: None,
         agent_max_threads: Some(6),
         agent_job_max_runtime_seconds: None,

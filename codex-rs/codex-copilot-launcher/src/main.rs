@@ -4,6 +4,9 @@ mod setup;
 
 use std::process::Command;
 
+const PROJECT_DOC_FALLBACK_KEY: &str = "project_doc_fallback_filenames";
+const AUTO_LOAD_WARN: &str = "WARN: auto_load_claude_md is overriding ~/.codex/config.toml project_doc_fallback_filenames with [\"CLAUDE.md\"]; set auto_load_claude_md = false in ~/.codex-copilot/config.toml to keep your configured project_doc_fallback_filenames.";
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("ERROR: {e:#}");
@@ -20,25 +23,74 @@ fn is_passthrough(args: &[String]) -> bool {
         .any(|arg| matches!(arg.as_str(), "--version" | "-V" | "--help" | "-h"))
 }
 
-pub(crate) fn should_export_auto_load_claude_md(cfg: &config::SandboxConfig) -> bool {
+fn auto_load_claude_md_resolved(cfg: &config::SandboxConfig) -> bool {
     cfg.auto_load_claude_md.unwrap_or(true)
 }
 
-pub(crate) unsafe fn apply_auto_load_claude_md_env(resolved: bool) {
-    if resolved {
-        // SAFETY: launcher mutates process env before spawning codex-core.
-        unsafe { std::env::set_var("CODEX_AUTO_LOAD_CLAUDE_MD", "1") };
-    } else {
-        // SAFETY: launcher mutates process env before spawning codex-core.
-        unsafe { std::env::remove_var("CODEX_AUTO_LOAD_CLAUDE_MD") };
+fn codex_config_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h| h.join(".codex").join("config.toml"))
+}
+
+fn args_set_project_doc_fallback(args: &[String]) -> bool {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-c" || arg == "--config" {
+            if iter
+                .next()
+                .is_some_and(|value| override_sets_project_doc_fallback(value))
+            {
+                return true;
+            }
+            continue;
+        }
+
+        if let Some(value) = arg.strip_prefix("--config=") {
+            if override_sets_project_doc_fallback(value) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn override_sets_project_doc_fallback(value: &str) -> bool {
+    value
+        .split_once('=')
+        .is_some_and(|(key, _)| key.trim() == PROJECT_DOC_FALLBACK_KEY)
+}
+
+fn config_sets_project_doc_fallback(path: &std::path::Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(table) = content.parse::<toml::Table>() else {
+        return false;
+    };
+
+    table.contains_key(PROJECT_DOC_FALLBACK_KEY)
+}
+
+fn warn_helper_should_emit(
+    args: &[String],
+    cfg: &config::SandboxConfig,
+    codex_config: Option<&std::path::Path>,
+) -> bool {
+    auto_load_claude_md_resolved(cfg)
+        && (args_set_project_doc_fallback(args)
+            || codex_config.is_some_and(config_sets_project_doc_fallback))
+}
+
+fn warn_if_auto_load_overrides_project_doc_fallbacks(args: &[String], cfg: &config::SandboxConfig) {
+    if warn_helper_should_emit(args, cfg, codex_config_path().as_deref()) {
+        eprintln!("{AUTO_LOAD_WARN}");
     }
 }
 
-pub(crate) fn configure_launcher_env(cfg: &config::SandboxConfig) {
+pub(crate) fn configure_launcher_env() {
     // SAFETY: single-threaded launcher, all mutations happen before codex-core is exec'd.
     unsafe {
         std::env::set_var("OPENAI_API_KEY", "sk-sandbox-copilot-api-handles-auth");
-        apply_auto_load_claude_md_env(should_export_auto_load_claude_md(cfg));
         std::env::remove_var("HTTP_PROXY");
         std::env::remove_var("HTTPS_PROXY");
         std::env::remove_var("http_proxy");
@@ -60,6 +112,7 @@ fn run() -> anyhow::Result<()> {
     setup::first_run_bootstrap()?;
 
     let cfg = config::load_config();
+    warn_if_auto_load_overrides_project_doc_fallbacks(&args, &cfg);
 
     // Build final args: user args first, then provider -c flags last.
     // Provider flags MUST come last so they always win — later -c values
@@ -76,7 +129,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     // Set env — unsafe in Rust 2024 edition (single-threaded at this point, safe in practice)
-    configure_launcher_env(&cfg);
+    configure_launcher_env();
 
     // Clean ~/.codex/.tmp/ (curated plugin cache)
     if let Some(home) = dirs::home_dir() {
@@ -114,47 +167,9 @@ fn exec_codex_core(codex_core: &std::path::Path, args: &[String]) -> anyhow::Res
 
 #[cfg(test)]
 mod tests {
-    use std::env::VarError;
-    use std::ffi::OsString;
-
-    use serial_test::serial;
-
-    use super::apply_auto_load_claude_md_env;
     use super::config::SandboxConfig;
-    use super::configure_launcher_env;
     use super::is_passthrough;
-    use super::should_export_auto_load_claude_md;
-
-    const CLAUDE_MD_ENV: &str = "CODEX_AUTO_LOAD_CLAUDE_MD";
-
-    struct EnvGuard {
-        key: &'static str,
-        prior: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        fn new(key: &'static str) -> Self {
-            Self {
-                key,
-                prior: std::env::var_os(key),
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.prior {
-                Some(value) => {
-                    // SAFETY: serial env test restores the snapshotted variable.
-                    unsafe { std::env::set_var(self.key, value) };
-                }
-                None => {
-                    // SAFETY: serial env test restores the snapshotted variable.
-                    unsafe { std::env::remove_var(self.key) };
-                }
-            }
-        }
-    }
+    use super::warn_helper_should_emit;
 
     #[test]
     fn login_is_passthrough_arg() {
@@ -207,102 +222,58 @@ mod tests {
     }
 
     #[test]
-    fn should_export_auto_load_claude_md_resolution() {
-        for (auto_load_claude_md, expected) in
-            [(None, true), (Some(true), true), (Some(false), false)]
-        {
-            let cfg = SandboxConfig {
-                default_shell: None,
-                auto_load_claude_md,
-            };
-
-            assert_eq!(should_export_auto_load_claude_md(&cfg), expected);
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn apply_auto_load_claude_md_env_set_and_clear() {
-        {
-            let _guard = EnvGuard::new(CLAUDE_MD_ENV);
-            // SAFETY: serial env test isolates and restores this variable.
-            unsafe { std::env::remove_var(CLAUDE_MD_ENV) };
-            // SAFETY: helper intentionally mutates process env for this launcher toggle.
-            unsafe { apply_auto_load_claude_md_env(true) };
-            assert_eq!(std::env::var(CLAUDE_MD_ENV), Ok("1".to_string()));
-        }
-
-        {
-            let _guard = EnvGuard::new(CLAUDE_MD_ENV);
-            // SAFETY: serial env test isolates and restores this variable.
-            unsafe { std::env::set_var(CLAUDE_MD_ENV, "1") };
-            // SAFETY: helper intentionally mutates process env for this launcher toggle.
-            unsafe { apply_auto_load_claude_md_env(false) };
-            assert_eq!(std::env::var(CLAUDE_MD_ENV), Err(VarError::NotPresent));
-        }
-
-        {
-            let _guard = EnvGuard::new(CLAUDE_MD_ENV);
-            // SAFETY: serial env test isolates and restores this variable.
-            unsafe { std::env::remove_var(CLAUDE_MD_ENV) };
-            // SAFETY: helper intentionally mutates process env for this launcher toggle.
-            unsafe { apply_auto_load_claude_md_env(false) };
-            assert_eq!(std::env::var(CLAUDE_MD_ENV), Err(VarError::NotPresent));
-        }
-    }
-
-    /// Verifies that configure_launcher_env() — the function called by run() —
-    /// correctly wires should_export_auto_load_claude_md into apply_auto_load_claude_md_env.
-    /// Catches regressions where the helpers exist but are not composed in run().
-    #[test]
-    #[serial]
-    fn configure_launcher_env_exports_claude_md_when_enabled() {
-        let _guard = EnvGuard::new(CLAUDE_MD_ENV);
-        // SAFETY: serial env test isolates and restores this variable.
-        unsafe { std::env::remove_var(CLAUDE_MD_ENV) };
-
+    fn warn_helper_warns_for_cli_project_doc_fallback_when_auto_load_enabled() {
         let cfg = SandboxConfig {
             default_shell: None,
             auto_load_claude_md: Some(true),
         };
-        configure_launcher_env(&cfg);
+        let args = vec![
+            "-c".to_string(),
+            "project_doc_fallback_filenames=[\"FOO.md\"]".to_string(),
+        ];
 
-        assert_eq!(std::env::var(CLAUDE_MD_ENV), Ok("1".to_string()));
+        assert!(warn_helper_should_emit(&args, &cfg, None));
     }
 
     #[test]
-    #[serial]
-    fn configure_launcher_env_clears_claude_md_when_disabled() {
-        let _guard = EnvGuard::new(CLAUDE_MD_ENV);
-        // SAFETY: serial env test isolates and restores this variable.
-        unsafe { std::env::set_var(CLAUDE_MD_ENV, "1") };
+    fn warn_helper_warns_for_user_config_project_doc_fallback_when_auto_load_enabled() {
+        let cfg = SandboxConfig {
+            default_shell: None,
+            auto_load_claude_md: Some(true),
+        };
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join("warn-trigger-config.toml");
 
+        assert!(warn_helper_should_emit(&[], &cfg, Some(&fixture)));
+    }
+
+    #[test]
+    fn warn_helper_silent_when_auto_load_disabled() {
         let cfg = SandboxConfig {
             default_shell: None,
             auto_load_claude_md: Some(false),
         };
-        configure_launcher_env(&cfg);
+        let args = vec![
+            "--config".to_string(),
+            "project_doc_fallback_filenames=[\"FOO.md\"]".to_string(),
+        ];
 
-        assert_eq!(std::env::var(CLAUDE_MD_ENV), Err(VarError::NotPresent));
+        assert!(!warn_helper_should_emit(&args, &cfg, None));
     }
 
     #[test]
-    #[serial]
-    fn configure_launcher_env_exports_claude_md_when_unset_default() {
-        let _guard = EnvGuard::new(CLAUDE_MD_ENV);
-        // SAFETY: serial env test isolates and restores this variable.
-        unsafe { std::env::remove_var(CLAUDE_MD_ENV) };
-
+    fn warn_helper_silent_when_user_config_missing_or_unparseable() {
         let cfg = SandboxConfig {
             default_shell: None,
-            auto_load_claude_md: None,
+            auto_load_claude_md: Some(true),
         };
-        configure_launcher_env(&cfg);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("missing.toml");
+        let invalid = tmp.path().join("invalid.toml");
+        std::fs::write(&invalid, "project_doc_fallback_filenames = [").expect("write fixture");
 
-        assert_eq!(
-            std::env::var(CLAUDE_MD_ENV),
-            Ok("1".to_string()),
-            "auto_load_claude_md absent should default to enabled"
-        );
+        assert!(!warn_helper_should_emit(&[], &cfg, Some(&missing)));
+        assert!(!warn_helper_should_emit(&[], &cfg, Some(&invalid)));
     }
 }

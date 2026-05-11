@@ -26,7 +26,6 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use dunce::canonicalize as normalize_path;
-use std::env;
 use std::io;
 use toml::Value as TomlValue;
 use tracing::error;
@@ -38,20 +37,6 @@ pub(crate) const HIERARCHICAL_AGENTS_MESSAGE: &str =
 pub const DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
 /// Preferred local override for AGENTS.md instructions.
 pub const LOCAL_AGENTS_MD_FILENAME: &str = "AGENTS.override.md";
-/// Launcher-gated fallback filename for CLAUDE.md instructions.
-pub(crate) const CLAUDE_MD_FILENAME: &str = "CLAUDE.md";
-
-pub(crate) fn parse_auto_load_claude_md_value(raw: &str) -> bool {
-    raw == "1" || raw.eq_ignore_ascii_case("true")
-}
-
-pub(crate) fn auto_load_claude_md_enabled() -> bool {
-    match env::var("CODEX_AUTO_LOAD_CLAUDE_MD") {
-        Ok(raw) => parse_auto_load_claude_md_value(&raw),
-        Err(env::VarError::NotPresent) => false,
-        Err(env::VarError::NotUnicode(_)) => false,
-    }
-}
 
 /// When both `Config::instructions` and AGENTS.md docs are present, they will
 /// be concatenated with the following separator.
@@ -329,9 +314,6 @@ impl<'a> AgentsMdManager<'a> {
             if !names.contains(candidate) {
                 names.push(candidate.clone());
             }
-        }
-        if auto_load_claude_md_enabled() && !names.iter().any(|n| n == CLAUDE_MD_FILENAME) {
-            names.push(CLAUDE_MD_FILENAME.to_string());
         }
         names
     }
