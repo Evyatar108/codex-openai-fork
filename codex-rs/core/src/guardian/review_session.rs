@@ -35,7 +35,6 @@ use crate::config::NetworkProxySpec;
 use crate::config::Permissions;
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianFollowupReviewReminder;
-use crate::rollout::recorder::RolloutRecorder;
 use crate::session::Codex;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -151,7 +150,6 @@ struct GuardianReviewSessionReuseKey {
     codex_linux_sandbox_exe: Option<PathBuf>,
     main_execve_wrapper_exe: Option<PathBuf>,
     zsh_path: Option<PathBuf>,
-    default_shell: Option<PathBuf>,
     features: ManagedFeatures,
     include_apply_patch_tool: bool,
     use_experimental_unified_exec_tool: bool,
@@ -177,7 +175,6 @@ impl GuardianReviewSessionReuseKey {
             codex_linux_sandbox_exe: spawn_config.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: spawn_config.main_execve_wrapper_exe.clone(),
             zsh_path: spawn_config.zsh_path.clone(),
-            default_shell: spawn_config.default_shell.clone(),
             features: spawn_config.features.clone(),
             include_apply_patch_tool: spawn_config.include_apply_patch_tool,
             use_experimental_unified_exec_tool: spawn_config.use_experimental_unified_exec_tool,
@@ -776,12 +773,11 @@ async fn append_guardian_followup_reminder(review_session: &GuardianReviewSessio
 async fn load_rollout_items_for_fork(
     session: &Session,
 ) -> anyhow::Result<Option<Vec<RolloutItem>>> {
+    session.try_ensure_rollout_materialized().await?;
     session.flush_rollout().await?;
-    let Some(rollout_path) = session.current_rollout_path().await? else {
-        return Ok(None);
-    };
-    let history = RolloutRecorder::get_rollout_history(rollout_path.as_path()).await?;
-    Ok(Some(history.get_rollout_items()))
+    let live_thread = session.live_thread_for_persistence("guardian review fork")?;
+    let history = live_thread.load_history(/*include_archived*/ true).await?;
+    Ok(Some(history.items))
 }
 
 async fn wait_for_guardian_review(
@@ -933,6 +929,7 @@ pub(crate) fn build_guardian_review_session_config(
     for feature in [
         Feature::SpawnCsv,
         Feature::Collab,
+        Feature::MultiAgentV2,
         Feature::CodexHooks,
         Feature::Apps,
         Feature::Plugins,

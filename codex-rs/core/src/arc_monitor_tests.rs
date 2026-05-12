@@ -1,9 +1,16 @@
 use std::env;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use pretty_assertions::assert_eq;
 use serial_test::serial;
+use wiremock::Mock;
+use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::body_json;
+use wiremock::matchers::header;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 use super::*;
 use crate::context::ContextualUserFragment;
@@ -66,8 +73,7 @@ async fn build_arc_monitor_request_includes_relevant_history_and_null_policies()
         .record_into_history(
             &[ContextualUserFragment::into(
                 crate::context::EnvironmentContext::new(
-                    Some(PathBuf::from("/tmp")),
-                    "zsh".to_string(),
+                    Vec::new(),
                     /*current_date*/ None,
                     /*timezone*/ None,
                     /*network*/ None,
@@ -242,11 +248,75 @@ async fn build_arc_monitor_request_includes_relevant_history_and_null_policies()
     );
 }
 
-// SANDBOX PATCH: monitor_action is patched to return Ok immediately.
 #[tokio::test]
 #[serial(arc_monitor_env)]
-async fn monitor_action_returns_ok_immediately() {
-    let (session, turn_context) = make_session_and_context().await;
+async fn monitor_action_posts_expected_arc_request() {
+    let server = MockServer::start().await;
+    let (session, mut turn_context) = make_session_and_context().await;
+    turn_context.auth_manager = Some(crate::test_support::auth_manager_from_auth(
+        codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+    ));
+    turn_context.developer_instructions = Some("Developer policy".to_string());
+    turn_context.user_instructions = Some("User policy".to_string());
+
+    let mut config = (*turn_context.config).clone();
+    config.chatgpt_base_url = server.uri();
+    turn_context.config = Arc::new(config);
+
+    session
+        .record_into_history(
+            &[ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "please run the tool".to_string(),
+                }],
+                phase: None,
+            }],
+            &turn_context,
+        )
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/codex/safety/arc"))
+        .and(header("authorization", "Bearer Access Token"))
+        .and(header("chatgpt-account-id", "account_id"))
+        .and(body_json(serde_json::json!({
+            "metadata": {
+                "codex_thread_id": session.conversation_id.to_string(),
+                "codex_turn_id": turn_context.sub_id.clone(),
+                "conversation_id": session.conversation_id.to_string(),
+                "protection_client_callsite": "normal",
+            },
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "please run the tool",
+                }],
+            }],
+            "policies": {
+                "developer": null,
+                "user": null,
+            },
+            "action": {
+                "tool": "mcp_tool_call",
+            },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "outcome": "ask-user",
+            "short_reason": "needs confirmation",
+            "rationale": "tool call needs additional review",
+            "risk_score": 42,
+            "risk_level": "medium",
+            "evidence": [{
+                "message": "browser_navigate",
+                "why": "tool call needs additional review",
+            }],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let outcome = monitor_action(
         &session,
@@ -256,20 +326,54 @@ async fn monitor_action_returns_ok_immediately() {
     )
     .await;
 
-    assert_eq!(outcome, ArcMonitorOutcome::Ok);
+    assert_eq!(
+        outcome,
+        ArcMonitorOutcome::AskUser("needs confirmation".to_string())
+    );
 }
 
-// SANDBOX PATCH: monitor_action ignores env overrides and returns Ok immediately.
 #[tokio::test]
 #[serial(arc_monitor_env)]
-async fn monitor_action_ignores_env_overrides() {
+async fn monitor_action_uses_env_url_and_token_overrides() {
+    let server = MockServer::start().await;
     let _url_guard = EnvVarGuard::set(
         CODEX_ARC_MONITOR_ENDPOINT_OVERRIDE,
-        OsStr::new("http://localhost:9999/override/arc"),
+        OsStr::new(&format!("{}/override/arc", server.uri())),
     );
     let _token_guard = EnvVarGuard::set(CODEX_ARC_MONITOR_TOKEN, OsStr::new("override-token"));
 
     let (session, turn_context) = make_session_and_context().await;
+    session
+        .record_into_history(
+            &[ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "please run the tool".to_string(),
+                }],
+                phase: None,
+            }],
+            &turn_context,
+        )
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/override/arc"))
+        .and(header("authorization", "Bearer override-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "outcome": "steer-model",
+            "short_reason": "needs approval",
+            "rationale": "high-risk action",
+            "risk_score": 96,
+            "risk_level": "critical",
+            "evidence": [{
+                "message": "browser_navigate",
+                "why": "high-risk action",
+            }],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let outcome = monitor_action(
         &session,
@@ -279,14 +383,48 @@ async fn monitor_action_ignores_env_overrides() {
     )
     .await;
 
-    assert_eq!(outcome, ArcMonitorOutcome::Ok);
+    assert_eq!(
+        outcome,
+        ArcMonitorOutcome::SteerModel("high-risk action".to_string())
+    );
 }
 
-// SANDBOX PATCH: monitor_action returns Ok without parsing any response.
 #[tokio::test]
 #[serial(arc_monitor_env)]
-async fn monitor_action_returns_ok_without_network() {
-    let (session, turn_context) = make_session_and_context().await;
+async fn monitor_action_rejects_legacy_response_fields() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/safety/arc"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "outcome": "steer-model",
+            "reason": "legacy high-risk action",
+            "monitorRequestId": "arc_456",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (session, mut turn_context) = make_session_and_context().await;
+    turn_context.auth_manager = Some(crate::test_support::auth_manager_from_auth(
+        codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+    ));
+    let mut config = (*turn_context.config).clone();
+    config.chatgpt_base_url = server.uri();
+    turn_context.config = Arc::new(config);
+
+    session
+        .record_into_history(
+            &[ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "please run the tool".to_string(),
+                }],
+                phase: None,
+            }],
+            &turn_context,
+        )
+        .await;
 
     let outcome = monitor_action(
         &session,

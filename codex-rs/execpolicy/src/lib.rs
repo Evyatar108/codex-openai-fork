@@ -17,8 +17,6 @@ pub use error::Result;
 pub use error::TextPosition;
 pub use error::TextRange;
 pub use execpolicycheck::ExecPolicyCheckCommand;
-pub use execpolicycheck::format_matches_json;
-pub use execpolicycheck::load_policies;
 pub use parser::PolicyParser;
 pub use policy::Evaluation;
 pub use policy::MatchOptions;

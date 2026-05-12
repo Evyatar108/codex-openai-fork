@@ -13,9 +13,6 @@ path = "src/lib.rs"
 name = "codex-write-config-schema"
 path = "src/bin/config_schema.rs"
 
-[features]
-test-support = ["codex-model-provider/test-support"]
-
 [lints]
 workspace = true
 
@@ -33,13 +30,10 @@ codex-api = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-apply-patch = { workspace = true }
 codex-async-utils = { workspace = true }
-codex-client = { workspace = true }
 codex-code-mode = { workspace = true }
 codex-connectors = { workspace = true }
 codex-config = { workspace = true }
-codex-copilot = { workspace = true }
 codex-core-plugins = { workspace = true }
-codex-model-provider = { workspace = true }
 codex-core-skills = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-features = { workspace = true }
@@ -56,6 +50,7 @@ codex-hooks = { workspace = true }
 codex-network-proxy = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
+codex-model-provider = { workspace = true }
 codex-protocol = { workspace = true }
 codex-response-debug-context = { workspace = true }
 codex-rollout = { workspace = true }

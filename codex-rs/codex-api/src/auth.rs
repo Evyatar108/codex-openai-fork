@@ -34,11 +34,6 @@ pub trait AuthProvider: Send + Sync {
     /// used by telemetry and non-HTTP request paths.
     fn add_auth_headers(&self, headers: &mut HeaderMap);
 
-    /// SANDBOX PATCH: notify the auth provider that a 401/403 was observed on a
-    /// request. Default no-op; overridden by providers that cache credentials
-    /// (e.g. Copilot) to trigger invalidation.
-    fn on_unauthorized(&self) {}
-
     /// Returns any auth headers that are available without request body access.
     fn to_auth_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();

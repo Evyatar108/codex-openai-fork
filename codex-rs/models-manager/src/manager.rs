@@ -21,9 +21,6 @@ use tracing::info;
 
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
-// SANDBOX PATCH: kept public so `model-provider`'s `CopilotModelProvider` can
-// build a static catalog seeded with this slug.
-pub const COPILOT_DEFAULT_MODEL: &str = "gpt-5.5";
 
 /// Remote endpoint used by the OpenAI-compatible model manager.
 ///
@@ -424,15 +421,16 @@ fn find_model_by_longest_prefix(model: &str, candidates: &[ModelInfo]) -> Option
 fn find_model_by_namespaced_suffix(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
     // Retry metadata lookup for a single namespaced slug like `namespace/model-name`.
     //
-    // This only strips one leading namespace segment and only when the namespace is ASCII
-    // alphanumeric/underscore (`\w+`) to avoid broadly matching arbitrary aliases.
+    // This only strips one leading namespace segment and only when the namespace looks
+    // like a simple provider id to avoid broadly matching arbitrary aliases.
     let (namespace, suffix) = model.split_once('/')?;
     if suffix.contains('/') {
         return None;
     }
-    if !namespace
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    if namespace.is_empty()
+        || !namespace
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
         return None;
     }
@@ -458,46 +456,6 @@ pub(crate) fn construct_model_info_from_candidates(
         model_info::model_info_from_slug(model)
     };
     model_info::with_config_overrides(model_info, config)
-}
-
-/// SANDBOX PATCH: kept public so `model-provider`'s `CopilotModelProvider` can
-/// seed `StaticModelsManager` with this synthetic catalog entry without
-/// reaching the upstream `/models` endpoint.
-pub fn copilot_synthetic_model_info(slug: &str) -> ModelInfo {
-    let builtin = model_info::model_info_from_slug(slug);
-    ModelInfo {
-        slug: slug.to_string(),
-        display_name: builtin.display_name,
-        description: builtin.description,
-        default_reasoning_level: builtin.default_reasoning_level,
-        supported_reasoning_levels: builtin.supported_reasoning_levels,
-        shell_type: builtin.shell_type,
-        visibility: builtin.visibility,
-        supported_in_api: true,
-        priority: builtin.priority,
-        additional_speed_tiers: builtin.additional_speed_tiers,
-        availability_nux: builtin.availability_nux,
-        upgrade: builtin.upgrade,
-        base_instructions: builtin.base_instructions,
-        model_messages: builtin.model_messages,
-        supports_reasoning_summaries: builtin.supports_reasoning_summaries,
-        default_reasoning_summary: builtin.default_reasoning_summary,
-        support_verbosity: builtin.support_verbosity,
-        default_verbosity: builtin.default_verbosity,
-        apply_patch_tool_type: builtin.apply_patch_tool_type,
-        web_search_tool_type: builtin.web_search_tool_type,
-        truncation_policy: builtin.truncation_policy,
-        supports_parallel_tool_calls: builtin.supports_parallel_tool_calls,
-        supports_image_detail_original: builtin.supports_image_detail_original,
-        context_window: builtin.context_window,
-        max_context_window: builtin.max_context_window,
-        auto_compact_token_limit: builtin.auto_compact_token_limit,
-        effective_context_window_percent: builtin.effective_context_window_percent,
-        experimental_supported_tools: builtin.experimental_supported_tools,
-        input_modalities: builtin.input_modalities,
-        used_fallback_model_metadata: false,
-        supports_search_tool: builtin.supports_search_tool,
-    }
 }
 
 #[cfg(test)]

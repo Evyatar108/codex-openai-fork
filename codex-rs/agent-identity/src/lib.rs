@@ -198,11 +198,41 @@ pub fn sign_task_registration_payload(
 // never exercises AgentIdentityAuth. Fail-closed so audit stays clean and any stray caller
 // gets a visible error instead of a silent chatgpt.com call.
 pub async fn register_agent_task(
-    _client: &reqwest::Client,
-    _chatgpt_base_url: &str,
-    _key: AgentIdentityKey<'_>,
+    client: &reqwest::Client,
+    chatgpt_base_url: &str,
+    key: AgentIdentityKey<'_>,
 ) -> Result<String> {
-    anyhow::bail!("agent identity task registration is disabled in the copilot-api build")
+    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let request = RegisterTaskRequest {
+        signature: sign_task_registration_payload(key, &timestamp)?,
+        timestamp,
+    };
+    let url = agent_task_registration_url(chatgpt_base_url, key.agent_runtime_id);
+
+    let response = client
+        .post(url)
+        .timeout(AGENT_TASK_REGISTRATION_TIMEOUT)
+        .json(&request)
+        .send()
+        .await
+        .context("failed to register agent task")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body = if body.len() > 512 {
+            format!("{}...", body.chars().take(512).collect::<String>())
+        } else {
+            body
+        };
+        anyhow::bail!("failed to register agent task with status {status}: {body}");
+    }
+
+    let response = response
+        .json()
+        .await
+        .context("failed to decode agent task registration response")?;
+
+    task_id_from_register_task_response(key, response)
 }
 
 fn task_id_from_register_task_response(
@@ -316,8 +346,7 @@ pub fn build_abom(session_source: SessionSource) -> AgentBillOfMaterials {
             | SessionSource::Custom(_)
             | SessionSource::Internal(_)
             | SessionSource::SubAgent(_)
-            | SessionSource::Unknown
-            | SessionSource::Internal(_) => "codex-cli".to_string(),
+            | SessionSource::Unknown => "codex-cli".to_string(),
         },
         running_location: format!("{}-{}", session_source, std::env::consts::OS),
     }

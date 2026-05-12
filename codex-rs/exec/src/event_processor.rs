@@ -4,11 +4,6 @@ use codex_app_server_protocol::ServerNotification;
 use codex_core::config::Config;
 use codex_protocol::protocol::SessionConfiguredEvent;
 
-// CRLF-aware `eprintln!` shadow. Translates `\n` to `\r\n` on Windows so
-// the existing `eprintln!` call sites below do not produce cascading
-// indentation in the Windows console. No-op on non-Windows.
-use crate::crlf_writer::eprintln;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexStatus {
     Running,

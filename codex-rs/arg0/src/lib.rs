@@ -3,16 +3,6 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 
-// Debug-only shutdown-path tracing. Emits to stderr only when the
-// `CODEX_SHUTDOWN_TRACE` environment variable is set; silent otherwise.
-macro_rules! shutdown_trace {
-    ($($arg:tt)*) => {
-        if std::env::var_os("CODEX_SHUTDOWN_TRACE").is_some() {
-            eprintln!($($arg)*);
-        }
-    };
-}
-
 use codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1;
 use codex_exec_server::CODEX_FS_HELPER_ARG1;
 use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
@@ -195,16 +185,11 @@ where
     // Regular invocation – create a Tokio runtime and execute the provided
     // async entry-point.
     let runtime = build_runtime()?;
-    let result = runtime.block_on(run_main_with_arg0_guard(
+    runtime.block_on(run_main_with_arg0_guard(
         path_entry_guard,
         std::env::current_exe().ok(),
         main_fn,
-    ));
-    shutdown_trace!("[shutdown-trace] arg0: runtime.block_on returned");
-    // Drop runtime explicitly so we can trace before/after.
-    drop(runtime);
-    shutdown_trace!("[shutdown-trace] arg0: runtime dropped; returning result");
-    result
+    ))
 }
 
 async fn run_main_with_arg0_guard<F, Fut>(
@@ -229,8 +214,6 @@ where
     };
 
     let result = main_fn(paths).await;
-    // SANDBOX PATCH: shutdown trace — helps pinpoint hangs in the arg0 async entry.
-    shutdown_trace!("[shutdown-trace] arg0: main_fn.await returned");
     // Keep the arg0 tempdir guard alive until the async entry point finishes;
     // runtime paths above can point at aliases inside that directory.
     drop(path_entry_guard);

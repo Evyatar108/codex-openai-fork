@@ -7,7 +7,7 @@ We provide Codex CLI as a standalone executable to ensure a zero-dependency inst
 Today, the easiest way to install Codex is via `npm`:
 
 ```shell
-npm i -g @gim-home/codex
+npm i -g @openai/codex
 codex
 ```
 

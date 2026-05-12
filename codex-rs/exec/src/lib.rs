@@ -4,39 +4,11 @@
 // For both modes, any other output must be written to stderr.
 #![deny(clippy::print_stdout)]
 
-// Debug-only shutdown-path tracing. Emits to stderr only when the
-// `CODEX_SHUTDOWN_TRACE` environment variable is set; silent otherwise.
-// Useful for diagnosing post-completion hangs without bloating normal
-// runs. Format: `[shutdown-trace] <message>`.
-//
-// Routes through the CRLF-aware writer so that on Windows, the trace
-// lines do not exhibit the cascading-indent bug when redirected to a
-// file or rendered in the console host.
-macro_rules! shutdown_trace {
-    ($($arg:tt)*) => {
-        if std::env::var_os("CODEX_SHUTDOWN_TRACE").is_some() {
-            $crate::crlf_writer::eprintln!($($arg)*);
-        }
-    };
-}
-
 mod cli;
-mod console_init;
-pub(crate) mod crlf_writer;
 mod event_processor;
 mod event_processor_with_human_output;
 pub(crate) mod event_processor_with_jsonl_output;
 pub(crate) mod exec_events;
-
-// Crate-wide CRLF-aware shadows of the prelude `eprintln!` / `println!`
-// macros. On Windows these translate `\n` to `\r\n`; on other platforms
-// they are byte-identical to the prelude versions. Imported here so the
-// macros are in scope for the rest of `lib.rs` (which has many
-// pre-existing `eprintln!` call sites that would otherwise hit the
-// prelude version and emit bare LF on Windows).
-use crate::crlf_writer::eprintln;
-#[allow(unused_imports)]
-use crate::crlf_writer::println;
 
 pub use cli::Cli;
 pub use cli::Command;
@@ -85,6 +57,7 @@ use codex_cloud_requirements::cloud_requirements_loader_for_storage;
 use codex_config::ConfigLoadError;
 use codex_config::LoaderOverrides;
 use codex_config::format_config_error_with_source;
+use codex_core::StateDbHandle;
 use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
@@ -105,6 +78,8 @@ use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_otel::set_parent_from_context;
 use codex_otel::traceparent_context_from_env;
+use codex_protocol::SessionId;
+use codex_protocol::ThreadId;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::ActivePermissionProfileModification;
@@ -181,6 +156,7 @@ use crate::cli::Command as ExecCommand;
 use crate::event_processor::EventProcessor;
 
 const DEFAULT_ANALYTICS_ENABLED: bool = true;
+const EXEC_DEFAULT_LOG_FILTER: &str = "error,opentelemetry_sdk=off,opentelemetry_otlp=off";
 
 enum InitialOperation {
     UserTurn {
@@ -222,6 +198,7 @@ impl RequestIdSequencer {
 
 struct ExecRunArgs {
     in_process_start_args: InProcessClientStartArgs,
+    state_db: Option<StateDbHandle>,
     command: Option<ExecCommand>,
     config: Config,
     dangerously_bypass_approvals_and_sandbox: bool,
@@ -246,17 +223,20 @@ fn exec_root_span() -> tracing::Span {
     )
 }
 
+fn exec_stderr_env_filter() -> EnvFilter {
+    // OTEL export is best-effort; keep exporter self-diagnostics out of
+    // headless command output unless the caller opts in with RUST_LOG.
+    EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(EXEC_DEFAULT_LOG_FILTER))
+        .unwrap_or_else(|_| EnvFilter::new("error"))
+}
+
 pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
-    // Best-effort: enable virtual-terminal processing on the Windows console
-    // so that bare-LF newlines emitted by `eprintln!`/`println!` are rendered
-    // as full newlines (CR+LF). Without this, each subsequent line starts at
-    // the previous line's last column (the cascading-indent symptom). No-op
-    // on non-Windows; no-op when stdio is redirected to a pipe/file.
-    console_init::init_stdio_for_exec();
     #[allow(clippy::print_stderr)]
     if let Some(message) = cli.removed_full_auto_warning() {
         eprintln!("{message}");
     }
+
     if let Err(err) = set_default_originator("codex_exec".to_string()) {
         tracing::warn!(?err, "Failed to set codex exec originator override {err:?}");
     }
@@ -297,18 +277,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             supports_color::on_cached(Stream::Stderr).is_some(),
         ),
     };
-    // Build fmt layer (existing logging) to compose with OTEL layer.
-    let default_level = "error";
-
-    // Build env_filter separately and attach via with_filter.
-    let env_filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(default_level))
-        .unwrap_or_else(|_| EnvFilter::new(default_level));
-
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(stderr_with_ansi)
         .with_writer(std::io::stderr)
-        .with_filter(env_filter);
+        .with_filter(exec_stderr_env_filter());
 
     let sandbox_mode = if removed_full_auto {
         Some(SandboxMode::WorkspaceWrite)
@@ -443,7 +415,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
         zsh_path: None,
-        default_shell: None,
         base_instructions: None,
         developer_instructions: None,
         personality: None,
@@ -537,6 +508,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         arg0_paths.codex_self_exe.clone(),
         arg0_paths.codex_linux_sandbox_exe.clone(),
     )?;
+    let state_db = codex_core::init_state_db(&config).await;
     let in_process_start_args = InProcessClientStartArgs {
         arg0_paths,
         config: std::sync::Arc::new(config.clone()),
@@ -545,6 +517,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         cloud_requirements: run_cloud_requirements,
         feedback: CodexFeedback::new(),
         log_db: None,
+        state_db: state_db.clone(),
         environment_manager: std::sync::Arc::new(
             EnvironmentManager::new(EnvironmentManagerArgs::new(local_runtime_paths)).await,
         ),
@@ -557,8 +530,9 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     };
-    let session_result = run_exec_session(ExecRunArgs {
+    run_exec_session(ExecRunArgs {
         in_process_start_args,
+        state_db,
         command,
         config,
         dangerously_bypass_approvals_and_sandbox,
@@ -574,16 +548,13 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         stderr_with_ansi,
     })
     .instrument(exec_span)
-    .await;
-    shutdown_trace!("[shutdown-trace] run_main: run_exec_session.instrument.await returned");
-    let ret = session_result;
-    shutdown_trace!("[shutdown-trace] run_main: about to return from run_main");
-    ret
+    .await
 }
 
 async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let ExecRunArgs {
         in_process_start_args,
+        state_db,
         command,
         config,
         dangerously_bypass_approvals_and_sandbox,
@@ -710,7 +681,9 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let (primary_thread_id, fallback_session_configured) = if let Some(ExecCommand::Resume(args)) =
         command.as_ref()
     {
-        if let Some(thread_id) = resolve_resume_thread_id(&client, &config, args).await? {
+        if let Some(thread_id) =
+            resolve_resume_thread_id(&client, &config, state_db.as_ref(), args).await?
+        {
             let response: ThreadResumeResponse = send_request_with_response(
                 &client,
                 ClientRequest::ThreadResume {
@@ -724,7 +697,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             let session_configured =
                 session_configured_from_thread_resume_response(&response, &config)
                     .map_err(anyhow::Error::msg)?;
-            (session_configured.session_id, session_configured)
+            (session_configured.thread_id, session_configured)
         } else {
             let response: ThreadStartResponse = send_request_with_response(
                 &client,
@@ -739,7 +712,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             let session_configured =
                 session_configured_from_thread_start_response(&response, &config)
                     .map_err(anyhow::Error::msg)?;
-            (session_configured.session_id, session_configured)
+            (session_configured.thread_id, session_configured)
         }
     } else {
         let response: ThreadStartResponse = send_request_with_response(
@@ -754,7 +727,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         .map_err(anyhow::Error::msg)?;
         let session_configured = session_configured_from_thread_start_response(&response, &config)
             .map_err(anyhow::Error::msg)?;
-        (session_configured.session_id, session_configured)
+        (session_configured.thread_id, session_configured)
     };
 
     let primary_thread_id_for_span = primary_thread_id.to_string();
@@ -926,7 +899,6 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     match event_processor.process_server_notification(notification) {
                         CodexStatus::Running => {}
                         CodexStatus::InitiateShutdown => {
-                            shutdown_trace!("[shutdown-trace] exec: calling request_shutdown");
                             if let Err(err) = request_shutdown(
                                 &client,
                                 &mut request_ids,
@@ -936,7 +908,6 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                             {
                                 warn!("thread/unsubscribe failed during shutdown: {err}");
                             }
-                            shutdown_trace!("[shutdown-trace] exec: request_shutdown returned");
                             break;
                         }
                     }
@@ -950,19 +921,14 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         }
     }
 
-    shutdown_trace!("[shutdown-trace] exec: calling client.shutdown");
     if let Err(err) = client.shutdown().await {
         warn!("in-process app-server shutdown failed: {err}");
     }
-    shutdown_trace!("[shutdown-trace] exec: client.shutdown returned");
     event_processor.print_final_output();
-    shutdown_trace!("[shutdown-trace] exec: print_final_output returned");
     if error_seen {
-        shutdown_trace!("[shutdown-trace] exec: exiting with code 1 (error_seen)");
         std::process::exit(1);
     }
 
-    shutdown_trace!("[shutdown-trace] exec: run_exec_session returning Ok(())");
     Ok(())
 }
 
@@ -1095,12 +1061,13 @@ fn session_configured_from_thread_start_response(
     config: &Config,
 ) -> Result<SessionConfiguredEvent, String> {
     session_configured_from_thread_response(
+        &response.thread.session_id,
         &response.thread.id,
         response.thread.name.clone(),
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
-        response.service_tier,
+        response.service_tier.clone(),
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
         response
@@ -1119,12 +1086,13 @@ fn session_configured_from_thread_resume_response(
     config: &Config,
 ) -> Result<SessionConfiguredEvent, String> {
     session_configured_from_thread_response(
+        &response.thread.session_id,
         &response.thread.id,
         response.thread.name.clone(),
         response.thread.path.clone(),
         response.model.clone(),
         response.model_provider.clone(),
-        response.service_tier,
+        response.service_tier.clone(),
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
         response
@@ -1152,12 +1120,13 @@ fn review_target_to_api(target: ReviewTarget) -> ApiReviewTarget {
     reason = "session mapping keeps explicit fields"
 )]
 fn session_configured_from_thread_response(
+    session_id: &str,
     thread_id: &str,
     thread_name: Option<String>,
     rollout_path: Option<PathBuf>,
     model: String,
     model_provider_id: String,
-    service_tier: Option<codex_protocol::config_types::ServiceTier>,
+    service_tier: Option<String>,
     approval_policy: AskForApproval,
     approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     permission_profile: PermissionProfile,
@@ -1165,12 +1134,16 @@ fn session_configured_from_thread_response(
     cwd: AbsolutePathBuf,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 ) -> Result<SessionConfiguredEvent, String> {
-    let session_id = codex_protocol::ThreadId::from_string(thread_id)
+    let session_id = SessionId::from_string(session_id)
+        .map_err(|err| format!("session id `{session_id}` is invalid: {err}"))?;
+    let thread_id = ThreadId::from_string(thread_id)
         .map_err(|err| format!("thread id `{thread_id}` is invalid: {err}"))?;
 
     Ok(SessionConfiguredEvent {
         session_id,
+        thread_id,
         forked_from_id: None,
+        thread_source: None,
         thread_name,
         model,
         model_provider_id,
@@ -1181,8 +1154,6 @@ fn session_configured_from_thread_response(
         active_permission_profile,
         cwd,
         reasoning_effort,
-        history_log_id: 0,
-        history_entry_count: 0,
         initial_messages: None,
         network_proxy: None,
         rollout_path,
@@ -1363,6 +1334,7 @@ fn cwds_match(current_cwd: &Path, session_cwd: &Path) -> bool {
 async fn resolve_resume_thread_id(
     client: &InProcessAppServerClient,
     config: &Config,
+    state_db: Option<&StateDbHandle>,
     args: &crate::cli::ResumeArgs,
 ) -> anyhow::Result<Option<String>> {
     let model_providers = resume_lookup_model_providers(config, args);
@@ -1410,7 +1382,7 @@ async fn resolve_resume_thread_id(
     if Uuid::parse_str(session_id).is_ok() {
         return Ok(Some(session_id.to_string()));
     }
-    if let Some(state_db) = codex_core::get_state_db(config).await {
+    if let Some(state_db) = state_db {
         let cwd = (!args.all).then_some(config.cwd.as_path());
         let resolved = state_db
             .find_thread_by_exact_title(
@@ -1425,7 +1397,8 @@ async fn resolve_resume_thread_id(
             return Ok(Some(thread.id.to_string()));
         }
         if let Some((_, session_meta)) =
-            find_thread_meta_by_name_str(&config.codex_home, session_id).await?
+            find_thread_meta_by_name_str(&config.codex_home, session_id, Some(state_db.as_ref()))
+                .await?
             && (args.all || cwds_match(config.cwd.as_path(), &session_meta.meta.cwd))
         {
             return Ok(Some(session_meta.meta.id.to_string()));
@@ -1502,16 +1475,9 @@ async fn request_shutdown(
             thread_id: thread_id.to_string(),
         },
     };
-    shutdown_trace!("[shutdown-trace] request_shutdown: sending ThreadUnsubscribe");
-    let result = send_request_with_response::<ThreadUnsubscribeResponse>(
-        client,
-        request,
-        "thread/unsubscribe",
-    )
-    .await
-    .map(|_| ());
-    shutdown_trace!("[shutdown-trace] request_shutdown: ThreadUnsubscribe response received");
-    result
+    send_request_with_response::<ThreadUnsubscribeResponse>(client, request, "thread/unsubscribe")
+        .await
+        .map(|_| ())
 }
 
 async fn resolve_server_request(
@@ -1781,63 +1747,6 @@ fn decode_utf16(
     String::from_utf16(&units).map_err(|_| PromptDecodeError::InvalidUtf16 { encoding })
 }
 
-/// Check if stdin (as a pipe) has data available without blocking.
-fn stdin_has_data() -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        let fd = std::io::stdin().as_raw_fd();
-        let mut available: libc::c_int = 0;
-        // SAFETY: FIONREAD is a standard ioctl that writes an int.
-        let ret = unsafe { libc::ioctl(fd, libc::FIONREAD, &mut available) };
-        ret == 0 && available > 0
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle;
-        unsafe extern "system" {
-            fn PeekNamedPipe(
-                h: *mut std::ffi::c_void,
-                buf: *mut u8,
-                buf_size: u32,
-                bytes_read: *mut u32,
-                total_avail: *mut u32,
-                bytes_left: *mut u32,
-            ) -> i32;
-            fn GetFileType(h: *mut std::ffi::c_void) -> u32;
-        }
-        const FILE_TYPE_PIPE: u32 = 0x0003;
-        const FILE_TYPE_DISK: u32 = 0x0001;
-
-        let handle = std::io::stdin().as_raw_handle();
-        let file_type = unsafe { GetFileType(handle) };
-
-        // File redirects (< file.txt) always have data — read_to_end will EOF properly
-        if file_type == FILE_TYPE_DISK {
-            return true;
-        }
-
-        // For pipes, peek to check if data is available without blocking
-        if file_type == FILE_TYPE_PIPE {
-            let mut available: u32 = 0;
-            let ret = unsafe {
-                PeekNamedPipe(
-                    handle,
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null_mut(),
-                    &mut available,
-                    std::ptr::null_mut(),
-                )
-            };
-            return ret != 0 && available > 0;
-        }
-
-        // Unknown handle type — skip to avoid blocking
-        false
-    }
-}
-
 fn read_prompt_from_stdin(behavior: StdinPromptBehavior) -> Option<String> {
     let stdin_is_terminal = std::io::stdin().is_terminal();
 
@@ -1854,13 +1763,6 @@ fn read_prompt_from_stdin(behavior: StdinPromptBehavior) -> Option<String> {
         StdinPromptBehavior::Forced => {}
         StdinPromptBehavior::OptionalAppend if stdin_is_terminal => return None,
         StdinPromptBehavior::OptionalAppend => {
-            // SANDBOX PATCH: Check if the pipe actually has data before blocking
-            // on read_to_end(). When stdin is a pipe with no data (e.g. launched
-            // from a tool or script), read_to_end() blocks forever waiting for
-            // EOF that never comes. Peek first — if the buffer is empty, skip.
-            if !stdin_has_data() {
-                return None;
-            }
             eprintln!("Reading additional input from stdin...");
         }
     }

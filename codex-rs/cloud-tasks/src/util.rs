@@ -72,9 +72,6 @@ pub async fn build_chatgpt_headers() -> HeaderMap {
         && let Some(auth) = am.auth().await
         && auth.uses_codex_backend()
     {
-        // Bearer + ChatGPT-Account-Id sensitivity is enforced inside
-        // `auth_provider_from_auth` -> `BearerAuthProvider`. (Hardening — this
-        // code path is unreachable in Copilot.)
         headers.extend(codex_model_provider::auth_provider_from_auth(&auth).to_auth_headers());
     }
     headers

@@ -11,10 +11,8 @@ use codex_protocol::error::RetryLimitReachedError;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::error::UsageLimitReachedError;
 use http::HeaderMap;
-use http::HeaderValue;
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::Arc;
 
 pub fn map_api_error(err: ApiError) -> CodexErr {
     match err {
@@ -189,78 +187,4 @@ struct UsageErrorBody {
     error_type: Option<String>,
     plan_type: Option<PlanType>,
     resets_at: Option<i64>,
-}
-
-#[derive(Clone, Default)]
-pub struct CoreAuthProvider {
-    pub token: Option<String>,
-    pub account_id: Option<String>,
-    pub copilot: Option<Arc<codex_copilot::CopilotHeaderSource>>,
-}
-
-impl CoreAuthProvider {
-    pub fn new_legacy(token: Option<String>, account_id: Option<String>) -> Self {
-        Self {
-            token,
-            account_id,
-            copilot: None,
-        }
-    }
-
-    pub fn with_copilot(mut self, source: Arc<codex_copilot::CopilotHeaderSource>) -> Self {
-        self.copilot = Some(source);
-        self
-    }
-
-    pub fn auth_header_attached(&self) -> bool {
-        if self.copilot.is_some() {
-            return true;
-        }
-
-        self.token
-            .as_ref()
-            .is_some_and(|token| http::HeaderValue::from_str(&format!("Bearer {token}")).is_ok())
-    }
-
-    pub fn auth_header_name(&self) -> Option<&'static str> {
-        if self.copilot.is_some() {
-            return Some("authorization");
-        }
-
-        self.auth_header_attached().then_some("authorization")
-    }
-
-    pub fn for_test(token: Option<&str>, account_id: Option<&str>) -> Self {
-        Self::new_legacy(token.map(str::to_string), account_id.map(str::to_string))
-    }
-}
-
-impl crate::auth::AuthProvider for CoreAuthProvider {
-    fn add_auth_headers(&self, headers: &mut HeaderMap) {
-        if let Some(source) = self.copilot.as_ref() {
-            source.inject(headers);
-            return;
-        }
-
-        if let Some(token) = self.token.as_ref()
-            && let Ok(mut header) = HeaderValue::from_str(&format!("Bearer {token}"))
-        {
-            // SANDBOX PATCH: mark bearer token sensitive so Debug/tracing redact it.
-            header.set_sensitive(true);
-            let _ = headers.insert(http::header::AUTHORIZATION, header);
-        }
-        if let Some(account_id) = self.account_id.as_ref()
-            && let Ok(mut header) = HeaderValue::from_str(account_id)
-        {
-            // SANDBOX PATCH: account-id is tenant-identifying PII; mark sensitive.
-            header.set_sensitive(true);
-            let _ = headers.insert("ChatGPT-Account-ID", header);
-        }
-    }
-
-    fn on_unauthorized(&self) {
-        if let Some(source) = self.copilot.as_ref() {
-            source.invalidate();
-        }
-    }
 }

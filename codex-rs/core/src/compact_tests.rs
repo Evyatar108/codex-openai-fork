@@ -187,7 +187,6 @@ fn build_token_limited_compacted_history_appends_summary_message() {
 #[test]
 fn should_use_remote_compact_task_for_azure_provider() {
     let provider = ModelProviderInfo {
-        id: "azure".into(),
         name: "Azure".into(),
         base_url: Some("https://example.com/openai".into()),
         env_key: Some("AZURE_OPENAI_API_KEY".into()),

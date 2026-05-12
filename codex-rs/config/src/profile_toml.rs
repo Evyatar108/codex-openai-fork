@@ -7,6 +7,7 @@ use crate::config_toml::ToolsToml;
 use crate::types::AnalyticsConfigToml;
 use crate::types::ApprovalsReviewer;
 use crate::types::Personality;
+use crate::types::SessionPickerViewMode;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_protocol::config_types::ReasoningSummary;
@@ -49,8 +50,6 @@ pub struct ConfigProfile {
     pub js_repl_node_module_dirs: Option<Vec<AbsolutePathBuf>>,
     /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
     pub zsh_path: Option<AbsolutePathBuf>,
-    /// Optional absolute path to the default shell executable.
-    pub default_shell: Option<AbsolutePathBuf>,
     /// Deprecated: ignored. Use `model_instructions_file`.
     #[schemars(skip)]
     pub experimental_instructions_file: Option<AbsolutePathBuf>,
@@ -65,6 +64,9 @@ pub struct ConfigProfile {
     pub tools: Option<ToolsToml>,
     pub web_search: Option<WebSearchMode>,
     pub analytics: Option<AnalyticsConfigToml>,
+    /// TUI settings scoped to this profile.
+    #[serde(default)]
+    pub tui: Option<ProfileTui>,
     #[serde(default)]
     pub windows: Option<WindowsToml>,
     /// Optional feature toggles scoped to this profile.
@@ -73,6 +75,16 @@ pub struct ConfigProfile {
     #[schemars(schema_with = "crate::schema::features_schema")]
     pub features: Option<FeaturesToml>,
     pub oss_provider: Option<String>,
+}
+
+/// TUI settings supported inside a named profile.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct ProfileTui {
+    /// Preferred layout for resume/fork session picker results.
+    #[serde(default)]
+    pub session_picker_view: Option<SessionPickerViewMode>,
 }
 
 impl From<ConfigProfile> for codex_app_server_protocol::Profile {

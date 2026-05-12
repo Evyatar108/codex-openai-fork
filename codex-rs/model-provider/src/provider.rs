@@ -106,6 +106,11 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
             .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))
     }
 
+    /// Returns the provider base URL that will be used at request time.
+    async fn runtime_base_url(&self) -> codex_protocol::error::Result<Option<String>> {
+        Ok(self.info().base_url.clone())
+    }
+
     /// Returns the auth provider used to attach request credentials.
     async fn api_auth(&self) -> codex_protocol::error::Result<SharedAuthProvider> {
         let auth = self.auth().await;
@@ -118,18 +123,6 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
         codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager;
-
-    /// SANDBOX PATCH: Test-only hook — inject a pre-built `CopilotAuth` so
-    /// integration tests can redirect Copilot token/header traffic at wiremock
-    /// without going through the on-disk token flow. Default no-op;
-    /// `CopilotModelProvider` overrides.
-    #[cfg(any(test, feature = "test-support"))]
-    fn inject_copilot_auth_for_tests(
-        &self,
-        _auth: std::sync::Arc<codex_copilot::CopilotAuth>,
-    ) -> Result<(), &'static str> {
-        Err("provider does not support Copilot test-auth injection")
-    }
 }
 
 /// Shared runtime model provider handle.
@@ -142,15 +135,6 @@ pub fn create_model_provider(
 ) -> SharedModelProvider {
     if provider_info.is_amazon_bedrock() {
         Arc::new(AmazonBedrockModelProvider::new(provider_info))
-    } else if provider_info.is_copilot() {
-        // SANDBOX PATCH: Route Copilot sessions through CopilotModelProvider so
-        // api_auth() attaches CopilotHeaderSource without requiring callers to
-        // branch on is_copilot().
-        let auth_manager = auth_manager_for_provider(auth_manager, &provider_info);
-        Arc::new(crate::copilot::CopilotModelProvider::new(
-            provider_info,
-            auth_manager,
-        ))
     } else {
         Arc::new(ConfiguredModelProvider::new(provider_info, auth_manager))
     }
@@ -297,7 +281,6 @@ mod tests {
 
     fn provider_for(base_url: String) -> ModelProviderInfo {
         ModelProviderInfo {
-            id: "mock".into(),
             name: "mock".into(),
             base_url: Some(base_url),
             env_key: None,
@@ -353,6 +336,22 @@ mod tests {
         );
 
         assert_eq!(provider.capabilities(), ProviderCapabilities::default());
+    }
+
+    #[tokio::test]
+    async fn configured_provider_runtime_base_url_uses_configured_base_url() {
+        let provider = create_model_provider(
+            provider_for("https://example.test/v1".to_string()),
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider
+                .runtime_base_url()
+                .await
+                .expect("runtime base URL should resolve"),
+            Some("https://example.test/v1".to_string())
+        );
     }
 
     #[test]

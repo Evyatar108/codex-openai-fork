@@ -130,8 +130,7 @@ pub(crate) mod announcement {
     use serde::Deserialize;
     use std::sync::OnceLock;
     use std::thread;
-    // SANDBOX PATCH: `std::time::Duration` import removed — it was only used
-    // by the HTTP fetch timeout in the now-neutered blocking_init_announcement_tip.
+    use std::time::Duration;
 
     static ANNOUNCEMENT_TIP: OnceLock<Option<String>> = OnceLock::new();
     const CURRENT_OS: TargetOs = TargetOs::current();
@@ -208,20 +207,17 @@ pub(crate) mod announcement {
     }
 
     fn blocking_init_announcement_tip() -> Option<String> {
-        // SANDBOX PATCH: upstream fetches an announcement TOML from
-        // raw.githubusercontent.com/openai/codex/main/announcement_tip.toml
-        // on every TUI startup. This leaks user IP and launch timing to
-        // OpenAI-controlled infrastructure, and it bypasses HTTPS_PROXY via
-        // .no_proxy() so mitmproxy / corporate TLS-inspection cannot see it.
-        // The v6 Copilot sandbox disallows any non-Copilot network call;
-        // returning None here keeps the `get_tooltip` caller on the static
-        // compiled-in tooltip pool.
-        //
-        // Audit: scripts/audit_network_calls.sh must list this file in
-        // KNOWN_PATCH_FILES and raw.githubusercontent.com/openai/codex in
-        // ENDPOINT_PATTERNS to catch re-introduction on future rebases.
-        let _ = ANNOUNCEMENT_TIP_URL; // keep the const referenced for dead-code lint
-        None
+        // Avoid system proxy detection to prevent macOS system-configuration panics (#8912).
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .ok()?;
+        let response = client
+            .get(ANNOUNCEMENT_TIP_URL)
+            .timeout(Duration::from_millis(2000))
+            .send()
+            .ok()?;
+        response.error_for_status().ok()?.text().ok()
     }
 
     pub(crate) fn parse_announcement_tip_toml(

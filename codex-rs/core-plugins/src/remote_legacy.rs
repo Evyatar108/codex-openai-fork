@@ -116,17 +116,10 @@ pub enum RemotePluginFetchError {
     },
 }
 
-// SANDBOX PATCH: return empty list — no HTTP requests to /plugins/list.
-// Remote plugin catalog is a ChatGPT feature; copilot-api does not use it.
 pub async fn fetch_remote_plugin_status(
-    _config: &RemotePluginServiceConfig,
-    _auth: Option<&CodexAuth>,
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
 ) -> Result<Vec<RemotePluginStatusSummary>, RemotePluginFetchError> {
-    return Ok(Vec::new());
-    #[allow(unreachable_code)]
-    {
-    let auth = _auth;
-    let config = _config;
     let Some(auth) = auth else {
         return Err(RemotePluginFetchError::AuthRequired);
     };
@@ -159,21 +152,13 @@ pub async fn fetch_remote_plugin_status(
         url: url.clone(),
         source,
     })
-    }
 }
 
-// SANDBOX PATCH: return empty list — no HTTP requests to /plugins/featured.
 pub async fn fetch_remote_featured_plugin_ids(
-    _config: &RemotePluginServiceConfig,
-    _auth: Option<&CodexAuth>,
-    _product: Option<Product>,
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+    product: Option<Product>,
 ) -> Result<Vec<String>, RemotePluginFetchError> {
-    return Ok(Vec::new());
-    #[allow(unreachable_code)]
-    {
-    let config = _config;
-    let auth = _auth;
-    let product = _product;
     let base_url = config.chatgpt_base_url.trim_end_matches('/');
     let url = format!("{base_url}/plugins/featured");
     let client = build_reqwest_client();
@@ -207,25 +192,24 @@ pub async fn fetch_remote_featured_plugin_ids(
         url: url.clone(),
         source,
     })
-    }
 }
 
-// SANDBOX PATCH: reject mutation — no HTTP requests to /plugins/<id>/enable.
 pub async fn enable_remote_plugin(
-    _config: &RemotePluginServiceConfig,
-    _auth: Option<&CodexAuth>,
-    _plugin_id: &str,
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+    plugin_id: &str,
 ) -> Result<(), RemotePluginMutationError> {
-    Err(RemotePluginMutationError::AuthRequired)
+    post_remote_plugin_mutation(config, auth, plugin_id, "enable").await?;
+    Ok(())
 }
 
-// SANDBOX PATCH: reject mutation — no HTTP requests to /plugins/<id>/uninstall.
 pub async fn uninstall_remote_plugin(
-    _config: &RemotePluginServiceConfig,
-    _auth: Option<&CodexAuth>,
-    _plugin_id: &str,
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+    plugin_id: &str,
 ) -> Result<(), RemotePluginMutationError> {
-    Err(RemotePluginMutationError::AuthRequired)
+    post_remote_plugin_mutation(config, auth, plugin_id, "uninstall").await?;
+    Ok(())
 }
 
 fn ensure_codex_backend_auth(

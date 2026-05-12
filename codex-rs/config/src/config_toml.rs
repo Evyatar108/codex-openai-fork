@@ -31,7 +31,6 @@ use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
-use codex_model_provider_info::COPILOT_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -59,13 +58,34 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 
-const RESERVED_MODEL_PROVIDER_IDS: [&str; 5] = [
-    COPILOT_PROVIDER_ID,
+const RESERVED_MODEL_PROVIDER_IDS: [&str; 4] = [
     AMAZON_BEDROCK_PROVIDER_ID,
     OPENAI_PROVIDER_ID,
     OLLAMA_OSS_PROVIDER_ID,
     LMSTUDIO_OSS_PROVIDER_ID,
 ];
+
+pub const DEFAULT_PROJECT_DOC_MAX_BYTES: usize = 32 * 1024;
+
+const fn default_allow_login_shell() -> Option<bool> {
+    Some(true)
+}
+
+fn default_history() -> Option<History> {
+    Some(History::default())
+}
+
+const fn default_project_doc_max_bytes() -> Option<usize> {
+    Some(DEFAULT_PROJECT_DOC_MAX_BYTES)
+}
+
+fn default_project_doc_fallback_filenames() -> Option<Vec<String>> {
+    Some(Vec::new())
+}
+
+const fn default_hide_agent_reasoning() -> Option<bool> {
+    Some(false)
+}
 
 /// Base config deserialized from ~/.codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
@@ -108,6 +128,7 @@ pub struct ConfigToml {
     /// If `false`, the model can never use a login shell: `login = true`
     /// requests are rejected, and omitting `login` defaults to a non-login
     /// shell.
+    #[serde(default = "default_allow_login_shell")]
     pub allow_login_shell: Option<bool>,
 
     /// Sandbox mode to use.
@@ -155,7 +176,10 @@ pub struct ConfigToml {
     pub compact_prompt: Option<String>,
 
     /// Optional commit attribution text for commit message co-author trailers.
+    /// This top-level setting only takes effect when `[features].codex_git_commit`
+    /// is enabled.
     ///
+    /// When enabled and unset, Codex uses `Codex <noreply@openai.com>`.
     /// Set to an empty string to disable automatic commit attribution.
     pub commit_attribution: Option<String>,
 
@@ -204,9 +228,11 @@ pub struct ConfigToml {
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
+    #[serde(default = "default_project_doc_max_bytes")]
     pub project_doc_max_bytes: Option<usize>,
 
     /// Ordered list of fallback filenames to look for when AGENTS.md is missing.
+    #[serde(default = "default_project_doc_fallback_filenames")]
     pub project_doc_fallback_filenames: Option<Vec<String>>,
 
     /// Token budget applied when storing tool/function outputs in the context manager.
@@ -227,10 +253,6 @@ pub struct ConfigToml {
     /// Optional absolute path to patched zsh used by zsh-exec-bridge-backed shell execution.
     pub zsh_path: Option<AbsolutePathBuf>,
 
-    /// COPILOT PATCH: Optional absolute path to default shell executable.
-    /// Set by codex-copilot-launcher config; overrides platform default shell selection.
-    pub default_shell: Option<AbsolutePathBuf>,
-
     /// Profile to use from the `profiles` map.
     pub profile: Option<String>,
 
@@ -239,7 +261,7 @@ pub struct ConfigToml {
     pub profiles: HashMap<String, ConfigProfile>,
 
     /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
-    #[serde(default)]
+    #[serde(default = "default_history")]
     pub history: Option<History>,
 
     /// Directory where Codex stores the SQLite state DB.
@@ -250,6 +272,9 @@ pub struct ConfigToml {
     /// Defaults to `$CODEX_HOME/log`.
     pub log_dir: Option<AbsolutePathBuf>,
 
+    /// Debugging and reproducibility settings.
+    pub debug: Option<DebugToml>,
+
     /// Optional URI-based file opener. If set, citations to files in the model
     /// output will be hyperlinked using the specified URI scheme.
     pub file_opener: Option<UriBasedFileOpener>,
@@ -259,6 +284,7 @@ pub struct ConfigToml {
 
     /// When set to `true`, `AgentReasoning` events will be hidden from the
     /// UI/output. Defaults to `false`.
+    #[serde(default = "default_hide_agent_reasoning")]
     pub hide_agent_reasoning: Option<bool>,
 
     /// When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output.
@@ -426,6 +452,38 @@ pub struct ConfigToml {
     pub oss_provider: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ConfigLockfileToml {
+    pub version: u32,
+    pub codex_version: String,
+
+    /// Replayable effective config captured in the lockfile.
+    pub config: ConfigToml,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct DebugToml {
+    pub config_lockfile: Option<DebugConfigLockToml>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct DebugConfigLockToml {
+    /// Directory where Codex writes effective session config lock files.
+    pub export_dir: Option<AbsolutePathBuf>,
+
+    /// Lockfile to replay as the authoritative effective config.
+    pub load_path: Option<AbsolutePathBuf>,
+
+    /// Allow replaying a lock generated by a different Codex version.
+    pub allow_codex_version_mismatch: Option<bool>,
+
+    /// Save fields resolved from the model catalog/session configuration.
+    pub save_fields_resolved_from_model_catalog: Option<bool>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ThreadStoreToml {
@@ -433,7 +491,6 @@ pub enum ThreadStoreToml {
     Remote {
         endpoint: String,
     },
-    #[cfg(debug_assertions)]
     #[schemars(skip)]
     InMemory {
         id: String,
@@ -886,10 +943,7 @@ fn deserialize_model_providers<'de, D>(
 where
     D: serde::Deserializer<'de>,
 {
-    let mut model_providers = HashMap::<String, ModelProviderInfo>::deserialize(deserializer)?;
-    for (key, info) in &mut model_providers {
-        info.id = key.clone();
-    }
+    let model_providers = HashMap::<String, ModelProviderInfo>::deserialize(deserializer)?;
     validate_model_providers(&model_providers).map_err(serde::de::Error::custom)?;
     Ok(model_providers)
 }
@@ -907,27 +961,5 @@ pub fn validate_oss_provider(provider: &str) -> std::io::Result<()> {
                 "Invalid OSS provider '{provider}'. Must be one of: {LMSTUDIO_OSS_PROVIDER_ID}, {OLLAMA_OSS_PROVIDER_ID}"
             ),
         )),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ConfigToml;
-
-    #[test]
-    fn reserved_copilot_provider_id_rejected() {
-        let err = toml::from_str::<ConfigToml>(
-            r#"
-[model_providers.copilot]
-name = "Copilot"
-base_url = "https://example.com"
-"#,
-        )
-        .expect_err("reserved built-in provider id should be rejected");
-
-        assert!(
-            err.to_string()
-                .contains("model_providers contains reserved built-in provider IDs: `copilot`")
-        );
     }
 }

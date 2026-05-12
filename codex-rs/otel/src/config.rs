@@ -2,20 +2,33 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use codex_utils_absolute_path::AbsolutePathBuf;
+use serde::Deserialize;
+use serde::Serialize;
 
-#[allow(dead_code)]
 pub(crate) const STATSIG_OTLP_HTTP_ENDPOINT: &str = "https://ab.chatgpt.com/otlp/v1/metrics";
-#[allow(dead_code)]
 pub(crate) const STATSIG_API_KEY_HEADER: &str = "statsig-api-key";
-#[allow(dead_code)]
 pub(crate) const STATSIG_API_KEY: &str = "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO";
 
 pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
     match exporter {
         OtelExporter::Statsig => {
-            // SANDBOX PATCH: Always disable the Statsig metrics exporter.
-            // No OTEL metrics should be sent to ab.chatgpt.com/otlp/v1/metrics.
-            OtelExporter::None
+            // Keep the built-in Statsig default off in debug builds so
+            // incremental local development and test runs do not emit
+            // best-effort OTEL traffic unless a test or binary opts into an
+            // explicit exporter configuration.
+            if cfg!(debug_assertions) {
+                return OtelExporter::None;
+            }
+
+            OtelExporter::OtlpHttp {
+                endpoint: STATSIG_OTLP_HTTP_ENDPOINT.to_string(),
+                headers: HashMap::from([(
+                    STATSIG_API_KEY_HEADER.to_string(),
+                    STATSIG_API_KEY.to_string(),
+                )]),
+                protocol: OtelHttpProtocol::Json,
+                tls: None,
+            }
         }
         _ => exporter.clone(),
     }
@@ -31,6 +44,14 @@ pub struct OtelSettings {
     pub trace_exporter: OtelExporter,
     pub metrics_exporter: OtelExporter,
     pub runtime_metrics: bool,
+}
+
+/// Resolved Statsig metrics settings that another process can use to recreate
+/// the built-in metrics exporter configuration without receiving generic
+/// exporter credentials in-process.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatsigMetricsSettings {
+    pub environment: String,
 }
 
 #[derive(Clone, Debug)]
@@ -74,8 +95,7 @@ mod tests {
     use super::resolve_exporter;
 
     #[test]
-    // SANDBOX PATCH: Statsig exporter is unconditionally disabled.
-    fn statsig_metrics_exporter_is_always_disabled() {
+    fn statsig_default_metrics_exporter_is_disabled_in_debug_builds() {
         assert!(matches!(
             resolve_exporter(&OtelExporter::Statsig),
             OtelExporter::None

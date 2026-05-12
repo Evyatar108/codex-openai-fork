@@ -8,9 +8,6 @@ license.workspace = true
 name = "codex_app_server_client"
 path = "src/lib.rs"
 
-[features]
-test-support = ["codex-core/test-support"]
-
 [lints]
 workspace = true
 
@@ -36,4 +33,5 @@ url = { workspace = true }
 [dev-dependencies]
 pretty_assertions = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage and optionally package the @gim-home/codex npm module."""
+"""Stage and optionally package the @openai/codex npm module."""
 
 import argparse
 import json
@@ -12,49 +12,50 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 CODEX_CLI_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = CODEX_CLI_ROOT.parent
+RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
-CODEX_NPM_NAME = "@gim-home/codex"
+CODEX_NPM_NAME = "@openai/codex"
 
 # `npm_name` is the local optional-dependency alias consumed by `bin/codex.js`.
-# The underlying package published to npm is always `@gim-home/codex`.
+# The underlying package published to npm is always `@openai/codex`.
 CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     "codex-linux-x64": {
-        "npm_name": "@gim-home/codex-linux-x64",
+        "npm_name": "@openai/codex-linux-x64",
         "npm_tag": "linux-x64",
         "target_triple": "x86_64-unknown-linux-musl",
         "os": "linux",
         "cpu": "x64",
     },
     "codex-linux-arm64": {
-        "npm_name": "@gim-home/codex-linux-arm64",
+        "npm_name": "@openai/codex-linux-arm64",
         "npm_tag": "linux-arm64",
         "target_triple": "aarch64-unknown-linux-musl",
         "os": "linux",
         "cpu": "arm64",
     },
     "codex-darwin-x64": {
-        "npm_name": "@gim-home/codex-darwin-x64",
+        "npm_name": "@openai/codex-darwin-x64",
         "npm_tag": "darwin-x64",
         "target_triple": "x86_64-apple-darwin",
         "os": "darwin",
         "cpu": "x64",
     },
     "codex-darwin-arm64": {
-        "npm_name": "@gim-home/codex-darwin-arm64",
+        "npm_name": "@openai/codex-darwin-arm64",
         "npm_tag": "darwin-arm64",
         "target_triple": "aarch64-apple-darwin",
         "os": "darwin",
         "cpu": "arm64",
     },
     "codex-win32-x64": {
-        "npm_name": "@gim-home/codex-win32-x64",
+        "npm_name": "@openai/codex-win32-x64",
         "npm_tag": "win32-x64",
         "target_triple": "x86_64-pc-windows-msvc",
         "os": "win32",
         "cpu": "x64",
     },
     "codex-win32-arm64": {
-        "npm_name": "@gim-home/codex-win32-arm64",
+        "npm_name": "@openai/codex-win32-arm64",
         "npm_tag": "win32-arm64",
         "target_triple": "aarch64-pc-windows-msvc",
         "os": "win32",
@@ -68,12 +69,13 @@ PACKAGE_EXPANSIONS: dict[str, list[str]] = {
 
 PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     "codex": [],
-    "codex-linux-x64": ["codex", "codex-core", "rg"],
-    "codex-linux-arm64": ["codex", "codex-core", "rg"],
-    "codex-darwin-x64": ["codex", "codex-core", "rg"],
-    "codex-darwin-arm64": ["codex", "codex-core", "rg"],
-    "codex-win32-x64": ["codex", "codex-core", "rg"],
-    "codex-win32-arm64": ["codex", "codex-core", "rg"],
+    "codex-linux-x64": ["bwrap", "codex", "rg"],
+    "codex-linux-arm64": ["bwrap", "codex", "rg"],
+    "codex-darwin-x64": ["codex", "rg"],
+    "codex-darwin-arm64": ["codex", "rg"],
+    "codex-win32-x64": ["codex", "rg", "codex-windows-sandbox-setup", "codex-command-runner"],
+    "codex-win32-arm64": ["codex", "rg", "codex-windows-sandbox-setup", "codex-command-runner"],
+    "codex-responses-api-proxy": ["codex-responses-api-proxy"],
     "codex-sdk": [],
 }
 
@@ -85,8 +87,11 @@ PACKAGE_TARGET_FILTERS: dict[str, str] = {
 PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
 
 COMPONENT_DEST_DIR: dict[str, str] = {
+    "bwrap": "codex-resources",
     "codex": "codex",
-    "codex-core": "codex",
+    "codex-responses-api-proxy": "codex-responses-api-proxy",
+    "codex-windows-sandbox-setup": "codex",
+    "codex-command-runner": "codex",
     "rg": "path",
 }
 
@@ -133,6 +138,16 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Directory containing pre-installed native binaries to bundle (vendor root).",
     )
+    parser.add_argument(
+        "--allow-missing-native-component",
+        dest="allow_missing_native_components",
+        action="append",
+        default=[],
+        help=(
+            "Native component that may be absent from --vendor-src. Intended for CI "
+            "compatibility with older artifact workflows; releases should not use this."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -173,6 +188,7 @@ def main() -> int:
                 staging_dir,
                 native_components,
                 target_filter={target_filter} if target_filter else None,
+                allow_missing_components=set(args.allow_missing_native_components),
             )
 
         if release_version:
@@ -183,6 +199,12 @@ def main() -> int:
                     "Verify the CLI:\n"
                     f"    node {staging_dir_str}/bin/codex.js --version\n"
                     f"    node {staging_dir_str}/bin/codex.js --help\n\n"
+                )
+            elif package == "codex-responses-api-proxy":
+                print(
+                    f"Staged version {version} for release in {staging_dir_str}\n\n"
+                    "Verify the responses API proxy:\n"
+                    f"    node {staging_dir_str}/bin/codex-responses-api-proxy.js --help\n\n"
                 )
             elif package in CODEX_PLATFORM_PACKAGES:
                 print(
@@ -269,6 +291,17 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         package_manager = codex_package_json.get("packageManager")
         if isinstance(package_manager, str):
             package_json["packageManager"] = package_manager
+    elif package == "codex-responses-api-proxy":
+        bin_dir = staging_dir / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        launcher_src = RESPONSES_API_PROXY_NPM_ROOT / "bin" / "codex-responses-api-proxy.js"
+        shutil.copy2(launcher_src, bin_dir / "codex-responses-api-proxy.js")
+
+        readme_src = RESPONSES_API_PROXY_NPM_ROOT / "README.md"
+        if readme_src.exists():
+            shutil.copy2(readme_src, staging_dir / "README.md")
+
+        package_json_path = RESPONSES_API_PROXY_NPM_ROOT / "package.json"
     elif package == "codex-sdk":
         package_json_path = CODEX_SDK_ROOT / "package.json"
         stage_codex_sdk_sources(staging_dir)
@@ -344,12 +377,14 @@ def copy_native_binaries(
     staging_dir: Path,
     components: list[str],
     target_filter: set[str] | None = None,
+    allow_missing_components: set[str] | None = None,
 ) -> None:
     vendor_src = vendor_src.resolve()
     if not vendor_src.exists():
         raise RuntimeError(f"Vendor source directory not found: {vendor_src}")
 
     components_set = {component for component in components if component in COMPONENT_DEST_DIR}
+    allow_missing_components = allow_missing_components or set()
     if not components_set:
         return
 
@@ -378,6 +413,8 @@ def copy_native_binaries(
 
             src_component_dir = target_dir / dest_dir_name
             if not src_component_dir.exists():
+                if component in allow_missing_components:
+                    continue
                 raise RuntimeError(
                     f"Missing native component '{component}' in vendor source: {src_component_dir}"
                 )
@@ -400,10 +437,8 @@ def run_npm_pack(staging_dir: Path, output_path: Path) -> Path:
 
     with tempfile.TemporaryDirectory(prefix="codex-npm-pack-") as pack_dir_str:
         pack_dir = Path(pack_dir_str)
-        import shutil as _shutil
-        npm_bin = _shutil.which("npm") or "npm"
         stdout = subprocess.check_output(
-            [npm_bin, "pack", "--json", "--pack-destination", str(pack_dir)],
+            ["npm", "pack", "--json", "--pack-destination", str(pack_dir)],
             cwd=staging_dir,
             text=True,
         )

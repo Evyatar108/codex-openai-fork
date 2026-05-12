@@ -1,9 +1,17 @@
+use std::path::Path;
+
 use anyhow::Result;
-use codex_cli::clear_memories;
 use codex_state::StateRuntime;
 use codex_state::state_db_path;
+use predicates::str::contains;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
+
+fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
+    let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+    cmd.env("CODEX_HOME", codex_home);
+    Ok(cmd)
+}
 
 #[tokio::test]
 async fn debug_clear_memories_resets_state_and_removes_memory_dir() -> Result<()> {
@@ -99,8 +107,11 @@ INSERT INTO jobs (
     std::fs::write(memory_root.join("memory_summary.md"), "stale memory")?;
     pool.close().await;
 
-    let message = clear_memories(codex_home.path(), codex_home.path(), "test-provider").await?;
-    assert!(message.contains("Cleared memory state"));
+    let mut cmd = codex_command(codex_home.path())?;
+    cmd.args(["debug", "clear-memories"])
+        .assert()
+        .success()
+        .stdout(contains("Cleared memory state"));
 
     let pool = SqlitePool::connect(&format!("sqlite://{}", db_path.display())).await?;
     let stage1_outputs_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stage1_outputs")

@@ -9,12 +9,11 @@
 
 use codex_app_server_protocol::AuthMode;
 use codex_config::types::AuthCredentialsStoreMode;
-use codex_copilot::CopilotAuth;
 use codex_core::config::Config;
 use codex_login::CLIENT_ID;
 use codex_login::CodexAuth;
 use codex_login::ServerOptions;
-use codex_login::login_with_agent_identity;
+use codex_login::login_with_access_token;
 use codex_login::login_with_api_key;
 use codex_login::logout_with_revoke;
 use codex_login::run_device_code_login;
@@ -36,8 +35,8 @@ const CHATGPT_LOGIN_DISABLED_MESSAGE: &str =
     "ChatGPT login is disabled. Use API key login instead.";
 const API_KEY_LOGIN_DISABLED_MESSAGE: &str =
     "API key login is disabled. Use ChatGPT login instead.";
-const AGENT_IDENTITY_LOGIN_DISABLED_MESSAGE: &str =
-    "Agent Identity login is disabled. Use API key login instead.";
+const ACCESS_TOKEN_LOGIN_DISABLED_MESSAGE: &str =
+    "Access token login is disabled. Use API key login instead.";
 const LOGIN_SUCCESS_MESSAGE: &str = "Successfully logged in";
 
 /// Installs a small file-backed tracing layer for direct `codex login` flows.
@@ -191,62 +190,34 @@ pub async fn run_login_with_api_key(
     }
 }
 
-async fn run_copilot_login(auth: CopilotAuth, force: bool) -> anyhow::Result<()> {
-    auth.login(force).await?;
-    Ok(())
-}
-
-pub async fn run_login_with_copilot(cli_config_overrides: CliConfigOverrides, force: bool) -> ! {
-    let config = load_config_or_exit(cli_config_overrides).await;
-    let _login_log_guard = init_login_file_logging(&config);
-    tracing::info!("starting copilot login flow");
-
-    let auth = match CopilotAuth::new() {
-        Ok(auth) => auth,
-        Err(e) => {
-            eprintln!("Error logging in: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    match run_copilot_login(auth, force).await {
-        Ok(()) => {
-            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
-            std::process::exit(0);
-        }
-        Err(e) => {
-            eprintln!("Error logging in: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
-pub async fn run_login_with_agent_identity(
+pub async fn run_login_with_access_token(
     cli_config_overrides: CliConfigOverrides,
-    agent_identity: String,
+    access_token: String,
 ) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
-    tracing::info!("starting agent identity login flow");
+    tracing::info!("starting access token login flow");
 
     if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
-        eprintln!("{AGENT_IDENTITY_LOGIN_DISABLED_MESSAGE}");
+        eprintln!("{ACCESS_TOKEN_LOGIN_DISABLED_MESSAGE}");
         std::process::exit(1);
     }
 
-    match login_with_agent_identity(
+    match login_with_access_token(
         &config.codex_home,
-        &agent_identity,
+        &access_token,
         config.cli_auth_credentials_store_mode,
         Some(&config.chatgpt_base_url),
     )
     .await
     {
-        Ok(_) => {            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
+        Ok(_) => {
+            eprintln!("{LOGIN_SUCCESS_MESSAGE}");
             std::process::exit(0);
         }
         Err(e) => {
-            eprintln!("Error logging in with Agent Identity: {e}");            std::process::exit(1);
+            eprintln!("Error logging in with access token: {e}");
+            std::process::exit(1);
         }
     }
 }
@@ -259,11 +230,11 @@ pub fn read_api_key_from_stdin() -> String {
     )
 }
 
-pub fn read_agent_identity_from_stdin() -> String {
+pub fn read_access_token_from_stdin() -> String {
     read_stdin_secret(
-        "--with-agent-identity expects the Agent Identity token on stdin. Try piping it, e.g. `printenv CODEX_AGENT_IDENTITY | codex login --with-agent-identity`.",
-        "Reading Agent Identity token from stdin...",
-        "No Agent Identity token provided via stdin.",
+        "--with-access-token expects the access token on stdin. Try piping it, e.g. `printenv CODEX_ACCESS_TOKEN | codex login --with-access-token`.",
+        "Reading access token from stdin...",
+        "No access token provided via stdin.",
     )
 }
 
@@ -417,7 +388,7 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
                 std::process::exit(0);
             }
             AuthMode::AgentIdentity => {
-                eprintln!("Logged in using Agent Identity");
+                eprintln!("Logged in using access token");
                 std::process::exit(0);
             }
         },
@@ -480,18 +451,7 @@ fn safe_format_key(key: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::run_copilot_login;
     use super::safe_format_key;
-    use codex_copilot::CopilotAuth;
-    use codex_copilot::paths::AppPaths;
-    use serde_json::json;
-    use std::fs;
-    use tempfile::TempDir;
-    use wiremock::Mock;
-    use wiremock::MockServer;
-    use wiremock::ResponseTemplate;
-    use wiremock::matchers::method;
-    use wiremock::matchers::path;
 
     #[test]
     fn formats_long_key() {
@@ -503,72 +463,5 @@ mod tests {
     fn short_key_returns_stars() {
         let key = "sk-proj-12345";
         assert_eq!(safe_format_key(key), "***");
-    }
-
-    #[tokio::test]
-    async fn login_provider_copilot_with_force_flag() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/login/device/code"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "device_code": "device-code",
-                "user_code": "user-code",
-                "verification_uri": "https://github.com/login/device",
-                "expires_in": 600,
-                "interval": 0,
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/login/oauth/access_token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "access_token": "github-token",
-                "token_type": "bearer",
-                "scope": "read:user",
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/user"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "login": "octocat"
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let (_temp, github_token_path, auth) = test_copilot_auth(&server);
-        fs::write(&github_token_path, "cached-token\n").expect("write cached token");
-
-        run_copilot_login(auth, true)
-            .await
-            .expect("copilot login with force");
-
-        server.verify().await;
-        assert_eq!(
-            fs::read_to_string(github_token_path).expect("read refreshed token"),
-            "github-token\n"
-        );
-    }
-
-    fn test_copilot_auth(server: &MockServer) -> (TempDir, std::path::PathBuf, CopilotAuth) {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let app_dir = temp.path().join("copilot-home");
-        fs::create_dir_all(&app_dir).expect("create app dir");
-        let github_token_path = app_dir.join("github_token");
-
-        let paths = AppPaths {
-            app_dir: app_dir.clone(),
-            github_token_path: github_token_path.clone(),
-            copilot_token_path: app_dir.join("copilot_token"),
-            device_id_path: app_dir.join("device_id"),
-            machine_id_path: app_dir.join("machine_id"),
-        };
-        let auth = CopilotAuth::new_for_tests(paths, server.uri(), server.uri(), server.uri())
-            .expect("test auth");
-
-        (temp, github_token_path, auth)
     }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S NODE_NO_WARNINGS=1 pnpm ts-node-esm --files
 
-import { Codex } from "@gim-home/codex-sdk";
+import { Codex } from "@openai/codex-sdk";
 
 import { codexPathOverride } from "./helpers.ts";
 

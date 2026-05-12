@@ -1,7 +1,6 @@
 mod compact;
 mod regular;
 mod review;
-mod undo;
 mod user_shell;
 
 use std::sync::Arc;
@@ -58,7 +57,6 @@ use crate::util::escape_xml_text;
 pub(crate) use compact::CompactTask;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
-pub(crate) use undo::UndoTask;
 pub(crate) use user_shell::UserShellCommandMode;
 pub(crate) use user_shell::UserShellCommandTask;
 pub(crate) use user_shell::execute_user_shell_command;
@@ -461,12 +459,14 @@ impl Session {
         let task_cancellation_token = cancellation_token.child_token();
         // Task-owned turn spans keep a core-owned span open for the
         // full task lifecycle after the submission dispatch span ends.
+        let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
         let task_span = info_span!(
             "turn",
             otel.name = span_name,
             thread.id = %self.conversation_id,
             turn.id = %turn_context.sub_id,
             model = %turn_context.model_info.slug,
+            codex.turn.reasoning_effort = %reasoning_effort,
             codex.turn.token_usage.input_tokens = field::Empty,
             codex.turn.token_usage.cached_input_tokens = field::Empty,
             codex.turn.token_usage.non_cached_input_tokens = field::Empty,
@@ -486,16 +486,8 @@ impl Session {
                     )
                     .await;
                 let sess = session_ctx.clone_session();
-                if !task_cancellation_token.is_cancelled() {
-                    // Emit completion before waiting on the rollout durability barrier. The
-                    // terminal event is queued for persistence by send_event(), and the flush
-                    // below still provides best-effort durability, but clients should not remain
-                    // visually busy while the filesystem writer catches up.
-                    sess.on_task_finished(Arc::clone(&ctx_for_finish), last_agent_message)
-                        .await;
-                }
                 if let Err(err) = sess.flush_rollout().await {
-                    warn!("failed to flush rollout after completing turn: {err}");
+                    warn!("failed to flush rollout before completing turn: {err}");
                     sess.send_event(
                         ctx_for_finish.as_ref(),
                         EventMsg::Warning(WarningEvent {
@@ -505,6 +497,11 @@ impl Session {
                         }),
                     )
                     .await;
+                }
+                if !task_cancellation_token.is_cancelled() {
+                    // Emit completion uniformly from spawn site so all tasks share the same lifecycle.
+                    sess.on_task_finished(Arc::clone(&ctx_for_finish), last_agent_message)
+                        .await;
                 }
                 done_clone.notify_waiters();
             }
@@ -833,7 +830,6 @@ impl Session {
             .goal_runtime_apply(GoalRuntimeEvent::TurnFinished {
                 turn_context: turn_context.as_ref(),
                 turn_completed: should_clear_active_turn,
-                tool_calls: turn_tool_calls,
             })
             .await
         {
