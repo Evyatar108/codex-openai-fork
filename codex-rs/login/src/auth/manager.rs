@@ -1654,56 +1654,17 @@ impl AuthManager {
     /// cached account id. If the persisted token differs from the cached token, we
     /// can assume that some other instance already refreshed it. If the persisted
     /// token is the same as the cached, then ask the token authority to refresh.
+    // SANDBOX PATCH: no-op — copilot-api handles authentication independently.
     pub async fn refresh_token(&self) -> Result<(), RefreshTokenError> {
-        let _refresh_guard = self.refresh_lock.acquire().await.map_err(|_| {
-            RefreshTokenError::Permanent(RefreshTokenFailedError::new(
-                RefreshTokenFailedReason::Other,
-                REFRESH_TOKEN_UNKNOWN_MESSAGE.to_string(),
-            ))
-        })?;
-        let auth_before_reload = self.auth_cached();
-        if auth_before_reload
-            .as_ref()
-            .is_some_and(CodexAuth::is_api_key_auth)
-        {
-            return Ok(());
-        }
-        let expected_account_id = auth_before_reload
-            .as_ref()
-            .and_then(CodexAuth::get_account_id);
-
-        match self
-            .reload_if_account_id_matches(expected_account_id.as_deref())
-            .await
-        {
-            ReloadOutcome::ReloadedChanged => {
-                tracing::info!("Skipping token refresh because auth changed after guarded reload.");
-                Ok(())
-            }
-            ReloadOutcome::ReloadedNoChange => self.refresh_token_from_authority_impl().await,
-            ReloadOutcome::Skipped => {
-                Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
-                    RefreshTokenFailedReason::Other,
-                    REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE.to_string(),
-                )))
-            }
-        }
+        Ok(())
     }
 
-    /// Attempt to refresh the current auth token from the authority that issued
-    /// the token. On success, reloads the auth state from disk so other components
-    /// observe refreshed token. If the token refresh fails, returns the error to
-    /// the caller.
+    // SANDBOX PATCH: no-op — copilot-api handles authentication independently.
     pub async fn refresh_token_from_authority(&self) -> Result<(), RefreshTokenError> {
-        let _refresh_guard = self.refresh_lock.acquire().await.map_err(|_| {
-            RefreshTokenError::Permanent(RefreshTokenFailedError::new(
-                RefreshTokenFailedReason::Other,
-                REFRESH_TOKEN_UNKNOWN_MESSAGE.to_string(),
-            ))
-        })?;
-        self.refresh_token_from_authority_impl().await
+        Ok(())
     }
 
+    #[allow(dead_code)]
     async fn refresh_token_from_authority_impl(&self) -> Result<(), RefreshTokenError> {
         tracing::info!("Refreshing token");
 

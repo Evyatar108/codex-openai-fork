@@ -44,15 +44,16 @@ pub struct RemoteControlHandle {
 
 impl RemoteControlHandle {
     pub fn set_enabled(&self, enabled: bool) {
-        let requested_enabled = enabled;
-        let enabled = enabled && self.state_db_available;
-        if requested_enabled && !self.state_db_available {
-            warn!("remote control cannot be enabled because sqlite state db is unavailable");
-        }
+        // SANDBOX PATCH: neutralize runtime re-enable. Force handle to always settle at false.
+        let _ = enabled;
+        let _ = self.state_db_available;
         self.enabled_tx.send_if_modified(|state| {
-            let changed = *state != enabled;
-            *state = enabled;
-            changed
+            if *state {
+                *state = false;
+                true
+            } else {
+                false
+            }
         });
     }
 
@@ -76,11 +77,13 @@ pub async fn start_remote_control(
     if requested_initial_enabled && !state_db_available {
         warn!("remote control disabled because sqlite state db is unavailable");
     }
-    let remote_control_target = if initial_enabled {
-        Some(normalize_remote_control_url(&remote_control_url)?)
-    } else {
-        None
-    };
+    // SANDBOX PATCH: remote_control is ChatGPT-only. Force-disable regardless of
+    // initial_enabled argument - set target to None, initial_enabled to false.
+    // See CLAUDE.md / AGENTS.override.md "Remote control is force-disabled at THREE layers".
+    let _ = remote_control_url;
+    let remote_control_target = None;
+    let _ = initial_enabled;
+    let initial_enabled = false;
 
     let (enabled_tx, enabled_rx) = watch::channel(initial_enabled);
     let initial_status = RemoteControlStatusChangedNotification {

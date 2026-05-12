@@ -9,12 +9,18 @@ use crate::compact::content_items_to_text;
 use crate::event_mapping::is_contextual_user_message_content;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+#[allow(unused_imports)]
+use codex_login::CodexAuth;
+#[allow(unused_imports)]
 use codex_login::default_client::build_reqwest_client;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
 
+#[allow(dead_code)]
 const ARC_MONITOR_TIMEOUT: Duration = Duration::from_secs(30);
+#[allow(dead_code)]
 const CODEX_ARC_MONITOR_ENDPOINT_OVERRIDE: &str = "CODEX_ARC_MONITOR_ENDPOINT_OVERRIDE";
+#[allow(dead_code)]
 const CODEX_ARC_MONITOR_TOKEN: &str = "CODEX_ARC_MONITOR_TOKEN";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +44,7 @@ struct ArcMonitorRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct ArcMonitorResult {
     outcome: ArcMonitorResultOutcome,
     short_reason: String,
@@ -80,6 +87,7 @@ struct ArcMonitorEvidence {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
 enum ArcMonitorResultOutcome {
     Ok,
     SteerModel,
@@ -88,6 +96,7 @@ enum ArcMonitorResultOutcome {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
 enum ArcMonitorRiskLevel {
     Low,
     Medium,
@@ -95,111 +104,20 @@ enum ArcMonitorRiskLevel {
     Critical,
 }
 
+// SANDBOX PATCH: Return Ok immediately without making any HTTP request.
+// Safety monitor is unnecessary when running through the network sandbox.
 pub(crate) async fn monitor_action(
-    sess: &Session,
-    turn_context: &TurnContext,
-    action: serde_json::Value,
-    protection_client_callsite: &'static str,
+    _sess: &Session,
+    _turn_context: &TurnContext,
+    _action: serde_json::Value,
+    _protection_client_callsite: &'static str,
 ) -> ArcMonitorOutcome {
-    let auth = match turn_context.auth_manager.as_ref() {
-        Some(auth_manager) => match auth_manager.auth().await {
-            Some(auth) if auth.uses_codex_backend() => Some(auth),
-            _ => None,
-        },
-        None => None,
-    };
-    let env_token = read_non_empty_env_var(CODEX_ARC_MONITOR_TOKEN);
-    if env_token.is_none() && auth.is_none() {
-        return ArcMonitorOutcome::Ok;
-    }
-
-    let url = read_non_empty_env_var(CODEX_ARC_MONITOR_ENDPOINT_OVERRIDE).unwrap_or_else(|| {
-        format!(
-            "{}/codex/safety/arc",
-            turn_context.config.chatgpt_base_url.trim_end_matches('/')
-        )
-    });
-    let action = match action {
-        serde_json::Value::Object(action) => action,
-        _ => {
-            warn!("skipping safety monitor because action payload is not an object");
-            return ArcMonitorOutcome::Ok;
-        }
-    };
-    let body =
-        build_arc_monitor_request(sess, turn_context, action, protection_client_callsite).await;
-    let client = build_reqwest_client();
-    let mut request = client.post(&url).timeout(ARC_MONITOR_TIMEOUT).json(&body);
-    if let Some(token) = env_token {
-        request = request.bearer_auth(token);
-    } else if let Some(auth) = auth.as_ref() {
-        request =
-            request.headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers());
-    }
-
-    let response = match request.send().await {
-        Ok(response) => response,
-        Err(err) => {
-            warn!(error = %err, %url, "safety monitor request failed");
-            return ArcMonitorOutcome::Ok;
-        }
-    };
-    let status = response.status();
-    if !status.is_success() {
-        let response_text = response.text().await.unwrap_or_default();
-        warn!(
-            %status,
-            %url,
-            response_text,
-            "safety monitor returned non-success status"
-        );
-        return ArcMonitorOutcome::Ok;
-    }
-
-    let response = match response.json::<ArcMonitorResult>().await {
-        Ok(response) => response,
-        Err(err) => {
-            warn!(error = %err, %url, "failed to parse safety monitor response");
-            return ArcMonitorOutcome::Ok;
-        }
-    };
-    tracing::debug!(
-        risk_score = response.risk_score,
-        risk_level = ?response.risk_level,
-        evidence_count = response.evidence.len(),
-        "safety monitor completed"
-    );
-
-    let short_reason = response.short_reason.trim();
-    let rationale = response.rationale.trim();
-    match response.outcome {
-        ArcMonitorResultOutcome::Ok => ArcMonitorOutcome::Ok,
-        ArcMonitorResultOutcome::AskUser => {
-            if !short_reason.is_empty() {
-                ArcMonitorOutcome::AskUser(short_reason.to_string())
-            } else if !rationale.is_empty() {
-                ArcMonitorOutcome::AskUser(rationale.to_string())
-            } else {
-                ArcMonitorOutcome::AskUser(
-                    "Additional confirmation is required before this tool call can continue."
-                        .to_string(),
-                )
-            }
-        }
-        ArcMonitorResultOutcome::SteerModel => {
-            if !rationale.is_empty() {
-                ArcMonitorOutcome::SteerModel(rationale.to_string())
-            } else if !short_reason.is_empty() {
-                ArcMonitorOutcome::SteerModel(short_reason.to_string())
-            } else {
-                ArcMonitorOutcome::SteerModel(
-                    "Tool call was cancelled because of safety risks.".to_string(),
-                )
-            }
-        }
-    }
+    // SANDBOX PATCH: Return Ok immediately without making any HTTP request.
+    // Safety monitor is unnecessary when running through the network sandbox.
+    ArcMonitorOutcome::Ok
 }
 
+#[allow(dead_code)]
 fn read_non_empty_env_var(key: &str) -> Option<String> {
     match env::var(key) {
         Ok(value) => {
@@ -217,6 +135,7 @@ fn read_non_empty_env_var(key: &str) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 async fn build_arc_monitor_request(
     sess: &Session,
     turn_context: &TurnContext,
@@ -252,6 +171,7 @@ async fn build_arc_monitor_request(
     }
 }
 
+#[allow(dead_code)]
 fn build_arc_monitor_messages(items: &[ResponseItem]) -> Vec<ArcMonitorChatMessage> {
     let last_tool_call_index = items
         .iter()
@@ -296,6 +216,7 @@ fn build_arc_monitor_messages(items: &[ResponseItem]) -> Vec<ArcMonitorChatMessa
         .collect()
 }
 
+#[allow(dead_code)]
 fn build_arc_monitor_message_item(
     item: &ResponseItem,
     index: usize,
@@ -389,6 +310,7 @@ fn build_arc_monitor_message_item(
     }
 }
 
+#[allow(dead_code)]
 fn build_arc_monitor_text_message(
     role: &str,
     part_type: &str,
@@ -403,6 +325,7 @@ fn build_arc_monitor_text_message(
     )
 }
 
+#[allow(dead_code)]
 fn build_arc_monitor_message(role: &str, content: serde_json::Value) -> ArcMonitorChatMessage {
     ArcMonitorChatMessage {
         role: role.to_string(),

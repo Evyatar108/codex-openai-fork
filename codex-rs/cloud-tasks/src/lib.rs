@@ -28,6 +28,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use util::append_error_log;
 use util::format_relative_time;
+#[allow(unused_imports)] // SANDBOX PATCH: no longer called from init_backend
 use util::set_user_agent_suffix;
 
 struct ApplyJob {
@@ -40,68 +41,13 @@ struct BackendContext {
     base_url: String,
 }
 
-async fn init_backend(user_agent_suffix: &str) -> anyhow::Result<BackendContext> {
-    #[cfg(debug_assertions)]
-    let use_mock = matches!(
-        std::env::var("CODEX_CLOUD_TASKS_MODE").ok().as_deref(),
-        Some("mock") | Some("MOCK")
-    );
+// SANDBOX PATCH: Always return MockClient so no HTTP requests go to chatgpt.com/backend-api.
+async fn init_backend(_user_agent_suffix: &str) -> anyhow::Result<BackendContext> {
     let base_url = std::env::var("CODEX_CLOUD_TASKS_BASE_URL")
         .unwrap_or_else(|_| "https://chatgpt.com/backend-api".to_string());
 
-    set_user_agent_suffix(user_agent_suffix);
-
-    #[cfg(debug_assertions)]
-    if use_mock {
-        return Ok(BackendContext {
-            backend: Arc::new(codex_cloud_tasks_mock_client::MockClient),
-            base_url,
-        });
-    }
-
-    let ua = get_codex_user_agent();
-    let mut http = codex_cloud_tasks_client::HttpClient::new(base_url.clone())?.with_user_agent(ua);
-    let style = if base_url.contains("/backend-api") {
-        "wham"
-    } else {
-        "codex-api"
-    };
-    append_error_log(format!("startup: base_url={base_url} path_style={style}"));
-
-    let auth_manager = util::load_auth_manager(Some(base_url.clone())).await;
-    let auth = match auth_manager.as_ref() {
-        Some(manager) => manager.auth().await,
-        None => None,
-    };
-    let auth = match auth {
-        Some(auth) => auth,
-        None => {
-            eprintln!(
-                "Not signed in. Please run 'codex login' to sign in with ChatGPT, then re-run 'codex cloud'."
-            );
-            std::process::exit(1);
-        }
-    };
-
-    if let Some(acc) = auth.get_account_id() {
-        append_error_log(format!("auth: mode=ChatGPT account_id={acc}"));
-    }
-
-    if !auth.uses_codex_backend() {
-        eprintln!(
-            "Not signed in. Please run 'codex login' to sign in with ChatGPT, then re-run 'codex cloud'."
-        );
-        std::process::exit(1);
-    }
-
-    let auth_provider = codex_model_provider::auth_provider_from_auth(&auth);
-    http = http.with_auth_provider(auth_provider);
-    if let Some(acc) = auth.get_account_id() {
-        append_error_log(format!("auth: set ChatGPT-Account-Id header: {acc}"));
-    }
-
     Ok(BackendContext {
-        backend: Arc::new(http),
+        backend: Arc::new(codex_cloud_tasks_mock_client::MockClient),
         base_url,
     })
 }

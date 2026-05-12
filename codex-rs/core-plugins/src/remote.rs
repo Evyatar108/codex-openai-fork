@@ -397,67 +397,14 @@ struct RemotePluginMutationResponse {
     enabled: bool,
 }
 
+// SANDBOX PATCH: return empty marketplaces list — no HTTP requests to /ps/plugins/*.
+// Remote plugin catalog is a ChatGPT Business/Enterprise feature; copilot-api does not use it.
 pub async fn fetch_remote_marketplaces(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    sources: &[RemoteMarketplaceSource],
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _sources: &[RemoteMarketplaceSource],
 ) -> Result<Vec<RemoteMarketplace>, RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    let mut marketplaces = Vec::new();
-    let needs_workspace_installed = sources.iter().any(|source| {
-        matches!(
-            source,
-            RemoteMarketplaceSource::WorkspaceDirectory | RemoteMarketplaceSource::SharedWithMe
-        )
-    });
-    let workspace_installed_plugins = if needs_workspace_installed {
-        Some(fetch_installed_plugins_for_scope(config, auth, RemotePluginScope::Workspace).await?)
-    } else {
-        None
-    };
-
-    for source in sources {
-        let marketplace = match source {
-            RemoteMarketplaceSource::Global => {
-                let scope = RemotePluginScope::Global;
-                let (directory_plugins, installed_plugins) = tokio::try_join!(
-                    fetch_directory_plugins_for_scope(config, auth, scope),
-                    fetch_installed_plugins_for_scope(config, auth, scope),
-                )?;
-                build_remote_marketplace(
-                    scope.marketplace_name(),
-                    scope.marketplace_display_name(),
-                    directory_plugins,
-                    installed_plugins,
-                    /*include_installed_only*/ true,
-                )
-            }
-            RemoteMarketplaceSource::WorkspaceDirectory => {
-                let scope = RemotePluginScope::Workspace;
-                let directory_plugins =
-                    fetch_directory_plugins_for_scope(config, auth, scope).await?;
-                build_remote_marketplace(
-                    scope.marketplace_name(),
-                    scope.marketplace_display_name(),
-                    directory_plugins,
-                    workspace_installed_plugins.clone().unwrap_or_default(),
-                    /*include_installed_only*/ false,
-                )
-            }
-            RemoteMarketplaceSource::SharedWithMe => build_remote_marketplace(
-                REMOTE_SHARED_WITH_ME_MARKETPLACE_NAME,
-                REMOTE_SHARED_WITH_ME_MARKETPLACE_DISPLAY_NAME,
-                fetch_shared_workspace_plugins(config, auth).await?,
-                workspace_installed_plugins.clone().unwrap_or_default(),
-                /*include_installed_only*/ false,
-            ),
-        };
-        if let Some(marketplace) = marketplace {
-            marketplaces.push(marketplace);
-        }
-    }
-
-    Ok(marketplaces)
+    Ok(Vec::new())
 }
 
 fn build_remote_marketplace(
@@ -513,105 +460,44 @@ fn build_remote_marketplace(
     })
 }
 
+// SANDBOX PATCH: return empty installed plugins list — no HTTP requests to /ps/plugins/installed/*.
+// Remote plugin catalog is a ChatGPT Business/Enterprise feature; copilot-api does not use it.
 pub async fn fetch_remote_installed_plugins(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
 ) -> Result<Vec<RemoteInstalledPlugin>, RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    let global = async {
-        let scope = RemotePluginScope::Global;
-        let installed_plugins = fetch_installed_plugins_for_scope(config, auth, scope).await?;
-        Ok::<_, RemotePluginCatalogError>((scope, installed_plugins))
-    };
-    let workspace = async {
-        let scope = RemotePluginScope::Workspace;
-        let installed_plugins = fetch_installed_plugins_for_scope(config, auth, scope).await?;
-        Ok::<_, RemotePluginCatalogError>((scope, installed_plugins))
-    };
-
-    let (global, workspace) = tokio::try_join!(global, workspace)?;
-    let mut installed_plugins = [global, workspace]
-        .into_iter()
-        .flat_map(|(scope, plugins)| {
-            plugins
-                .into_iter()
-                .map(move |plugin| remote_installed_plugin_to_info(scope, &plugin))
-        })
-        .collect::<Vec<_>>();
-    installed_plugins.sort_by(|left, right| {
-        left.marketplace_name
-            .cmp(&right.marketplace_name)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    Ok(installed_plugins)
+    Ok(Vec::new())
 }
 
+// SANDBOX PATCH: reject plugin detail fetch — no HTTP requests to /ps/plugins/{id}.
 pub async fn fetch_remote_plugin_detail(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    marketplace_name: &str,
-    plugin_id: &str,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _marketplace_name: &str,
+    _plugin_id: &str,
 ) -> Result<RemotePluginDetail, RemotePluginCatalogError> {
-    fetch_remote_plugin_detail_with_download_url_option(
-        config,
-        auth,
-        marketplace_name,
-        plugin_id,
-        /*include_download_urls*/ false,
-    )
-    .await
+    Err(RemotePluginCatalogError::AuthRequired)
 }
 
+// SANDBOX PATCH: reject plugin detail fetch with download URLs — no HTTP requests.
 pub async fn fetch_remote_plugin_detail_with_download_urls(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    marketplace_name: &str,
-    plugin_id: &str,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _marketplace_name: &str,
+    _plugin_id: &str,
 ) -> Result<RemotePluginDetail, RemotePluginCatalogError> {
-    fetch_remote_plugin_detail_with_download_url_option(
-        config,
-        auth,
-        marketplace_name,
-        plugin_id,
-        /*include_download_urls*/ true,
-    )
-    .await
+    Err(RemotePluginCatalogError::AuthRequired)
 }
 
+// SANDBOX PATCH: reject plugin skill detail fetch — no HTTP requests to /ps/plugins/{id}/skills/{name}.
 pub async fn fetch_remote_plugin_skill_detail(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    marketplace_name: &str,
-    plugin_id: &str,
-    skill_name: &str,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _marketplace_name: &str,
+    _plugin_id: &str,
+    _skill_name: &str,
 ) -> Result<RemotePluginSkillDetail, RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    if RemotePluginScope::from_marketplace_name(marketplace_name).is_none() {
-        return Err(RemotePluginCatalogError::UnknownMarketplace {
-            marketplace_name: marketplace_name.to_string(),
-        });
-    }
-
-    let url = remote_plugin_skill_detail_url(config, plugin_id, skill_name)?;
-    let client = build_reqwest_client();
-    let request = authenticated_request(client.get(&url), auth)?;
-    let response: RemotePluginSkillDetailResponse = send_and_decode(request, &url).await?;
-    if response.plugin_id != plugin_id {
-        return Err(RemotePluginCatalogError::UnexpectedPluginId {
-            expected: plugin_id.to_string(),
-            actual: response.plugin_id,
-        });
-    }
-    if response.name != skill_name {
-        return Err(RemotePluginCatalogError::UnexpectedSkillName {
-            expected: skill_name.to_string(),
-            actual: response.name,
-        });
-    }
-
-    Ok(RemotePluginSkillDetail {
-        contents: response.skill_md_contents,
-    })
+    Err(RemotePluginCatalogError::AuthRequired)
 }
 
 async fn fetch_remote_plugin_detail_with_download_url_option(
@@ -714,52 +600,14 @@ pub async fn install_remote_plugin(
     Ok(())
 }
 
+// SANDBOX PATCH: reject plugin uninstall — no HTTP requests to ChatGPT plugin API.
 pub async fn uninstall_remote_plugin(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    codex_home: PathBuf,
-    plugin_id: &str,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _codex_home: PathBuf,
+    _plugin_id: &str,
 ) -> Result<(), RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    let plugin = fetch_plugin_detail(
-        config, auth, plugin_id, /*include_download_urls*/ false,
-    )
-    .await?;
-    let marketplace_name = plugin.scope.marketplace_name().to_string();
-    let plugin_name = plugin.name;
-
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/plugins/{plugin_id}/uninstall");
-    let client = build_reqwest_client();
-    let request = authenticated_request(client.post(&url), auth)?;
-    let response: RemotePluginMutationResponse = send_and_decode(request, &url).await?;
-    if response.id != plugin_id {
-        return Err(RemotePluginCatalogError::UnexpectedPluginId {
-            expected: plugin_id.to_string(),
-            actual: response.id,
-        });
-    }
-    if response.enabled {
-        return Err(RemotePluginCatalogError::UnexpectedEnabledState {
-            plugin_id: plugin_id.to_string(),
-            expected_enabled: false,
-            actual_enabled: response.enabled,
-        });
-    }
-
-    let legacy_plugin_id = plugin_id.to_string();
-    tokio::task::spawn_blocking(move || {
-        remove_remote_plugin_cache(codex_home, marketplace_name, plugin_name, legacy_plugin_id)
-    })
-    .await
-    .map_err(|err| {
-        RemotePluginCatalogError::CacheRemove(format!(
-            "failed to join remote plugin cache removal task: {err}"
-        ))
-    })?
-    .map_err(RemotePluginCatalogError::CacheRemove)?;
-
-    Ok(())
+    Err(RemotePluginCatalogError::AuthRequired)
 }
 
 fn remove_remote_plugin_cache(

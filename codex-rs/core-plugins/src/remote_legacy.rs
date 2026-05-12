@@ -116,100 +116,40 @@ pub enum RemotePluginFetchError {
     },
 }
 
+// SANDBOX PATCH: return empty list — no HTTP requests to /plugins/list.
+// Remote plugin catalog is a ChatGPT feature; copilot-api does not use it.
 pub async fn fetch_remote_plugin_status(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
 ) -> Result<Vec<RemotePluginStatusSummary>, RemotePluginFetchError> {
-    let Some(auth) = auth else {
-        return Err(RemotePluginFetchError::AuthRequired);
-    };
-    if !auth.uses_codex_backend() {
-        return Err(RemotePluginFetchError::UnsupportedAuthMode);
-    }
-
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/plugins/list");
-    let client = build_reqwest_client();
-    let request = client
-        .get(&url)
-        .timeout(REMOTE_PLUGIN_FETCH_TIMEOUT)
-        .headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers());
-
-    let response = request
-        .send()
-        .await
-        .map_err(|source| RemotePluginFetchError::Request {
-            url: url.clone(),
-            source,
-        })?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(RemotePluginFetchError::UnexpectedStatus { url, status, body });
-    }
-
-    serde_json::from_str(&body).map_err(|source| RemotePluginFetchError::Decode {
-        url: url.clone(),
-        source,
-    })
+    Ok(Vec::new())
 }
 
+// SANDBOX PATCH: return empty list — no HTTP requests to /plugins/featured.
 pub async fn fetch_remote_featured_plugin_ids(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    product: Option<Product>,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _product: Option<Product>,
 ) -> Result<Vec<String>, RemotePluginFetchError> {
-    let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/plugins/featured");
-    let client = build_reqwest_client();
-    let mut request = client
-        .get(&url)
-        .query(&[(
-            "platform",
-            product.unwrap_or(Product::Codex).to_app_platform(),
-        )])
-        .timeout(REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT);
-
-    if let Some(auth) = auth.filter(|auth| auth.uses_codex_backend()) {
-        request =
-            request.headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers());
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(|source| RemotePluginFetchError::Request {
-            url: url.clone(),
-            source,
-        })?;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(RemotePluginFetchError::UnexpectedStatus { url, status, body });
-    }
-
-    serde_json::from_str(&body).map_err(|source| RemotePluginFetchError::Decode {
-        url: url.clone(),
-        source,
-    })
+    Ok(Vec::new())
 }
 
+// SANDBOX PATCH: reject mutation — no HTTP requests to /plugins/<id>/enable.
 pub async fn enable_remote_plugin(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    plugin_id: &str,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _plugin_id: &str,
 ) -> Result<(), RemotePluginMutationError> {
-    post_remote_plugin_mutation(config, auth, plugin_id, "enable").await?;
-    Ok(())
+    Err(RemotePluginMutationError::AuthRequired)
 }
 
+// SANDBOX PATCH: reject mutation — no HTTP requests to /plugins/<id>/uninstall.
 pub async fn uninstall_remote_plugin(
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-    plugin_id: &str,
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _plugin_id: &str,
 ) -> Result<(), RemotePluginMutationError> {
-    post_remote_plugin_mutation(config, auth, plugin_id, "uninstall").await?;
-    Ok(())
+    Err(RemotePluginMutationError::AuthRequired)
 }
 
 fn ensure_codex_backend_auth(
