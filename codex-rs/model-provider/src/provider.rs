@@ -123,6 +123,18 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
         codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager;
+
+    /// SANDBOX PATCH: Test-only hook — inject a pre-built `CopilotAuth` so
+    /// integration tests can redirect Copilot token/header traffic at wiremock
+    /// without going through the on-disk token flow. Default no-op;
+    /// `CopilotModelProvider` overrides.
+    #[cfg(any(test, feature = "test-support"))]
+    fn inject_copilot_auth_for_tests(
+        &self,
+        _auth: std::sync::Arc<codex_copilot::CopilotAuth>,
+    ) -> Result<(), &'static str> {
+        Err("provider does not support Copilot test-auth injection")
+    }
 }
 
 /// Shared runtime model provider handle.
@@ -135,6 +147,15 @@ pub fn create_model_provider(
 ) -> SharedModelProvider {
     if provider_info.is_amazon_bedrock() {
         Arc::new(AmazonBedrockModelProvider::new(provider_info))
+    } else if provider_info.is_copilot() {
+        // SANDBOX PATCH: Route Copilot sessions through CopilotModelProvider so
+        // api_auth() attaches CopilotHeaderSource without requiring callers to
+        // branch on is_copilot().
+        let auth_manager = auth_manager_for_provider(auth_manager, &provider_info);
+        Arc::new(crate::copilot::CopilotModelProvider::new(
+            provider_info,
+            auth_manager,
+        ))
     } else {
         Arc::new(ConfiguredModelProvider::new(provider_info, auth_manager))
     }

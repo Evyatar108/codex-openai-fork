@@ -11,6 +11,10 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 codex-client = { workspace = true }
+# SANDBOX PATCH: needed by `CoreAuthProvider::with_copilot` for the Copilot
+# header-source field. Without this dep, api_bridge.rs cannot reference
+# `codex_copilot::CopilotHeaderSource`.
+codex-copilot = { workspace = true }
 codex-protocol = { workspace = true }
 codex-utils-rustls-provider = { workspace = true }
 futures = { workspace = true }

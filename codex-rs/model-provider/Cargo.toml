@@ -18,6 +18,11 @@ codex-api = { workspace = true }
 codex-agent-identity = { workspace = true }
 codex-aws-auth = { workspace = true }
 codex-client = { workspace = true }
+# SANDBOX PATCH: needed by `copilot.rs::CopilotModelProvider` for the on-disk
+# token cache (`codex_copilot::CopilotAuth`) and by
+# `copilot_models_endpoint.rs::CopilotModelsEndpoint` for live `/models` fetch
+# via `CopilotHeaderSource`.
+codex-copilot = { workspace = true }
 codex-feedback = { workspace = true }
 codex-login = { workspace = true }
 codex-model-provider-info = { workspace = true }
@@ -26,6 +31,12 @@ codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-response-debug-context = { workspace = true }
 http = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+# SANDBOX PATCH: needed by `copilot_models_endpoint.rs` for deriving
+# Deserialize on the Copilot `/models` wire types and parsing
+# `reasoning_effort` from strings.
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true, features = ["log"] }
 

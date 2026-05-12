@@ -15,6 +15,10 @@ pub use codex_client::RequestTelemetry;
 pub use codex_client::ReqwestTransport;
 pub use codex_client::TransportError;
 
+// SANDBOX PATCH: re-export the fork-side CoreAuthProvider used by
+// `codex-model-provider::copilot::CopilotModelProvider::api_auth` to attach
+// the Copilot header source on every request.
+pub use crate::api_bridge::CoreAuthProvider;
 pub use crate::api_bridge::map_api_error;
 pub use crate::auth::AuthError;
 pub use crate::auth::AuthHeaderTelemetry;
