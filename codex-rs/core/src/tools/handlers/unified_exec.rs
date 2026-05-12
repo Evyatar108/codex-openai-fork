@@ -24,6 +24,7 @@ mod write_stdin;
 
 pub use await_background_completion::AwaitBackgroundCompletionHandler;
 pub use exec_command::ExecCommandHandler;
+pub(crate) use exec_command::ExecCommandHandlerOptions;
 pub use write_stdin::WriteStdinHandler;
 
 #[derive(Debug, Deserialize)]

@@ -8,8 +8,10 @@ use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use crate::unified_exec::AwaitBackgroundCompletionRequest;
 use codex_tools::ToolName;
+use codex_tools::ToolSpec;
 use serde::Deserialize;
 
+use super::super::shell_spec::create_await_background_completion_tool;
 use super::effective_max_output_tokens;
 use super::post_unified_exec_tool_use_payload;
 
@@ -30,6 +32,10 @@ impl ToolHandler for AwaitBackgroundCompletionHandler {
 
     fn tool_name(&self) -> ToolName {
         ToolName::plain("await_background_completion")
+    }
+
+    fn spec(&self) -> Option<ToolSpec> {
+        Some(create_await_background_completion_tool())
     }
 
     fn kind(&self) -> ToolKind {
