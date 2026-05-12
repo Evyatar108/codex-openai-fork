@@ -6,7 +6,11 @@ license.workspace = true
 build = "build.rs"
 
 [[bin]]
-name = "codex"
+# SANDBOX PATCH: renamed from "codex" to "codex-core". The fork's `codex` bin
+# is the launcher in codex-rs-overlay/codex-copilot-launcher/, which execs this
+# binary as the actual codex-core process. Re-apply on every rebase — upstream
+# emits `name = "codex"` here.
+name = "codex-core"
 path = "src/main.rs"
 
 [lib]
