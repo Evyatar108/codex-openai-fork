@@ -977,9 +977,11 @@ fn realtime_request_headers(
     }
 
     if let Some(api_key) = api_key {
-        let auth_value = HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|err| {
+        let mut auth_value = HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|err| {
             CodexErr::InvalidRequest(format!("invalid realtime api key header: {err}"))
         })?;
+        // SANDBOX PATCH: mark Bearer Authorization as sensitive.
+        auth_value.set_sensitive(true);
         headers.insert(AUTHORIZATION, auth_value);
     }
 

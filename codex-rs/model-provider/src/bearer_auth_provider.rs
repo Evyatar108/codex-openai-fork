@@ -31,13 +31,18 @@ impl BearerAuthProvider {
 impl AuthProvider for BearerAuthProvider {
     fn add_auth_headers(&self, headers: &mut HeaderMap) {
         if let Some(token) = self.token.as_ref()
-            && let Ok(header) = HeaderValue::from_str(&format!("Bearer {token}"))
+            && let Ok(mut header) = HeaderValue::from_str(&format!("Bearer {token}"))
         {
+            // SANDBOX PATCH: mark bearer Authorization header sensitive so it is
+            // not leaked by `Debug` impls on `HeaderMap` / `reqwest::Request`.
+            header.set_sensitive(true);
             let _ = headers.insert(http::header::AUTHORIZATION, header);
         }
         if let Some(account_id) = self.account_id.as_ref()
-            && let Ok(header) = HeaderValue::from_str(account_id)
+            && let Ok(mut header) = HeaderValue::from_str(account_id)
         {
+            // SANDBOX PATCH: ChatGPT-Account-ID is PII; mark sensitive.
+            header.set_sensitive(true);
             let _ = headers.insert("ChatGPT-Account-ID", header);
         }
         if self.is_fedramp_account {

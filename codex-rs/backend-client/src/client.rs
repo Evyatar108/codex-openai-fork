@@ -212,8 +212,10 @@ impl Client {
         self.auth_provider.add_auth_headers(&mut h);
         if let Some(acc) = &self.chatgpt_account_id
             && let Ok(name) = HeaderName::from_bytes(b"ChatGPT-Account-Id")
-            && let Ok(hv) = HeaderValue::from_str(acc)
+            && let Ok(mut hv) = HeaderValue::from_str(acc)
         {
+            // SANDBOX PATCH: ChatGPT-Account-Id is PII; mark sensitive.
+            hv.set_sensitive(true);
             h.insert(name, hv);
         }
         if self.chatgpt_account_is_fedramp
