@@ -17,7 +17,7 @@ use crate::key_hint::KeyBinding;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::Insets;
 use crate::render::RectExt as _;
-use crate::style::user_message_style;
+use crate::style::popup_style;
 
 use super::scroll_state::ScrollState;
 
@@ -102,7 +102,7 @@ pub(crate) fn render_menu_surface(area: Rect, buf: &mut Buffer) -> Rect {
         return area;
     }
     Block::default()
-        .style(user_message_style())
+        .style(popup_style())
         .render(area, buf);
     menu_surface_inset(area)
 }

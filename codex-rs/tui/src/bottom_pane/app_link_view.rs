@@ -31,7 +31,7 @@ use crate::app_event_sender::AppEventSender;
 use crate::key_hint;
 use crate::render::Insets;
 use crate::render::RectExt as _;
-use crate::style::user_message_style;
+use crate::style::popup_style;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
 
@@ -796,7 +796,7 @@ impl crate::render::renderable::Renderable for AppLinkView {
         }
 
         Block::default()
-            .style(user_message_style())
+            .style(popup_style())
             .render(area, buf);
 
         let actions_height = self.action_rows_height(area.width.saturating_sub(4));

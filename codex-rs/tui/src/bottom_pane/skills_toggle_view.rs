@@ -20,7 +20,7 @@ use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
 use crate::skills_helpers::match_skill;
 use crate::skills_helpers::truncate_skill_name;
-use crate::style::user_message_style;
+use crate::style::popup_style;
 
 use super::CancellationEvent;
 use super::bottom_pane_view::BottomPaneView;
@@ -295,7 +295,7 @@ impl Renderable for SkillsToggleView {
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
 
         Block::default()
-            .style(user_message_style())
+            .style(popup_style())
             .render(content_area, buf);
 
         let header_height = self

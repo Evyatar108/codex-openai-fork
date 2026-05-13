@@ -16,6 +16,24 @@ pub fn proposed_plan_style() -> Style {
     proposed_plan_style_for(default_bg())
 }
 
+/// Subtle background style for popups, pickers, and overlay surfaces.
+///
+/// Always uses the upstream blend-against-terminal-bg behavior, regardless of
+/// the `CODEX_TUI_USER_MESSAGE_STYLE` env var. Popups should retain only the
+/// faint visual-hierarchy tint upstream uses; the bold `rgb(55,55,55)` /
+/// `rgb(240,240,240)` Claude-Code-style background is intended for the user
+/// message body only (history cells + composer textarea).
+pub fn popup_style() -> Style {
+    popup_style_for(default_bg())
+}
+
+pub fn popup_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
+    match terminal_bg {
+        Some(bg) => Style::default().bg(upstream_user_message_bg(bg)),
+        None => Style::default(),
+    }
+}
+
 pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     // SANDBOX PATCH: gate the Claude-Code-style background on the launcher's
     // `style_user_messages` config, propagated via `CODEX_TUI_USER_MESSAGE_STYLE`.
