@@ -6,6 +6,8 @@ pub mod marketplace;
 pub mod marketplace_add;
 pub mod marketplace_remove;
 pub mod marketplace_upgrade;
+// SANDBOX PATCH: see AGENTS.override.md "Core engineering tenants" §1.
+mod mcp_substitution;
 pub mod remote;
 pub mod remote_bundle;
 pub mod remote_legacy;

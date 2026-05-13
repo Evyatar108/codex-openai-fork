@@ -367,3 +367,172 @@ fn materialize_git_subdir_uses_sparse_checkout() {
     assert!(!checkout_root.join("root.txt").exists());
     assert!(!checkout_root.join("plugins/other/marker.txt").exists());
 }
+
+// SANDBOX PATCH: tests for ${CLAUDE_PLUGIN_ROOT} / ${CODEX_PLUGIN_ROOT}
+// substitution in plugin-bundled MCP server configs. Invariant 20 in
+// docs/implementation/patch-surface.md §14.
+
+fn make_substitution_root() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("plugin");
+    (tmp, root)
+}
+
+fn root_str(root: &std::path::Path) -> String {
+    root.display().to_string()
+}
+
+#[test]
+fn normalize_substitutes_claude_plugin_root_in_args() {
+    let (_tmp, root) = make_substitution_root();
+    let normalized = normalize_plugin_mcp_server_value(
+        root.as_path(),
+        serde_json::json!({
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/launch.cjs"],
+        }),
+    );
+    let expected = format!("{}/launch.cjs", root_str(&root));
+    assert_eq!(
+        normalized.get("args").expect("args present"),
+        &serde_json::json!([expected]),
+    );
+}
+
+#[test]
+fn normalize_substitutes_codex_plugin_root_alias_in_args() {
+    let (_tmp, root) = make_substitution_root();
+    let normalized = normalize_plugin_mcp_server_value(
+        root.as_path(),
+        serde_json::json!({
+            "command": "node",
+            "args": ["${CODEX_PLUGIN_ROOT}/launch.cjs"],
+        }),
+    );
+    let expected = format!("{}/launch.cjs", root_str(&root));
+    assert_eq!(
+        normalized.get("args").expect("args present"),
+        &serde_json::json!([expected]),
+    );
+}
+
+#[test]
+fn normalize_substitutes_in_command_and_env_values() {
+    let (_tmp, root) = make_substitution_root();
+    let normalized = normalize_plugin_mcp_server_value(
+        root.as_path(),
+        serde_json::json!({
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/server",
+            "args": [],
+            "env": {
+                "FOO": "${CLAUDE_PLUGIN_ROOT}/data",
+                "BAR": "literal",
+            },
+        }),
+    );
+    let root_s = root_str(&root);
+    assert_eq!(
+        normalized.get("command").expect("command present"),
+        &serde_json::json!(format!("{root_s}/bin/server")),
+    );
+    let env = normalized
+        .get("env")
+        .and_then(|v| v.as_object())
+        .expect("env object present");
+    assert_eq!(
+        env.get("FOO").expect("FOO present"),
+        &serde_json::json!(format!("{root_s}/data")),
+    );
+    assert_eq!(
+        env.get("BAR").expect("BAR present"),
+        &serde_json::json!("literal"),
+    );
+}
+
+#[test]
+fn normalize_leaves_env_vars_array_names_untouched() {
+    let (_tmp, root) = make_substitution_root();
+    let normalized = normalize_plugin_mcp_server_value(
+        root.as_path(),
+        serde_json::json!({
+            "command": "x",
+            "env_vars": ["${CLAUDE_PLUGIN_ROOT}", "PATH"],
+        }),
+    );
+    assert_eq!(
+        normalized.get("env_vars").expect("env_vars present"),
+        &serde_json::json!(["${CLAUDE_PLUGIN_ROOT}", "PATH"]),
+    );
+}
+
+#[test]
+fn normalize_preserves_absolute_cwd_with_placeholder_args() {
+    let (_tmp, root) = make_substitution_root();
+    let absolute_cwd = if cfg!(windows) {
+        "C:\\fixed\\elsewhere"
+    } else {
+        "/fixed/elsewhere"
+    };
+    let normalized = normalize_plugin_mcp_server_value(
+        root.as_path(),
+        serde_json::json!({
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/launch.cjs"],
+            "cwd": absolute_cwd,
+        }),
+    );
+    assert_eq!(
+        normalized.get("cwd").expect("cwd present"),
+        &serde_json::json!(absolute_cwd),
+    );
+}
+
+#[test]
+fn normalize_preserves_legacy_relative_cwd_rewrite() {
+    let (_tmp, root) = make_substitution_root();
+    let normalized = normalize_plugin_mcp_server_value(
+        root.as_path(),
+        serde_json::json!({
+            "command": "node",
+            "cwd": "subdir",
+        }),
+    );
+    let expected = root.join("subdir").display().to_string();
+    assert_eq!(
+        normalized.get("cwd").expect("cwd present"),
+        &serde_json::json!(expected),
+    );
+}
+
+#[test]
+fn normalize_handles_substituted_cwd_without_double_join() {
+    let (_tmp, root) = make_substitution_root();
+    let normalized = normalize_plugin_mcp_server_value(
+        root.as_path(),
+        serde_json::json!({
+            "command": "node",
+            "cwd": "${CLAUDE_PLUGIN_ROOT}/sub",
+        }),
+    );
+    let expected = format!("{}/sub", root_str(&root));
+    assert_eq!(
+        normalized.get("cwd").expect("cwd present"),
+        &serde_json::json!(expected),
+    );
+}
+
+#[test]
+fn normalize_ignores_unknown_placeholder() {
+    let (_tmp, root) = make_substitution_root();
+    let normalized = normalize_plugin_mcp_server_value(
+        root.as_path(),
+        serde_json::json!({
+            "command": "node",
+            "args": ["${UNKNOWN_PLACEHOLDER}/x.cjs"],
+        }),
+    );
+    assert_eq!(
+        normalized.get("args").expect("args present"),
+        &serde_json::json!(["${UNKNOWN_PLACEHOLDER}/x.cjs"]),
+    );
+}

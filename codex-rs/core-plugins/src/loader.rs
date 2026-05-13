@@ -1062,6 +1062,12 @@ fn normalize_plugin_mcp_server_value(
         );
     }
 
+    // SANDBOX PATCH: substitute ${CLAUDE_PLUGIN_ROOT} / ${CODEX_PLUGIN_ROOT}
+    // before the legacy relative-cwd rewrite so plugins shipping a single
+    // Claude-style .mcp.json work in codex unmodified. Substituted absolute
+    // paths bypass the legacy block via the !is_absolute() guard below.
+    crate::mcp_substitution::apply_plugin_root_substitution(plugin_root, &mut object);
+
     if let Some(JsonValue::String(cwd)) = object.get("cwd")
         && !Path::new(cwd).is_absolute()
     {
