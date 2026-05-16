@@ -9,6 +9,7 @@
 
 use codex_app_server_protocol::AuthMode;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_copilot::CopilotAuth; // SANDBOX PATCH: US-013 restore Copilot provider login.
 use codex_core::config::Config;
 use codex_login::CLIENT_ID;
 use codex_login::CodexAuth;
@@ -217,6 +218,36 @@ pub async fn run_login_with_access_token(
         }
         Err(e) => {
             eprintln!("Error logging in with access token: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+// SANDBOX PATCH: US-013 restore `codex login --provider copilot [--force]`.
+pub async fn run_login_with_copilot(cli_config_overrides: CliConfigOverrides, force: bool) -> ! {
+    let config = load_config_or_exit(cli_config_overrides).await;
+    let _login_log_guard = init_login_file_logging(&config);
+    tracing::info!("starting Copilot login flow");
+
+    let auth = match CopilotAuth::new() {
+        Ok(auth) => auth,
+        Err(e) => {
+            eprintln!("Error initializing Copilot auth: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match auth.login(force).await {
+        Ok(Some(user)) => {
+            eprintln!("Successfully logged in to GitHub Copilot as {user}");
+            std::process::exit(0);
+        }
+        Ok(None) => {
+            eprintln!("Successfully logged in to GitHub Copilot");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("Error logging in to GitHub Copilot: {e}");
             std::process::exit(1);
         }
     }

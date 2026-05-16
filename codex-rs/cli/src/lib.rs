@@ -16,6 +16,7 @@ pub use login::run_login_status;
 pub use login::run_login_with_access_token;
 pub use login::run_login_with_api_key;
 pub use login::run_login_with_chatgpt;
+pub use login::run_login_with_copilot; // SANDBOX PATCH: US-013 restore Copilot provider login.
 pub use login::run_login_with_device_code;
 pub use login::run_login_with_device_code_fallback_to_browser;
 pub use login::run_logout;

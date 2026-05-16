@@ -31,6 +31,7 @@ codex-app-server-test-client = { workspace = true }
 codex-arg0 = { workspace = true }
 codex-chatgpt = { workspace = true }
 codex-cloud-tasks = { path = "../cloud-tasks" }
+codex-copilot = { workspace = true } # SANDBOX PATCH: US-013 restore `codex login --provider copilot`.
 codex-utils-cli = { workspace = true }
 codex-config = { workspace = true }
 codex-core = { workspace = true }

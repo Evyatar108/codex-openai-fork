@@ -16,6 +16,7 @@ use codex_cli::run_login_status;
 use codex_cli::run_login_with_access_token;
 use codex_cli::run_login_with_api_key;
 use codex_cli::run_login_with_chatgpt;
+use codex_cli::run_login_with_copilot; // SANDBOX PATCH: US-013 restore Copilot provider login.
 use codex_cli::run_login_with_device_code;
 use codex_cli::run_logout;
 use codex_cloud_tasks::Cli as CloudTasksCli;
@@ -372,6 +373,14 @@ struct LoginCommand {
     )]
     with_access_token: bool,
 
+    // SANDBOX PATCH: US-013 restore the launcher-consumed Copilot provider flag.
+    #[arg(long = "provider", value_parser = clap::builder::PossibleValuesParser::new(["copilot"]))]
+    provider: Option<String>,
+
+    // SANDBOX PATCH: US-013 let users refresh the cached GitHub Copilot token.
+    #[arg(long = "force")]
+    force: bool,
+
     #[arg(
         long = "api-key",
         num_args = 0..=1,
@@ -402,6 +411,34 @@ struct LoginCommand {
 enum LoginSubcommand {
     /// Show login status.
     Status,
+}
+
+// SANDBOX PATCH: US-013 keep Copilot provider dispatch explicit and parser-testable.
+#[derive(Debug)]
+enum LoginFlow {
+    Copilot,
+    DeviceCode,
+    DeprecatedApiKey,
+    ApiKeyFromStdin,
+    AccessTokenFromStdin,
+    ChatGpt,
+}
+
+// SANDBOX PATCH: US-013 restore `codex login --provider copilot [--force]` dispatch.
+fn login_flow(login_cli: &LoginCommand) -> LoginFlow {
+    if login_cli.provider.as_deref() == Some("copilot") {
+        LoginFlow::Copilot
+    } else if login_cli.use_device_code {
+        LoginFlow::DeviceCode
+    } else if login_cli.api_key.is_some() {
+        LoginFlow::DeprecatedApiKey
+    } else if login_cli.with_api_key {
+        LoginFlow::ApiKeyFromStdin
+    } else if login_cli.with_access_token {
+        LoginFlow::AccessTokenFromStdin
+    } else {
+        LoginFlow::ChatGpt
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -1008,26 +1045,43 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                             "Choose one login credential source: --with-api-key or --with-access-token."
                         );
                         std::process::exit(1);
-                    } else if login_cli.use_device_code {
-                        run_login_with_device_code(
-                            login_cli.config_overrides,
-                            login_cli.issuer_base_url,
-                            login_cli.client_id,
-                        )
-                        .await;
-                    } else if login_cli.api_key.is_some() {
-                        eprintln!(
-                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
-                        );
-                        std::process::exit(1);
-                    } else if login_cli.with_api_key {
-                        let api_key = read_api_key_from_stdin();
-                        run_login_with_api_key(login_cli.config_overrides, api_key).await;
-                    } else if login_cli.with_access_token {
-                        let access_token = read_access_token_from_stdin();
-                        run_login_with_access_token(login_cli.config_overrides, access_token).await;
                     } else {
-                        run_login_with_chatgpt(login_cli.config_overrides).await;
+                        // SANDBOX PATCH: US-013 route Copilot provider login before fallback flows.
+                        match login_flow(&login_cli) {
+                            LoginFlow::Copilot => {
+                                run_login_with_copilot(login_cli.config_overrides, login_cli.force)
+                                    .await;
+                            }
+                            LoginFlow::DeviceCode => {
+                                run_login_with_device_code(
+                                    login_cli.config_overrides,
+                                    login_cli.issuer_base_url,
+                                    login_cli.client_id,
+                                )
+                                .await;
+                            }
+                            LoginFlow::DeprecatedApiKey => {
+                                eprintln!(
+                                    "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
+                                );
+                                std::process::exit(1);
+                            }
+                            LoginFlow::ApiKeyFromStdin => {
+                                let api_key = read_api_key_from_stdin();
+                                run_login_with_api_key(login_cli.config_overrides, api_key).await;
+                            }
+                            LoginFlow::AccessTokenFromStdin => {
+                                let access_token = read_access_token_from_stdin();
+                                run_login_with_access_token(
+                                    login_cli.config_overrides,
+                                    access_token,
+                                )
+                                .await;
+                            }
+                            LoginFlow::ChatGpt => {
+                                run_login_with_chatgpt(login_cli.config_overrides).await;
+                            }
+                        }
                     }
                 }
             }
@@ -1795,6 +1849,44 @@ mod tests {
         };
 
         finalize_fork_interactive(interactive, root_overrides, session_id, last, all, fork_cli)
+    }
+
+    // SANDBOX PATCH: US-013 parser coverage for restored Copilot login provider flags.
+    #[test]
+    fn login_provider_copilot_force_parses() {
+        let cli =
+            MultitoolCli::try_parse_from(["codex", "login", "--provider", "copilot", "--force"])
+                .expect("parse should succeed");
+
+        let Some(Subcommand::Login(login)) = cli.subcommand else {
+            panic!("expected login subcommand");
+        };
+
+        assert_eq!(login.provider.as_deref(), Some("copilot"));
+        assert!(login.force);
+        assert_matches!(login_flow(&login), LoginFlow::Copilot);
+    }
+
+    // SANDBOX PATCH: US-013 unknown providers must fail at clap parse time.
+    #[test]
+    fn login_provider_unknown_value_is_rejected_by_clap() {
+        let err = MultitoolCli::try_parse_from(["codex", "login", "--provider", "azure"])
+            .expect_err("unknown provider should be rejected");
+
+        let message = err.to_string();
+        assert!(message.contains("invalid value 'azure'"));
+        assert!(message.contains("copilot"));
+    }
+
+    // SANDBOX PATCH: US-013 covers the historical `login status` provider bypass.
+    #[test]
+    fn login_provider_unknown_value_rejected_even_before_status_subcommand() {
+        let err = MultitoolCli::try_parse_from(["codex", "login", "--provider", "azure", "status"])
+            .expect_err("unknown provider should be rejected before status dispatch");
+
+        let message = err.to_string();
+        assert!(message.contains("invalid value 'azure'"));
+        assert!(message.contains("copilot"));
     }
 
     #[test]
