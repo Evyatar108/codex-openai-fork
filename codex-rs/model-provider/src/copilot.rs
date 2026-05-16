@@ -299,7 +299,7 @@ mod tests {
 
         // SANDBOX PATCH: lock in `ModelProvider::auth()` returning `None` for Copilot
         // sessions. `core/src/client.rs::current_client_setup` reads `provider.auth()`
-        // to decide whether to attach a ChatGPT bearer via `AuthorizationHeaderAuthProvider`;
+        // to decide whether to attach a ChatGPT bearer via `BearerAuthProvider`;
         // a regression here would leak ChatGPT auth onto a Copilot request even when
         // `api_auth()` itself is correct.
         assert!(
