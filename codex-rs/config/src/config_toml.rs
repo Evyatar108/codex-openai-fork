@@ -31,6 +31,7 @@ use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider_info::COPILOT_PROVIDER_ID; // SANDBOX PATCH: reserve Copilot ID.
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -58,8 +59,9 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 
-const RESERVED_MODEL_PROVIDER_IDS: [&str; 4] = [
+const RESERVED_MODEL_PROVIDER_IDS: [&str; 5] = [
     AMAZON_BEDROCK_PROVIDER_ID,
+    COPILOT_PROVIDER_ID, // SANDBOX PATCH: keep Copilot non-overridable.
     OPENAI_PROVIDER_ID,
     OLLAMA_OSS_PROVIDER_ID,
     LMSTUDIO_OSS_PROVIDER_ID,
