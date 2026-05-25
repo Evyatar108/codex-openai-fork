@@ -610,6 +610,7 @@ impl Codex {
             user_instructions,
             personality: config.personality,
             base_instructions,
+            additional_instructions: config.additional_instructions.clone(), // SANDBOX PATCH: launcher safety rails session seam
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,

@@ -155,6 +155,9 @@ pub struct ConfigToml {
     /// System instructions.
     pub instructions: Option<String>,
 
+    /// Launcher-provided instructions appended to the model instructions.
+    pub additional_instructions: Option<String>, // SANDBOX PATCH: launcher safety rails config seam
+
     /// Developer instructions inserted as a `developer` role message.
     #[serde(default)]
     pub developer_instructions: Option<String>,
