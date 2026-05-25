@@ -9142,3 +9142,40 @@ async fn session_start_hooks_require_project_trust_without_config_toml() -> std:
 
     Ok(())
 }
+
+// SANDBOX PATCH: launcher safety rails composition — unit tests for compose_base_with_rails
+#[test]
+fn compose_base_with_rails_returns_base_when_rails_none() {
+    assert_eq!(compose_base_with_rails("hello", None), "hello");
+}
+
+#[test]
+fn compose_base_with_rails_returns_base_when_rails_empty() {
+    assert_eq!(compose_base_with_rails("hello", Some("  ")), "hello");
+    assert_eq!(compose_base_with_rails("hello", Some("")), "hello");
+}
+
+#[test]
+fn compose_base_with_rails_composes_with_heading() {
+    let out = compose_base_with_rails("hello", Some("rails"));
+    assert!(
+        out.ends_with("--- launcher safety rails ---\nrails"),
+        "expected composed output to end with heading + rails, got: {out:?}"
+    );
+    assert!(out.starts_with("hello"));
+}
+
+#[test]
+fn compose_base_with_rails_is_idempotent() {
+    let first = compose_base_with_rails("hello", Some("rails"));
+    let second = compose_base_with_rails(&first, Some("rails"));
+    assert_eq!(first, second);
+    // Heading appears exactly once.
+    assert_eq!(second.matches("--- launcher safety rails ---").count(), 1);
+}
+
+#[test]
+fn compose_base_with_rails_empty_base_with_rails() {
+    let out = compose_base_with_rails("", Some("rails"));
+    assert_eq!(out, "\n\n--- launcher safety rails ---\nrails");
+}
