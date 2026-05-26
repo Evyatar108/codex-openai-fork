@@ -117,6 +117,8 @@ pub struct ToolsConfig {
     pub collab_tools: bool,
     pub goal_tools: bool,
     pub multi_agent_v2: bool,
+    pub spawn_agent: bool,
+    pub spawn_top_level_session: bool,
     pub hide_spawn_agent_metadata: bool,
     pub spawn_agent_usage_hint: bool,
     pub spawn_agent_usage_hint_text: Option<String>,
@@ -179,6 +181,20 @@ impl ToolsConfig {
         let include_multi_agent_v2 = features.enabled(Feature::MultiAgentV2);
         let include_collab_tools = include_multi_agent_v2 || features.enabled(Feature::Collab);
         let include_agent_jobs = features.enabled(Feature::SpawnCsv);
+        // SANDBOX PATCH: plugin-scope-axis
+        let include_spawn_agent = include_collab_tools
+            && match session_source {
+                SessionSource::SubAgent(_) => false,
+                _ => true,
+            };
+        // SANDBOX PATCH: plugin-scope-axis
+        let include_spawn_top_level_session = matches!(
+            session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                agent_role: Some(role),
+                ..
+            }) if role == "agent-spawner"
+        );
         let include_search_tool =
             model_info.supports_search_tool && features.enabled(Feature::ToolSearch);
         let include_tool_suggest = features.enabled(Feature::ToolSuggest)
@@ -255,6 +271,8 @@ impl ToolsConfig {
             collab_tools: include_collab_tools,
             goal_tools: include_goal_tools,
             multi_agent_v2: include_multi_agent_v2,
+            spawn_agent: include_spawn_agent,
+            spawn_top_level_session: include_spawn_top_level_session,
             hide_spawn_agent_metadata: false,
             spawn_agent_usage_hint: true,
             spawn_agent_usage_hint_text: None,

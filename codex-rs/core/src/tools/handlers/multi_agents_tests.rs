@@ -1814,15 +1814,14 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
 }
 
 #[tokio::test]
-async fn spawn_agent_rejects_when_depth_limit_exceeded() {
+async fn spawn_agent_rejects_from_subagent_context() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
 
-    let max_depth = turn.config.agent_max_depth;
     turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: session.conversation_id,
-        depth: max_depth,
+        depth: 1,
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
@@ -1835,24 +1834,18 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
         function_payload(json!({"message": "hello"})),
     );
     let Err(err) = SpawnAgentHandler::default().handle(invocation).await else {
-        panic!("spawn should fail when depth limit exceeded");
+        panic!("spawn_agent should reject subagent context");
     };
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Agent depth limit reached. Solve the task yourself.".to_string()
+            "spawn_agent is not available from subagent sessions".to_string()
         )
     );
 }
 
 #[tokio::test]
-async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
-    #[derive(Debug, Deserialize)]
-    struct SpawnAgentResult {
-        agent_id: String,
-        nickname: Option<String>,
-    }
-
+async fn spawn_agent_rejects_agent_spawner_subagent_context() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
@@ -1865,7 +1858,7 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         depth: DEFAULT_AGENT_MAX_DEPTH,
         agent_path: None,
         agent_nickname: None,
-        agent_role: None,
+        agent_role: Some("agent-spawner".to_string()),
     });
 
     let invocation = invocation(
@@ -1874,31 +1867,19 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         "spawn_agent",
         function_payload(json!({"message": "hello"})),
     );
-    let output = SpawnAgentHandler::default()
-        .handle(invocation)
-        .await
-        .expect("spawn should succeed within configured depth");
-    let (content, success) = expect_text_output(output);
-    let result: SpawnAgentResult =
-        serde_json::from_str(&content).expect("spawn_agent result should be json");
-    assert!(!result.agent_id.is_empty());
-    assert!(
-        result
-            .nickname
-            .as_deref()
-            .is_some_and(|nickname| !nickname.is_empty())
+    let Err(err) = SpawnAgentHandler::default().handle(invocation).await else {
+        panic!("agent-spawner should use spawn_top_level_session, not spawn_agent");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "spawn_agent is not available from subagent sessions".to_string()
+        )
     );
-    assert_eq!(success, Some(true));
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
-    #[derive(Debug, Deserialize)]
-    struct SpawnAgentResult {
-        task_name: String,
-        nickname: Option<String>,
-    }
-
+async fn multi_agent_v2_spawn_agent_rejects_from_subagent_context() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
@@ -1933,16 +1914,15 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
             "fork_turns": "none"
         })),
     );
-    let output = SpawnAgentHandlerV2::default()
-        .handle(invocation)
-        .await
-        .expect("multi-agent v2 spawn should ignore max depth");
-    let (content, success) = expect_text_output(output);
-    let result: SpawnAgentResult =
-        serde_json::from_str(&content).expect("spawn_agent result should be json");
-    assert_eq!(result.task_name, "/root/parent/child");
-    assert!(result.nickname.is_some());
-    assert_eq!(success, Some(true));
+    let Err(err) = SpawnAgentHandlerV2::default().handle(invocation).await else {
+        panic!("multi-agent v2 spawn_agent should reject subagent context");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "spawn_agent is not available from subagent sessions".to_string()
+        )
+    );
 }
 
 #[tokio::test]
@@ -3215,30 +3195,31 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
     );
     assert_eq!(child_success, Some(true));
 
-    let child_thread = manager
+    manager
         .get_thread(child_thread_id)
         .await
         .expect("child thread should exist");
-    let child_session = child_thread.codex.session.clone();
-    let grandchild_spawn_output = SpawnAgentHandler::default()
-        .handle(invocation(
-            child_session.clone(),
-            child_session.new_default_turn().await,
-            "spawn_agent",
-            function_payload(json!({"message": "hello grandchild"})),
-        ))
+    let grandchild_thread_id = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "hello grandchild".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
         .await
-        .expect("grandchild spawn should succeed");
-    let (grandchild_content, grandchild_success) = expect_text_output(grandchild_spawn_output);
-    let grandchild_result: serde_json::Value =
-        serde_json::from_str(&grandchild_content).expect("grandchild spawn result should be json");
-    let grandchild_thread_id = parse_agent_id(
-        grandchild_result
-            .get("agent_id")
-            .and_then(serde_json::Value::as_str)
-            .expect("grandchild spawn result should include agent_id"),
-    );
-    assert_eq!(grandchild_success, Some(true));
+        .expect("grandchild spawn should succeed")
+        .thread_id;
 
     let close_output = CloseAgentHandler
         .handle(invocation(

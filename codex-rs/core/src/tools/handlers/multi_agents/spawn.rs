@@ -9,6 +9,7 @@ use crate::agent::role::apply_role_to_config;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
 use crate::turn_timing::now_unix_timestamp_ms;
+use codex_protocol::protocol::SessionSource;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -49,6 +50,13 @@ impl ToolHandler for Handler {
             call_id,
             ..
         } = invocation;
+        let session_source = turn.session_source.clone();
+        // SANDBOX PATCH: plugin-scope-axis
+        if matches!(session_source, SessionSource::SubAgent(_)) {
+            return Err(FunctionCallError::RespondToModel(
+                "spawn_agent is not available from subagent sessions".to_string(),
+            ));
+        }
         let arguments = function_arguments(payload)?;
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
         let role_name = args
@@ -58,7 +66,6 @@ impl ToolHandler for Handler {
             .filter(|role| !role.is_empty());
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = render_input_preview(&input_items);
-        let session_source = turn.session_source.clone();
         let child_depth = next_thread_spawn_depth(&session_source);
         let max_depth = turn.config.agent_max_depth;
         if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {

@@ -21,6 +21,8 @@ mod request_user_input;
 pub(crate) mod request_user_input_spec;
 mod shell;
 pub(crate) mod shell_spec;
+// SANDBOX PATCH: plugin-scope-axis
+mod spawn_top_level_session;
 mod test_sync;
 pub(crate) mod test_sync_spec;
 mod tool_search;
@@ -66,6 +68,7 @@ pub use shell::LocalShellHandler;
 pub use shell::ShellCommandHandler;
 pub(crate) use shell::ShellCommandHandlerOptions;
 pub use shell::ShellHandler;
+pub use spawn_top_level_session::SpawnTopLevelSessionHandler;
 pub use test_sync::TestSyncHandler;
 pub use tool_search::ToolSearchHandler;
 pub use unavailable_tool::UnavailableToolHandler;
