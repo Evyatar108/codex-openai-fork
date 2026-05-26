@@ -8,12 +8,12 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
-use codex_config::CONFIG_TOML_FILE;
-use codex_config::merge_toml_values;
+use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerSource;
+use codex_config::ConfigLayerStack;
+use codex_config::ConfigLayerStackOrdering;
 use codex_features::Feature;
 use codex_models_manager::manager::RefreshStrategy;
-use codex_protocol::AgentPath;
-use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseInputItem;
@@ -25,6 +25,8 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
+use codex_protocol::AgentPath;
+use codex_protocol::ThreadId;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -253,15 +255,35 @@ impl codex_plugin_scope::Config for Config {
     }
 
     fn with_user_layer(&mut self, layer: toml::Value) {
-        let mut user_config = self
+        // SANDBOX PATCH: plugin-scope-axis — synthesize the disable overlay at
+        // LegacyManagedConfigTomlFromMdm precedence (50) so it outranks User
+        // (20), Project (25), and SessionFlags (30).  Using with_user_config
+        // here would write at User=20, allowing a parent Project- or
+        // SessionFlags-layer `enabled=true` to bypass the scope axis.
+        let mut layers: Vec<ConfigLayerEntry> = self
             .config_layer_stack
-            .get_user_layer()
-            .map(|entry| entry.config.clone())
-            .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
-        merge_toml_values(&mut user_config, &layer);
-        self.config_layer_stack = self
-            .config_layer_stack
-            .with_user_config(&self.codex_home.join(CONFIG_TOML_FILE), user_config);
+            .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true)
+            .into_iter()
+            .cloned()
+            .collect();
+        layers.push(ConfigLayerEntry::new(
+            ConfigLayerSource::LegacyManagedConfigTomlFromMdm,
+            layer,
+        ));
+        match ConfigLayerStack::new(
+            layers,
+            self.config_layer_stack.requirements().clone(),
+            self.config_layer_stack.requirements_toml().clone(),
+        ) {
+            Ok(new_stack) => self.config_layer_stack = new_stack,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "plugin-scope-axis: failed to push subagent override layer; \
+                     top-level-only plugin may remain enabled in subagent"
+                );
+            }
+        }
     }
 }
 

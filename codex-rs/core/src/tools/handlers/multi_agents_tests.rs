@@ -15,6 +15,10 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_config::AbsolutePathBuf;
+use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerSource;
+use codex_config::ConfigLayerStack;
 use codex_config::CONFIG_TOML_FILE;
 use codex_features::Feature;
 use codex_login::AuthManager;
@@ -3529,6 +3533,108 @@ async fn build_agent_spawn_config_filter_override_wins_over_parent_plugin_enable
             .get("some_setting")
             .and_then(toml::Value::as_str),
         Some("parent-value")
+    );
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_scope_override_wins_over_project_layer_enable() {
+    codex_plugin_scope::parser::clear_manifest_cache_for_tests();
+    let (_session, mut turn) = make_session_and_context().await;
+    install_top_level_only_plugin_fixture(&turn.config.codex_home);
+
+    let mut base_config = (*turn.config).clone();
+    let project_dot_codex =
+        AbsolutePathBuf::try_from(base_config.codex_home.join(".codex")).expect("abs path");
+    let user_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::User {
+            file: AbsolutePathBuf::try_from(base_config.codex_home.join(CONFIG_TOML_FILE))
+                .expect("abs path"),
+        },
+        toml::Value::Table(toml::map::Map::new()),
+    );
+    let project_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::Project {
+            dot_codex_folder: project_dot_codex,
+        },
+        toml::toml! {
+            [plugins."top_level_only_plugin@multi_agents_tests"]
+            enabled = true
+        }
+        .into(),
+    );
+    base_config.config_layer_stack = ConfigLayerStack::new(
+        vec![user_layer, project_layer],
+        base_config.config_layer_stack.requirements().clone(),
+        base_config.config_layer_stack.requirements_toml().clone(),
+    )
+    .expect("layer stack with project layer");
+    turn.config = Arc::new(base_config);
+    let base_instructions = BaseInstructions {
+        text: "base".to_string(),
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+
+    assert_eq!(
+        config
+            .config_layer_stack
+            .effective_config()
+            .get("plugins")
+            .and_then(toml::Value::as_table)
+            .and_then(|plugins| plugins.get("top_level_only_plugin@multi_agents_tests"))
+            .and_then(|plugin| plugin.get("enabled"))
+            .and_then(toml::Value::as_bool),
+        Some(false),
+        "project-layer enabled=true must not bypass the scope-axis override"
+    );
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_scope_override_wins_over_session_flags_layer_enable() {
+    codex_plugin_scope::parser::clear_manifest_cache_for_tests();
+    let (_session, mut turn) = make_session_and_context().await;
+    install_top_level_only_plugin_fixture(&turn.config.codex_home);
+
+    let mut base_config = (*turn.config).clone();
+    let user_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::User {
+            file: AbsolutePathBuf::try_from(base_config.codex_home.join(CONFIG_TOML_FILE))
+                .expect("abs path"),
+        },
+        toml::Value::Table(toml::map::Map::new()),
+    );
+    let session_flags_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::SessionFlags,
+        toml::toml! {
+            [plugins."top_level_only_plugin@multi_agents_tests"]
+            enabled = true
+        }
+        .into(),
+    );
+    base_config.config_layer_stack = ConfigLayerStack::new(
+        vec![user_layer, session_flags_layer],
+        base_config.config_layer_stack.requirements().clone(),
+        base_config.config_layer_stack.requirements_toml().clone(),
+    )
+    .expect("layer stack with session-flags layer");
+    turn.config = Arc::new(base_config);
+    let base_instructions = BaseInstructions {
+        text: "base".to_string(),
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+
+    assert_eq!(
+        config
+            .config_layer_stack
+            .effective_config()
+            .get("plugins")
+            .and_then(toml::Value::as_table)
+            .and_then(|plugins| plugins.get("top_level_only_plugin@multi_agents_tests"))
+            .and_then(|plugin| plugin.get("enabled"))
+            .and_then(toml::Value::as_bool),
+        Some(false),
+        "session-flags-layer enabled=true must not bypass the scope-axis override"
     );
 }
 
