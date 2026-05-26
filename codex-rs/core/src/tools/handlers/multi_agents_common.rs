@@ -8,6 +8,8 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use codex_config::CONFIG_TOML_FILE;
+use codex_config::merge_toml_values;
 use codex_features::Feature;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::AgentPath;
@@ -26,6 +28,7 @@ use codex_protocol::user_input::UserInput;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
@@ -234,8 +237,32 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     config.developer_instructions = turn.developer_instructions.clone();
     config.compact_prompt = turn.compact_prompt.clone();
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
+    // SANDBOX PATCH: plugin-scope-axis
+    codex_plugin_scope::apply_subagent_plugin_filter(&mut config);
 
     Ok(config)
+}
+
+impl codex_plugin_scope::Config for Config {
+    fn codex_home(&self) -> &Path {
+        &self.codex_home
+    }
+
+    fn effective_config(&self) -> toml::Value {
+        self.config_layer_stack.effective_config()
+    }
+
+    fn with_user_layer(&mut self, layer: toml::Value) {
+        let mut user_config = self
+            .config_layer_stack
+            .get_user_layer()
+            .map(|entry| entry.config.clone())
+            .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
+        merge_toml_values(&mut user_config, &layer);
+        self.config_layer_stack = self
+            .config_layer_stack
+            .with_user_config(&self.codex_home.join(CONFIG_TOML_FILE), user_config);
+    }
 }
 
 pub(crate) fn reject_full_fork_spawn_overrides(

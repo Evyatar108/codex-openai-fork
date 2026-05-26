@@ -15,6 +15,7 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_config::CONFIG_TOML_FILE;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -55,6 +56,8 @@ use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,6 +91,22 @@ fn function_payload(args: serde_json::Value) -> ToolPayload {
 
 fn parse_agent_id(id: &str) -> ThreadId {
     ThreadId::from_string(id).expect("agent id should be valid")
+}
+
+fn install_top_level_only_plugin_fixture(codex_home: &Path) {
+    let manifest_dir = codex_home
+        .join("plugins")
+        .join("cache")
+        .join("multi_agents_tests")
+        .join("top_level_only_plugin")
+        .join("local")
+        .join(".codex-plugin");
+    fs::create_dir_all(&manifest_dir).expect("create plugin fixture manifest dir");
+    fs::write(
+        manifest_dir.join("plugin.json"),
+        include_str!("multi_agents_tests/fixtures/top_level_only_plugin/.codex-plugin/plugin.json"),
+    )
+    .expect("write plugin fixture manifest");
 }
 
 fn thread_manager() -> ThreadManager {
@@ -3453,6 +3472,83 @@ async fn build_agent_spawn_config_preserves_base_user_instructions() {
     let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
 
     assert_eq!(config.user_instructions, base_config.user_instructions);
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_disables_top_level_only_plugins_for_subagents() {
+    codex_plugin_scope::parser::clear_manifest_cache_for_tests();
+    let (_session, mut turn) = make_session_and_context().await;
+    install_top_level_only_plugin_fixture(&turn.config.codex_home);
+
+    let mut base_config = (*turn.config).clone();
+    base_config.config_layer_stack = base_config.config_layer_stack.with_user_config(
+        &base_config.codex_home.join(CONFIG_TOML_FILE),
+        toml::toml! {
+            [plugins."top_level_only_plugin@multi_agents_tests"]
+            enabled = true
+        }
+        .into(),
+    );
+    turn.config = Arc::new(base_config);
+    let base_instructions = BaseInstructions {
+        text: "base".to_string(),
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+
+    assert_eq!(
+        config
+            .config_layer_stack
+            .effective_config()
+            .get("plugins")
+            .and_then(toml::Value::as_table)
+            .and_then(|plugins| plugins.get("top_level_only_plugin@multi_agents_tests"))
+            .and_then(|plugin| plugin.get("enabled"))
+            .and_then(toml::Value::as_bool),
+        Some(false)
+    );
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_filter_override_wins_over_parent_plugin_enable() {
+    codex_plugin_scope::parser::clear_manifest_cache_for_tests();
+    let (_session, mut turn) = make_session_and_context().await;
+    install_top_level_only_plugin_fixture(&turn.config.codex_home);
+
+    let mut base_config = (*turn.config).clone();
+    base_config.config_layer_stack = base_config.config_layer_stack.with_user_config(
+        &base_config.codex_home.join(CONFIG_TOML_FILE),
+        toml::toml! {
+            [plugins."top_level_only_plugin@multi_agents_tests"]
+            enabled = true
+            some_setting = "parent-value"
+        }
+        .into(),
+    );
+    turn.config = Arc::new(base_config);
+    let base_instructions = BaseInstructions {
+        text: "base".to_string(),
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+    let effective_config = config.config_layer_stack.effective_config();
+    let plugin_config = effective_config
+        .get("plugins")
+        .and_then(toml::Value::as_table)
+        .and_then(|plugins| plugins.get("top_level_only_plugin@multi_agents_tests"))
+        .and_then(toml::Value::as_table)
+        .expect("plugin config table");
+
+    assert_eq!(
+        plugin_config.get("enabled").and_then(toml::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        plugin_config
+            .get("some_setting")
+            .and_then(toml::Value::as_str),
+        Some("parent-value")
+    );
 }
 
 #[tokio::test]
