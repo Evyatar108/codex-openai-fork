@@ -64,12 +64,14 @@ impl ToolHandler for SpawnTopLevelSessionHandler {
                 "{HAPPY_CURRENT_SESSION_ID} must match {PARENT_SESSION_ID_PATTERN}"
             )));
         }
-        let control_url = std::env::var(HAPPY_DAEMON_CONTROL_URL).map_err(|_| {
+        let control_url_str = std::env::var(HAPPY_DAEMON_CONTROL_URL).map_err(|_| {
             FunctionCallError::RespondToModel(format!("missing {HAPPY_DAEMON_CONTROL_URL}"))
         })?;
+        // SANDBOX PATCH: plugin-scope-axis — validate loopback-only before posting
+        let control_url = validate_loopback_control_url(&control_url_str)?;
         let endpoint = format!(
             "{}/spawn-session-from-session",
-            control_url.trim_end_matches('/')
+            control_url.as_str().trim_end_matches('/')
         );
         let body = SpawnTopLevelSessionRequest {
             parent_session_id,
@@ -174,6 +176,30 @@ fn is_agent_spawner_subagent(session_source: &SessionSource) -> bool {
     )
 }
 
+fn validate_loopback_control_url(raw: &str) -> Result<reqwest::Url, FunctionCallError> {
+    let url = reqwest::Url::parse(raw).map_err(|_| {
+        FunctionCallError::RespondToModel(format!(
+            "{HAPPY_DAEMON_CONTROL_URL} is not a valid URL: {raw}"
+        ))
+    })?;
+    if url.scheme() != "http" {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "{HAPPY_DAEMON_CONTROL_URL} must use the http scheme (got: {})",
+            url.scheme()
+        )));
+    }
+    match url.host_str() {
+        Some("127.0.0.1") | Some("::1") | Some("localhost") => {}
+        other => {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "{HAPPY_DAEMON_CONTROL_URL} must point at a loopback host (got: {})",
+                other.unwrap_or("<none>")
+            )));
+        }
+    }
+    Ok(url)
+}
+
 fn is_valid_parent_session_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -230,5 +256,53 @@ mod tests {
         assert!(!is_valid_parent_session_id(""));
         assert!(!is_valid_parent_session_id("machine:session"));
         assert!(!is_valid_parent_session_id(&"a".repeat(129)));
+    }
+
+    #[test]
+    fn loopback_url_valid_127_0_0_1() {
+        assert!(validate_loopback_control_url("http://127.0.0.1:8080").is_ok());
+    }
+
+    #[test]
+    fn loopback_url_valid_localhost() {
+        assert!(validate_loopback_control_url("http://localhost:9000").is_ok());
+    }
+
+    #[test]
+    fn loopback_url_valid_ipv6_loopback() {
+        assert!(validate_loopback_control_url("http://[::1]:8080").is_ok());
+    }
+
+    #[test]
+    fn loopback_url_rejects_https_scheme() {
+        let err = validate_loopback_control_url("https://127.0.0.1:8080").unwrap_err();
+        match err {
+            FunctionCallError::RespondToModel(msg) => {
+                assert!(msg.contains("http scheme"), "unexpected msg: {msg}");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loopback_url_rejects_non_loopback_host() {
+        let err = validate_loopback_control_url("http://example.com/path").unwrap_err();
+        match err {
+            FunctionCallError::RespondToModel(msg) => {
+                assert!(msg.contains("loopback host"), "unexpected msg: {msg}");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loopback_url_rejects_malformed_url() {
+        let err = validate_loopback_control_url("not-a-url").unwrap_err();
+        match err {
+            FunctionCallError::RespondToModel(msg) => {
+                assert!(msg.contains("valid URL"), "unexpected msg: {msg}");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
     }
 }
