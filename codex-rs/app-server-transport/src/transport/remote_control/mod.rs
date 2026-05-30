@@ -19,14 +19,26 @@ use codex_app_server_protocol::RemoteControlConnectionStatus;
 use codex_app_server_protocol::RemoteControlStatusChangedNotification;
 use codex_login::AuthManager;
 use codex_state::StateRuntime;
+use futures::FutureExt;
+use gethostname::gethostname;
+use std::error::Error;
+use std::fmt;
 use std::io;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::error;
+use tracing::info;
 use tracing::warn;
+
+pub struct RemoteControlStartConfig {
+    pub remote_control_url: String,
+    pub installation_id: String,
+}
 
 pub(super) struct QueuedServerEnvelope {
     pub(super) event: ServerEvent,
@@ -42,10 +54,32 @@ pub struct RemoteControlHandle {
     state_db_available: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteControlUnavailable;
+
+impl fmt::Display for RemoteControlUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "remote control cannot be enabled because sqlite state db is unavailable"
+        )
+    }
+}
+
+impl Error for RemoteControlUnavailable {}
+
 impl RemoteControlHandle {
-    pub fn set_enabled(&self, enabled: bool) {
-        // SANDBOX PATCH: neutralize runtime re-enable. Force handle to always settle at false.
-        let _ = enabled;
+    pub fn enable(
+        &self,
+    ) -> Result<RemoteControlStatusChangedNotification, RemoteControlUnavailable> {
+        // SANDBOX PATCH: remote_control is ChatGPT-only. Layer-2 force-disable: the
+        // upstream API (set_enabled in v0.130, split into enable()/disable() in v0.135)
+        // is neutralized so that any caller -- including
+        // `app-server::message_processor::handle_config_mutation` reacting to a user
+        // `features.remote_control = true` ConfigWrite -- cannot wake
+        // `RemoteControlWebsocket::connect()` and enroll at chatgpt.com.
+        // disable() upstream-unmodified, so explicit disables still propagate.
+        // See CLAUDE.md / AGENTS.override.md "Remote control is force-disabled at THREE layers".
         let _ = self.state_db_available;
         self.enabled_tx.send_if_modified(|state| {
             if *state {
@@ -55,15 +89,85 @@ impl RemoteControlHandle {
                 false
             }
         });
+        Ok(self.publish_status(RemoteControlConnectionStatus::Disabled))
+    }
+
+    pub fn disable(&self) -> RemoteControlStatusChangedNotification {
+        let enabled_changed = self.enabled_tx.send_if_modified(|state| {
+            let changed = *state;
+            *state = false;
+            changed
+        });
+
+        let status = self.status();
+        info!(
+            enabled_changed,
+            current_status = ?status.status,
+            environment_id = ?status.environment_id,
+            installation_id = %status.installation_id,
+            server_name = %status.server_name,
+            "remote control disable requested"
+        );
+        self.publish_status(RemoteControlConnectionStatus::Disabled)
+    }
+
+    pub fn status(&self) -> RemoteControlStatusChangedNotification {
+        self.status_tx.borrow().clone()
     }
 
     pub fn status_receiver(&self) -> watch::Receiver<RemoteControlStatusChangedNotification> {
         self.status_tx.subscribe()
     }
+
+    fn publish_status(
+        &self,
+        connection_status: RemoteControlConnectionStatus,
+    ) -> RemoteControlStatusChangedNotification {
+        let mut status_change = None;
+        self.status_tx.send_if_modified(|status| {
+            let next_status =
+                remote_control_status_with_connection_status(status, connection_status);
+            if *status == next_status {
+                return false;
+            }
+
+            status_change = Some((status.clone(), next_status.clone()));
+            *status = next_status;
+            true
+        });
+        if let Some((previous_status, next_status)) = status_change {
+            info!(
+                previous_status = ?previous_status.status,
+                next_status = ?next_status.status,
+                previous_environment_id = ?previous_status.environment_id,
+                next_environment_id = ?next_status.environment_id,
+                installation_id = %next_status.installation_id,
+                server_name = %next_status.server_name,
+                "remote control handle status changed"
+            );
+        }
+        self.status()
+    }
+}
+
+fn remote_control_status_with_connection_status(
+    status: &RemoteControlStatusChangedNotification,
+    connection_status: RemoteControlConnectionStatus,
+) -> RemoteControlStatusChangedNotification {
+    RemoteControlStatusChangedNotification {
+        status: connection_status,
+        server_name: status.server_name.clone(),
+        installation_id: status.installation_id.clone(),
+        environment_id: if connection_status == RemoteControlConnectionStatus::Disabled {
+            None
+        } else {
+            status.environment_id.clone()
+        },
+    }
 }
 
 pub async fn start_remote_control(
-    remote_control_url: String,
+    config: RemoteControlStartConfig,
     state_db: Option<Arc<StateRuntime>>,
     auth_manager: Arc<AuthManager>,
     transport_event_tx: mpsc::Sender<TransportEvent>,
@@ -80,26 +184,53 @@ pub async fn start_remote_control(
     // SANDBOX PATCH: remote_control is ChatGPT-only. Force-disable regardless of
     // initial_enabled argument - set target to None, initial_enabled to false.
     // See CLAUDE.md / AGENTS.override.md "Remote control is force-disabled at THREE layers".
-    let _ = remote_control_url;
     let remote_control_target = None;
     let _ = initial_enabled;
     let initial_enabled = false;
 
     let (enabled_tx, enabled_rx) = watch::channel(initial_enabled);
+    let server_name = gethostname().to_string_lossy().trim().to_string();
+    let remote_control_url = config.remote_control_url;
+    let installation_id = config.installation_id;
     let initial_status = RemoteControlStatusChangedNotification {
         status: if initial_enabled {
             RemoteControlConnectionStatus::Connecting
         } else {
             RemoteControlConnectionStatus::Disabled
         },
+        server_name: server_name.clone(),
+        installation_id: installation_id.clone(),
         environment_id: None,
     };
     let (status_tx, _status_rx) = watch::channel(initial_status);
     let status_publisher = RemoteControlStatusPublisher::new(status_tx.clone());
+    info!(
+        remote_control_url = %remote_control_url,
+        installation_id = %installation_id,
+        server_name = %server_name,
+        state_db_available,
+        initial_enabled,
+        "starting app-server remote control websocket task"
+    );
+    let remote_control_url_for_log = remote_control_url.clone();
+    let installation_id_for_log = installation_id.clone();
+    let server_name_for_log = server_name.clone();
+    let shutdown_token_for_log = shutdown_token.clone();
     let join_handle = tokio::spawn(async move {
-        RemoteControlWebsocket::new(
-            remote_control_url,
-            remote_control_target,
+        info!(
+            remote_control_url = %remote_control_url_for_log,
+            installation_id = %installation_id_for_log,
+            server_name = %server_name_for_log,
+            initial_enabled,
+            "app-server remote control websocket task started"
+        );
+        let websocket_task = RemoteControlWebsocket::new(
+            websocket::RemoteControlWebsocketConfig {
+                remote_control_url,
+                installation_id,
+                remote_control_target,
+                server_name,
+            },
             state_db,
             auth_manager,
             RemoteControlChannels {
@@ -109,8 +240,38 @@ pub async fn start_remote_control(
             shutdown_token,
             enabled_rx,
         )
-        .run(app_server_client_name_rx)
-        .await;
+        .run(app_server_client_name_rx);
+        match AssertUnwindSafe(websocket_task).catch_unwind().await {
+            Ok(()) => {
+                let shutdown_requested = shutdown_token_for_log.is_cancelled();
+                if shutdown_requested {
+                    info!(
+                        remote_control_url = %remote_control_url_for_log,
+                        installation_id = %installation_id_for_log,
+                        server_name = %server_name_for_log,
+                        shutdown_requested,
+                        "app-server remote control websocket task exited"
+                    );
+                } else {
+                    warn!(
+                        remote_control_url = %remote_control_url_for_log,
+                        installation_id = %installation_id_for_log,
+                        server_name = %server_name_for_log,
+                        shutdown_requested,
+                        "app-server remote control websocket task exited without shutdown"
+                    );
+                }
+            }
+            Err(panic) => {
+                error!(
+                    remote_control_url = %remote_control_url_for_log,
+                    installation_id = %installation_id_for_log,
+                    server_name = %server_name_for_log,
+                    "app-server remote control websocket task panicked"
+                );
+                std::panic::resume_unwind(panic);
+            }
+        }
     });
 
     Ok((
