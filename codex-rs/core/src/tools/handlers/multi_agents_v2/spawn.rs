@@ -11,6 +11,7 @@ use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SessionSource;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -51,6 +52,13 @@ impl ToolHandler for Handler {
             call_id,
             ..
         } = invocation;
+        let session_source = turn.session_source.clone();
+        // SANDBOX PATCH: plugin-scope-axis
+        if matches!(session_source, SessionSource::SubAgent(_)) {
+            return Err(FunctionCallError::RespondToModel(
+                "spawn_agent is not available from subagent sessions".to_string(),
+            ));
+        }
         let arguments = function_arguments(payload)?;
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
         let fork_mode = args.fork_mode()?;
@@ -63,7 +71,6 @@ impl ToolHandler for Handler {
         let initial_operation = parse_collab_input(Some(args.message), /*items*/ None)?;
         let prompt = render_input_preview(&initial_operation);
 
-        let session_source = turn.session_source.clone();
         let child_depth = next_thread_spawn_depth(&session_source);
         session
             .send_event(

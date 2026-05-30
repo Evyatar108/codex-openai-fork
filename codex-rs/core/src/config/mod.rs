@@ -446,6 +446,9 @@ pub struct Config {
     /// Base instructions override.
     pub base_instructions: Option<String>,
 
+    /// Launcher-provided instructions appended to the model instructions.
+    pub additional_instructions: Option<String>, // SANDBOX PATCH: launcher safety rails config seam
+
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
 
@@ -1866,6 +1869,7 @@ pub struct ConfigOverrides {
     pub main_execve_wrapper_exe: Option<PathBuf>,
     pub zsh_path: Option<PathBuf>,
     pub base_instructions: Option<String>,
+    pub additional_instructions: Option<String>, // SANDBOX PATCH: launcher safety rails config seam
     pub developer_instructions: Option<String>,
     pub personality: Option<Personality>,
     pub compact_prompt: Option<String>,
@@ -2141,6 +2145,7 @@ impl Config {
             main_execve_wrapper_exe,
             zsh_path: zsh_path_override,
             base_instructions,
+            additional_instructions,
             developer_instructions,
             personality,
             compact_prompt,
@@ -2776,6 +2781,7 @@ impl Config {
         let base_instructions = base_instructions
             .or(file_base_instructions)
             .or(cfg.instructions.clone());
+        let additional_instructions = additional_instructions.or(cfg.additional_instructions); // SANDBOX PATCH: launcher safety rails config seam
         let developer_instructions = developer_instructions.or(cfg.developer_instructions);
         let include_permissions_instructions = config_profile
             .include_permissions_instructions
@@ -3000,6 +3006,7 @@ impl Config {
             notify: cfg.notify,
             user_instructions,
             base_instructions,
+            additional_instructions, // SANDBOX PATCH: launcher safety rails config seam
             personality,
             developer_instructions,
             compact_prompt,

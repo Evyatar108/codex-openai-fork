@@ -1,0 +1,12 @@
+{
+  "name": "top_level_only_plugin",
+  "version": "0.0.0-test",
+  "description": "Fixture plugin that is visible only to top-level sessions.",
+  "scope": {
+    "agent": "top-level"
+  },
+  "interface": {
+    "displayName": "Top Level Only Fixture",
+    "shortDescription": "Test fixture for subagent plugin filtering."
+  }
+}

@@ -393,6 +393,18 @@ Rules:
                         nickname_candidates: None,
                     }
                 ),
+                // SANDBOX PATCH: plugin-scope-axis
+                (
+                    "agent-spawner".to_string(),
+                    AgentRoleConfig {
+                        description: Some(
+                            "Use only to request top-level Happy sessions through spawn_top_level_session."
+                                .to_string(),
+                        ),
+                        config_file: None,
+                        nickname_candidates: None,
+                    }
+                ),
                 // Awaiter is temp removed
 //                 (
 //                     "awaiter".to_string(),

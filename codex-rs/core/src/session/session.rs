@@ -57,6 +57,9 @@ pub(crate) struct SessionConfiguration {
     /// Base instructions for the session.
     pub(super) base_instructions: String,
 
+    /// Launcher-provided instructions appended to the model instructions.
+    pub(super) additional_instructions: Option<String>, // SANDBOX PATCH: launcher safety rails session seam
+
     /// Compact prompt override.
     pub(super) compact_prompt: Option<String>,
 

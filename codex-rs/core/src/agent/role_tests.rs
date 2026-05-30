@@ -697,6 +697,19 @@ fn spawn_tool_spec_build_deduplicates_user_defined_built_in_roles() {
 }
 
 #[test]
+fn built_in_roles_include_agent_spawner_with_description() {
+    let agent_spawner = built_in::configs()
+        .get("agent-spawner")
+        .expect("agent-spawner built-in role should be registered");
+    assert!(
+        agent_spawner
+            .description
+            .as_deref()
+            .is_some_and(|description| !description.trim().is_empty())
+    );
+}
+
+#[test]
 fn spawn_tool_spec_lists_user_defined_roles_before_built_ins() {
     let user_defined_roles = BTreeMap::from([(
         "aaa".to_string(),

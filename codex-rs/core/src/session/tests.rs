@@ -2573,6 +2573,7 @@ async fn set_rate_limits_retains_previous_credits() {
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+        additional_instructions: None,
         compact_prompt: config.compact_prompt.clone(),
         approval_policy: config.permissions.approval_policy.clone(),
         approvals_reviewer: config.approvals_reviewer,
@@ -2677,6 +2678,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+        additional_instructions: None,
         compact_prompt: config.compact_prompt.clone(),
         approval_policy: config.permissions.approval_policy.clone(),
         approvals_reviewer: config.approvals_reviewer,
@@ -3154,6 +3156,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+        additional_instructions: None,
         compact_prompt: config.compact_prompt.clone(),
         approval_policy: config.permissions.approval_policy.clone(),
         approvals_reviewer: config.approvals_reviewer,
@@ -3680,6 +3683,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+        additional_instructions: None,
         compact_prompt: config.compact_prompt.clone(),
         approval_policy: config.permissions.approval_policy.clone(),
         approvals_reviewer: config.approvals_reviewer,
@@ -3788,6 +3792,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+        additional_instructions: None,
         compact_prompt: config.compact_prompt.clone(),
         approval_policy: config.permissions.approval_policy.clone(),
         approvals_reviewer: config.approvals_reviewer,
@@ -4030,6 +4035,7 @@ async fn make_session_with_config_and_rx(
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+        additional_instructions: None,
         compact_prompt: config.compact_prompt.clone(),
         approval_policy: config.permissions.approval_policy.clone(),
         approvals_reviewer: config.approvals_reviewer,
@@ -4132,6 +4138,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+        additional_instructions: None,
         compact_prompt: config.compact_prompt.clone(),
         approval_policy: config.permissions.approval_policy.clone(),
         approvals_reviewer: config.approvals_reviewer,
@@ -5518,6 +5525,7 @@ where
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
+        additional_instructions: None,
         compact_prompt: config.compact_prompt.clone(),
         approval_policy: config.permissions.approval_policy.clone(),
         approvals_reviewer: config.approvals_reviewer,
@@ -9133,4 +9141,41 @@ async fn session_start_hooks_require_project_trust_without_config_toml() -> std:
     }
 
     Ok(())
+}
+
+// SANDBOX PATCH: launcher safety rails composition — unit tests for compose_base_with_rails
+#[test]
+fn compose_base_with_rails_returns_base_when_rails_none() {
+    assert_eq!(compose_base_with_rails("hello", None), "hello");
+}
+
+#[test]
+fn compose_base_with_rails_returns_base_when_rails_empty() {
+    assert_eq!(compose_base_with_rails("hello", Some("  ")), "hello");
+    assert_eq!(compose_base_with_rails("hello", Some("")), "hello");
+}
+
+#[test]
+fn compose_base_with_rails_composes_with_heading() {
+    let out = compose_base_with_rails("hello", Some("rails"));
+    assert!(
+        out.ends_with("--- launcher safety rails ---\nrails"),
+        "expected composed output to end with heading + rails, got: {out:?}"
+    );
+    assert!(out.starts_with("hello"));
+}
+
+#[test]
+fn compose_base_with_rails_is_idempotent() {
+    let first = compose_base_with_rails("hello", Some("rails"));
+    let second = compose_base_with_rails(&first, Some("rails"));
+    assert_eq!(first, second);
+    // Heading appears exactly once.
+    assert_eq!(second.matches("--- launcher safety rails ---").count(), 1);
+}
+
+#[test]
+fn compose_base_with_rails_empty_base_with_rails() {
+    let out = compose_base_with_rails("", Some("rails"));
+    assert_eq!(out, "\n\n--- launcher safety rails ---\nrails");
 }

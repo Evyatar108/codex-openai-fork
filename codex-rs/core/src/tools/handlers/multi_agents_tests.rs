@@ -15,6 +15,11 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_config::AbsolutePathBuf;
+use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerSource;
+use codex_config::ConfigLayerStack;
+use codex_config::CONFIG_TOML_FILE;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -55,6 +60,8 @@ use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,6 +95,22 @@ fn function_payload(args: serde_json::Value) -> ToolPayload {
 
 fn parse_agent_id(id: &str) -> ThreadId {
     ThreadId::from_string(id).expect("agent id should be valid")
+}
+
+fn install_top_level_only_plugin_fixture(codex_home: &Path) {
+    let manifest_dir = codex_home
+        .join("plugins")
+        .join("cache")
+        .join("multi_agents_tests")
+        .join("top_level_only_plugin")
+        .join("local")
+        .join(".codex-plugin");
+    fs::create_dir_all(&manifest_dir).expect("create plugin fixture manifest dir");
+    fs::write(
+        manifest_dir.join("plugin.json"),
+        include_str!("multi_agents_tests/fixtures/top_level_only_plugin/.codex-plugin/plugin.json"),
+    )
+    .expect("write plugin fixture manifest");
 }
 
 fn thread_manager() -> ThreadManager {
@@ -1795,15 +1818,14 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
 }
 
 #[tokio::test]
-async fn spawn_agent_rejects_when_depth_limit_exceeded() {
+async fn spawn_agent_rejects_from_subagent_context() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
 
-    let max_depth = turn.config.agent_max_depth;
     turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: session.conversation_id,
-        depth: max_depth,
+        depth: 1,
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
@@ -1816,24 +1838,18 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
         function_payload(json!({"message": "hello"})),
     );
     let Err(err) = SpawnAgentHandler::default().handle(invocation).await else {
-        panic!("spawn should fail when depth limit exceeded");
+        panic!("spawn_agent should reject subagent context");
     };
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Agent depth limit reached. Solve the task yourself.".to_string()
+            "spawn_agent is not available from subagent sessions".to_string()
         )
     );
 }
 
 #[tokio::test]
-async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
-    #[derive(Debug, Deserialize)]
-    struct SpawnAgentResult {
-        agent_id: String,
-        nickname: Option<String>,
-    }
-
+async fn spawn_agent_rejects_agent_spawner_subagent_context() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
@@ -1846,7 +1862,7 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         depth: DEFAULT_AGENT_MAX_DEPTH,
         agent_path: None,
         agent_nickname: None,
-        agent_role: None,
+        agent_role: Some("agent-spawner".to_string()),
     });
 
     let invocation = invocation(
@@ -1855,31 +1871,19 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         "spawn_agent",
         function_payload(json!({"message": "hello"})),
     );
-    let output = SpawnAgentHandler::default()
-        .handle(invocation)
-        .await
-        .expect("spawn should succeed within configured depth");
-    let (content, success) = expect_text_output(output);
-    let result: SpawnAgentResult =
-        serde_json::from_str(&content).expect("spawn_agent result should be json");
-    assert!(!result.agent_id.is_empty());
-    assert!(
-        result
-            .nickname
-            .as_deref()
-            .is_some_and(|nickname| !nickname.is_empty())
+    let Err(err) = SpawnAgentHandler::default().handle(invocation).await else {
+        panic!("agent-spawner should use spawn_top_level_session, not spawn_agent");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "spawn_agent is not available from subagent sessions".to_string()
+        )
     );
-    assert_eq!(success, Some(true));
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
-    #[derive(Debug, Deserialize)]
-    struct SpawnAgentResult {
-        task_name: String,
-        nickname: Option<String>,
-    }
-
+async fn multi_agent_v2_spawn_agent_rejects_from_subagent_context() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
@@ -1914,16 +1918,15 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
             "fork_turns": "none"
         })),
     );
-    let output = SpawnAgentHandlerV2::default()
-        .handle(invocation)
-        .await
-        .expect("multi-agent v2 spawn should ignore max depth");
-    let (content, success) = expect_text_output(output);
-    let result: SpawnAgentResult =
-        serde_json::from_str(&content).expect("spawn_agent result should be json");
-    assert_eq!(result.task_name, "/root/parent/child");
-    assert!(result.nickname.is_some());
-    assert_eq!(success, Some(true));
+    let Err(err) = SpawnAgentHandlerV2::default().handle(invocation).await else {
+        panic!("multi-agent v2 spawn_agent should reject subagent context");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "spawn_agent is not available from subagent sessions".to_string()
+        )
+    );
 }
 
 #[tokio::test]
@@ -3196,30 +3199,31 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
     );
     assert_eq!(child_success, Some(true));
 
-    let child_thread = manager
+    manager
         .get_thread(child_thread_id)
         .await
         .expect("child thread should exist");
-    let child_session = child_thread.codex.session.clone();
-    let grandchild_spawn_output = SpawnAgentHandler::default()
-        .handle(invocation(
-            child_session.clone(),
-            child_session.new_default_turn().await,
-            "spawn_agent",
-            function_payload(json!({"message": "hello grandchild"})),
-        ))
+    let grandchild_thread_id = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "hello grandchild".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
         .await
-        .expect("grandchild spawn should succeed");
-    let (grandchild_content, grandchild_success) = expect_text_output(grandchild_spawn_output);
-    let grandchild_result: serde_json::Value =
-        serde_json::from_str(&grandchild_content).expect("grandchild spawn result should be json");
-    let grandchild_thread_id = parse_agent_id(
-        grandchild_result
-            .get("agent_id")
-            .and_then(serde_json::Value::as_str)
-            .expect("grandchild spawn result should include agent_id"),
-    );
-    assert_eq!(grandchild_success, Some(true));
+        .expect("grandchild spawn should succeed")
+        .thread_id;
 
     let close_output = CloseAgentHandler
         .handle(invocation(
@@ -3453,6 +3457,185 @@ async fn build_agent_spawn_config_preserves_base_user_instructions() {
     let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
 
     assert_eq!(config.user_instructions, base_config.user_instructions);
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_disables_top_level_only_plugins_for_subagents() {
+    codex_plugin_scope::parser::clear_manifest_cache_for_tests();
+    let (_session, mut turn) = make_session_and_context().await;
+    install_top_level_only_plugin_fixture(&turn.config.codex_home);
+
+    let mut base_config = (*turn.config).clone();
+    base_config.config_layer_stack = base_config.config_layer_stack.with_user_config(
+        &base_config.codex_home.join(CONFIG_TOML_FILE),
+        toml::toml! {
+            [plugins."top_level_only_plugin@multi_agents_tests"]
+            enabled = true
+        }
+        .into(),
+    );
+    turn.config = Arc::new(base_config);
+    let base_instructions = BaseInstructions {
+        text: "base".to_string(),
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+
+    assert_eq!(
+        config
+            .config_layer_stack
+            .effective_config()
+            .get("plugins")
+            .and_then(toml::Value::as_table)
+            .and_then(|plugins| plugins.get("top_level_only_plugin@multi_agents_tests"))
+            .and_then(|plugin| plugin.get("enabled"))
+            .and_then(toml::Value::as_bool),
+        Some(false)
+    );
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_filter_override_wins_over_parent_plugin_enable() {
+    codex_plugin_scope::parser::clear_manifest_cache_for_tests();
+    let (_session, mut turn) = make_session_and_context().await;
+    install_top_level_only_plugin_fixture(&turn.config.codex_home);
+
+    let mut base_config = (*turn.config).clone();
+    base_config.config_layer_stack = base_config.config_layer_stack.with_user_config(
+        &base_config.codex_home.join(CONFIG_TOML_FILE),
+        toml::toml! {
+            [plugins."top_level_only_plugin@multi_agents_tests"]
+            enabled = true
+            some_setting = "parent-value"
+        }
+        .into(),
+    );
+    turn.config = Arc::new(base_config);
+    let base_instructions = BaseInstructions {
+        text: "base".to_string(),
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+    let effective_config = config.config_layer_stack.effective_config();
+    let plugin_config = effective_config
+        .get("plugins")
+        .and_then(toml::Value::as_table)
+        .and_then(|plugins| plugins.get("top_level_only_plugin@multi_agents_tests"))
+        .and_then(toml::Value::as_table)
+        .expect("plugin config table");
+
+    assert_eq!(
+        plugin_config.get("enabled").and_then(toml::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        plugin_config
+            .get("some_setting")
+            .and_then(toml::Value::as_str),
+        Some("parent-value")
+    );
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_scope_override_wins_over_project_layer_enable() {
+    codex_plugin_scope::parser::clear_manifest_cache_for_tests();
+    let (_session, mut turn) = make_session_and_context().await;
+    install_top_level_only_plugin_fixture(&turn.config.codex_home);
+
+    let mut base_config = (*turn.config).clone();
+    let project_dot_codex =
+        AbsolutePathBuf::try_from(base_config.codex_home.join(".codex")).expect("abs path");
+    let user_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::User {
+            file: AbsolutePathBuf::try_from(base_config.codex_home.join(CONFIG_TOML_FILE))
+                .expect("abs path"),
+        },
+        toml::Value::Table(toml::map::Map::new()),
+    );
+    let project_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::Project {
+            dot_codex_folder: project_dot_codex,
+        },
+        toml::toml! {
+            [plugins."top_level_only_plugin@multi_agents_tests"]
+            enabled = true
+        }
+        .into(),
+    );
+    base_config.config_layer_stack = ConfigLayerStack::new(
+        vec![user_layer, project_layer],
+        base_config.config_layer_stack.requirements().clone(),
+        base_config.config_layer_stack.requirements_toml().clone(),
+    )
+    .expect("layer stack with project layer");
+    turn.config = Arc::new(base_config);
+    let base_instructions = BaseInstructions {
+        text: "base".to_string(),
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+
+    assert_eq!(
+        config
+            .config_layer_stack
+            .effective_config()
+            .get("plugins")
+            .and_then(toml::Value::as_table)
+            .and_then(|plugins| plugins.get("top_level_only_plugin@multi_agents_tests"))
+            .and_then(|plugin| plugin.get("enabled"))
+            .and_then(toml::Value::as_bool),
+        Some(false),
+        "project-layer enabled=true must not bypass the scope-axis override"
+    );
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_scope_override_wins_over_session_flags_layer_enable() {
+    codex_plugin_scope::parser::clear_manifest_cache_for_tests();
+    let (_session, mut turn) = make_session_and_context().await;
+    install_top_level_only_plugin_fixture(&turn.config.codex_home);
+
+    let mut base_config = (*turn.config).clone();
+    let user_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::User {
+            file: AbsolutePathBuf::try_from(base_config.codex_home.join(CONFIG_TOML_FILE))
+                .expect("abs path"),
+        },
+        toml::Value::Table(toml::map::Map::new()),
+    );
+    let session_flags_layer = ConfigLayerEntry::new(
+        ConfigLayerSource::SessionFlags,
+        toml::toml! {
+            [plugins."top_level_only_plugin@multi_agents_tests"]
+            enabled = true
+        }
+        .into(),
+    );
+    base_config.config_layer_stack = ConfigLayerStack::new(
+        vec![user_layer, session_flags_layer],
+        base_config.config_layer_stack.requirements().clone(),
+        base_config.config_layer_stack.requirements_toml().clone(),
+    )
+    .expect("layer stack with session-flags layer");
+    turn.config = Arc::new(base_config);
+    let base_instructions = BaseInstructions {
+        text: "base".to_string(),
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+
+    assert_eq!(
+        config
+            .config_layer_stack
+            .effective_config()
+            .get("plugins")
+            .and_then(toml::Value::as_table)
+            .and_then(|plugins| plugins.get("top_level_only_plugin@multi_agents_tests"))
+            .and_then(|plugin| plugin.get("enabled"))
+            .and_then(toml::Value::as_bool),
+        Some(false),
+        "session-flags-layer enabled=true must not bypass the scope-axis override"
+    );
 }
 
 #[tokio::test]

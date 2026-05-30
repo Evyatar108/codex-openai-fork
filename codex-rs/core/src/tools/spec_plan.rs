@@ -21,6 +21,7 @@ use crate::tools::handlers::RequestUserInputHandler;
 use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::handlers::ShellCommandHandlerOptions;
 use crate::tools::handlers::ShellHandler;
+use crate::tools::handlers::SpawnTopLevelSessionHandler;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandler;
 use crate::tools::handlers::UpdateGoalHandler;
@@ -300,18 +301,28 @@ pub fn build_tool_registry_builder(
         })));
     }
 
+    // SANDBOX PATCH: plugin-scope-axis
+    if config.spawn_top_level_session {
+        builder.register_handler(Arc::new(SpawnTopLevelSessionHandler));
+    }
+
     if config.collab_tools {
         if config.multi_agent_v2 {
-            let agent_type_description =
-                agent_type_description(config, params.default_agent_type_description);
-            builder.register_handler(Arc::new(SpawnAgentHandlerV2::new(SpawnAgentToolOptions {
-                available_models: config.available_models.clone(),
-                agent_type_description,
-                hide_agent_type_model_reasoning: config.hide_spawn_agent_metadata,
-                include_usage_hint: config.spawn_agent_usage_hint,
-                usage_hint_text: config.spawn_agent_usage_hint_text.clone(),
-                max_concurrent_threads_per_session: config.max_concurrent_threads_per_session,
-            })));
+            if config.spawn_agent {
+                let agent_type_description =
+                    agent_type_description(config, params.default_agent_type_description);
+                builder.register_handler(Arc::new(SpawnAgentHandlerV2::new(
+                    SpawnAgentToolOptions {
+                        available_models: config.available_models.clone(),
+                        agent_type_description,
+                        hide_agent_type_model_reasoning: config.hide_spawn_agent_metadata,
+                        include_usage_hint: config.spawn_agent_usage_hint,
+                        usage_hint_text: config.spawn_agent_usage_hint_text.clone(),
+                        max_concurrent_threads_per_session: config
+                            .max_concurrent_threads_per_session,
+                    },
+                )));
+            }
             builder.register_handler(Arc::new(SendMessageHandlerV2));
             builder.register_handler(Arc::new(FollowupTaskHandlerV2));
             builder.register_handler(Arc::new(WaitAgentHandlerV2::new(
@@ -320,16 +331,18 @@ pub fn build_tool_registry_builder(
             builder.register_handler(Arc::new(CloseAgentHandlerV2));
             builder.register_handler(Arc::new(ListAgentsHandlerV2));
         } else {
-            let agent_type_description =
-                agent_type_description(config, params.default_agent_type_description);
-            builder.register_handler(Arc::new(SpawnAgentHandler::new(SpawnAgentToolOptions {
-                available_models: config.available_models.clone(),
-                agent_type_description,
-                hide_agent_type_model_reasoning: config.hide_spawn_agent_metadata,
-                include_usage_hint: config.spawn_agent_usage_hint,
-                usage_hint_text: config.spawn_agent_usage_hint_text.clone(),
-                max_concurrent_threads_per_session: config.max_concurrent_threads_per_session,
-            })));
+            if config.spawn_agent {
+                let agent_type_description =
+                    agent_type_description(config, params.default_agent_type_description);
+                builder.register_handler(Arc::new(SpawnAgentHandler::new(SpawnAgentToolOptions {
+                    available_models: config.available_models.clone(),
+                    agent_type_description,
+                    hide_agent_type_model_reasoning: config.hide_spawn_agent_metadata,
+                    include_usage_hint: config.spawn_agent_usage_hint,
+                    usage_hint_text: config.spawn_agent_usage_hint_text.clone(),
+                    max_concurrent_threads_per_session: config.max_concurrent_threads_per_session,
+                })));
+            }
             builder.register_handler(Arc::new(SendInputHandler));
             builder.register_handler(Arc::new(ResumeAgentHandler));
             builder.register_handler(Arc::new(WaitAgentHandler::new(params.wait_agent_timeouts)));

@@ -2517,6 +2517,7 @@ dependencies = [
  "codex-network-proxy",
  "codex-otel",
  "codex-plugin",
+ "codex-plugin-scope",
  "codex-protocol",
  "codex-response-debug-context",
  "codex-rmcp-client",
@@ -3353,6 +3354,21 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-plugins",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "codex-plugin-scope"
+version = "0.130.0-copilot-api.8"
+dependencies = [
+ "anyhow",
+ "codex-plugin",
+ "once_cell",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 0.9.11+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]

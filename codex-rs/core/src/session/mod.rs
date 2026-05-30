@@ -610,6 +610,7 @@ impl Codex {
             user_instructions,
             personality: config.personality,
             base_instructions,
+            additional_instructions: config.additional_instructions.clone(), // SANDBOX PATCH: launcher safety rails session seam
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.permissions.approval_policy.clone(),
             approvals_reviewer: config.approvals_reviewer,
@@ -856,6 +857,24 @@ async fn thread_title_from_thread_store(
 
     let title = thread.name.as_deref()?.trim();
     (!title.is_empty() && thread.preview.trim() != title).then(|| title.to_string())
+}
+
+/// Compose base instructions with optional launcher-injected rails. // SANDBOX PATCH: launcher safety rails composition
+/// Idempotent — re-applying the same `rails` to an already-composed `base` is a no-op
+/// (detected by the stable heading marker), so resumed sessions don't accumulate duplicates.
+pub(crate) fn compose_base_with_rails(base: &str, rails: Option<&str>) -> String {
+    const HEADING: &str = "\n\n--- launcher safety rails ---\n";
+    match rails {
+        None => base.to_string(),
+        Some(r) if r.trim().is_empty() => base.to_string(),
+        Some(r) => {
+            if base.contains(HEADING) {
+                base.to_string()
+            } else {
+                format!("{base}{HEADING}{r}")
+            }
+        }
+    }
 }
 
 impl Session {
@@ -1143,9 +1162,12 @@ impl Session {
 
     pub(crate) async fn get_base_instructions(&self) -> BaseInstructions {
         let state = self.state.lock().await;
-        BaseInstructions {
-            text: state.session_configuration.base_instructions.clone(),
-        }
+        // SANDBOX PATCH: launcher safety rails composition
+        let composed = compose_base_with_rails(
+            &state.session_configuration.base_instructions,
+            state.session_configuration.additional_instructions.as_deref(),
+        );
+        BaseInstructions { text: composed }
     }
 
     // Merges connector IDs into the session-level explicit connector selection.

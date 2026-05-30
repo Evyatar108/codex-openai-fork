@@ -8,10 +8,12 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerSource;
+use codex_config::ConfigLayerStack;
+use codex_config::ConfigLayerStackOrdering;
 use codex_features::Feature;
 use codex_models_manager::manager::RefreshStrategy;
-use codex_protocol::AgentPath;
-use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseInputItem;
@@ -23,9 +25,12 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
+use codex_protocol::AgentPath;
+use codex_protocol::ThreadId;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
@@ -234,8 +239,52 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     config.developer_instructions = turn.developer_instructions.clone();
     config.compact_prompt = turn.compact_prompt.clone();
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
+    // SANDBOX PATCH: plugin-scope-axis
+    codex_plugin_scope::apply_subagent_plugin_filter(&mut config);
 
     Ok(config)
+}
+
+impl codex_plugin_scope::Config for Config {
+    fn codex_home(&self) -> &Path {
+        &self.codex_home
+    }
+
+    fn effective_config(&self) -> toml::Value {
+        self.config_layer_stack.effective_config()
+    }
+
+    fn with_user_layer(&mut self, layer: toml::Value) {
+        // SANDBOX PATCH: plugin-scope-axis — synthesize the disable overlay at
+        // LegacyManagedConfigTomlFromMdm precedence (50) so it outranks User
+        // (20), Project (25), and SessionFlags (30).  Using with_user_config
+        // here would write at User=20, allowing a parent Project- or
+        // SessionFlags-layer `enabled=true` to bypass the scope axis.
+        let mut layers: Vec<ConfigLayerEntry> = self
+            .config_layer_stack
+            .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true)
+            .into_iter()
+            .cloned()
+            .collect();
+        layers.push(ConfigLayerEntry::new(
+            ConfigLayerSource::LegacyManagedConfigTomlFromMdm,
+            layer,
+        ));
+        match ConfigLayerStack::new(
+            layers,
+            self.config_layer_stack.requirements().clone(),
+            self.config_layer_stack.requirements_toml().clone(),
+        ) {
+            Ok(new_stack) => self.config_layer_stack = new_stack,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "plugin-scope-axis: failed to push subagent override layer; \
+                     top-level-only plugin may remain enabled in subagent"
+                );
+            }
+        }
+    }
 }
 
 pub(crate) fn reject_full_fork_spawn_overrides(
