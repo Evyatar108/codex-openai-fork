@@ -281,6 +281,8 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_environment_manager(
         ToolPluginProvenance::default(),
         auth.as_ref(),
         /*elicitation_reviewer*/ None,
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+        /*mcp_notifications_enabled*/ false,
     )
     .await;
 

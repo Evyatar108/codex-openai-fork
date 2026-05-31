@@ -1170,6 +1170,8 @@ impl Session {
                 tool_plugin_provenance,
                 auth,
                 Some(sess.mcp_elicitation_reviewer()),
+                // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+                config.features.enabled(Feature::McpServerNotifications),
             )
             .instrument(info_span!(
                 "session_init.mcp_manager_init",

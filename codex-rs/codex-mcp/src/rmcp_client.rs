@@ -26,6 +26,9 @@ use crate::codex_apps::normalize_codex_apps_callable_namespace;
 use crate::codex_apps::normalize_codex_apps_tool_title;
 use crate::codex_apps::write_cached_codex_apps_tools_if_needed;
 use crate::elicitation::ElicitationRequestManager;
+// SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+use codex_mcp_notification_bridge::NotificationBridge;
+use codex_mcp_notification_bridge::SamplingRequestManager;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp::ToolPluginProvenance;
 use crate::runtime::McpRuntimeContext;
@@ -145,6 +148,10 @@ impl AsyncManagedClient {
         runtime_context: McpRuntimeContext,
         runtime_auth_provider: Option<SharedAuthProvider>,
         client_elicitation_capability: ElicitationCapability,
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+        mcp_notifications_enabled: Arc<AtomicBool>,
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+        sampling_requests: Arc<SamplingRequestManager>,
     ) -> Self {
         let tool_filter = server
             .configured_config()
@@ -192,6 +199,10 @@ impl AsyncManagedClient {
                         elicitation_requests,
                         codex_apps_tools_cache_context,
                         client_elicitation_capability,
+                        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+                        mcp_notifications_enabled,
+                        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+                        sampling_requests,
                     },
                 )
                 .await
@@ -469,6 +480,8 @@ async fn start_server_task(
         elicitation_requests,
         codex_apps_tools_cache_context,
         client_elicitation_capability,
+        mcp_notifications_enabled,
+        sampling_requests,
     } = params;
     let params = InitializeRequestParams {
         meta: None,
@@ -491,10 +504,18 @@ async fn start_server_task(
         protocol_version: ProtocolVersion::V_2025_06_18,
     };
 
-    let send_elicitation = elicitation_requests.make_sender(server_name.clone(), tx_event);
+    let send_elicitation = elicitation_requests.make_sender(server_name.clone(), tx_event.clone());
+
+    // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    let bridge = Some(Arc::new(NotificationBridge::new(
+        tx_event,
+        Arc::<str>::from(server_name.as_str()),
+        mcp_notifications_enabled,
+        sampling_requests,
+    )));
 
     let initialize_result = client
-        .initialize(params, startup_timeout, send_elicitation)
+        .initialize(params, startup_timeout, send_elicitation, bridge)
         .await
         .map_err(StartupOutcomeError::from)?;
 
@@ -554,6 +575,10 @@ struct StartServerTaskParams {
     elicitation_requests: ElicitationRequestManager,
     codex_apps_tools_cache_context: Option<CodexAppsToolsCacheContext>,
     client_elicitation_capability: ElicitationCapability,
+    // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    mcp_notifications_enabled: Arc<AtomicBool>,
+    // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    sampling_requests: Arc<SamplingRequestManager>,
 }
 
 async fn make_rmcp_client(

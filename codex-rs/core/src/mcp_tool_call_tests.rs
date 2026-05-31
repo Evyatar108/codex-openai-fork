@@ -1276,6 +1276,8 @@ async fn install_host_owned_codex_apps_manager(session: &Session, turn_context: 
         codex_mcp::ToolPluginProvenance::default(),
         auth.as_ref(),
         /*elicitation_reviewer*/ None,
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+        /*mcp_notifications_enabled*/ false,
     )
     .await;
     *session.services.mcp_connection_manager.write().await = manager;

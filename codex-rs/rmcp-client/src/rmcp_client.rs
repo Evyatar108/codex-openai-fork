@@ -377,11 +377,14 @@ impl RmcpClient {
         params: InitializeRequestParams,
         timeout: Option<Duration>,
         send_elicitation: SendElicitation,
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+        bridge: Option<Arc<codex_mcp_notification_bridge::NotificationBridge>>,
     ) -> Result<InitializeResult> {
         let client_service = ElicitationClientService::new(
             params.clone(),
             send_elicitation,
             self.elicitation_pause_state.clone(),
+            bridge,
         );
         let pending_transport = {
             let mut guard = self.state.lock().await;

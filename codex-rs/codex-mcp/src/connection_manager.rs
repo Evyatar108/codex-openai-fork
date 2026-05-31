@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -18,6 +20,8 @@ use crate::codex_apps::CodexAppsToolsCacheKey;
 use crate::codex_apps::write_cached_codex_apps_tools_if_needed;
 use crate::elicitation::ElicitationRequestManager;
 use crate::elicitation::ElicitationReviewerHandle;
+// SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+use codex_mcp_notification_bridge::SamplingRequestManager;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp::ToolPluginProvenance;
 use crate::rmcp_client::AsyncManagedClient;
@@ -53,6 +57,7 @@ use codex_protocol::protocol::McpStartupFailure;
 use codex_protocol::protocol::McpStartupStatus;
 use codex_protocol::protocol::McpStartupUpdateEvent;
 use codex_rmcp_client::ElicitationResponse;
+use rmcp::model::CreateMessageResult;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
@@ -78,6 +83,10 @@ pub struct McpConnectionManager {
     host_owned_codex_apps_enabled: bool,
     prefix_mcp_tool_names: bool,
     elicitation_requests: ElicitationRequestManager,
+    // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    sampling_requests: Arc<SamplingRequestManager>,
+    // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    mcp_notifications_enabled: Arc<AtomicBool>,
     startup_cancellation_token: CancellationToken,
 }
 
@@ -110,6 +119,10 @@ impl McpConnectionManager {
                 permission_profile.clone(),
                 /*reviewer*/ None,
             ),
+            // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+            sampling_requests: Arc::new(SamplingRequestManager::new()),
+            // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+            mcp_notifications_enabled: Arc::new(AtomicBool::new(false)),
             startup_cancellation_token: CancellationToken::new(),
         }
     }
@@ -196,6 +209,8 @@ impl McpConnectionManager {
         tool_plugin_provenance: ToolPluginProvenance,
         auth: Option<&CodexAuth>,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+        mcp_notifications_enabled: bool,
     ) -> (Self, CancellationToken) {
         let cancel_token = CancellationToken::new();
         let mut clients = HashMap::new();
@@ -206,6 +221,10 @@ impl McpConnectionManager {
             initial_permission_profile,
             elicitation_reviewer,
         );
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+        let sampling_requests = Arc::new(SamplingRequestManager::new());
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+        let mcp_notifications_enabled_flag = Arc::new(AtomicBool::new(mcp_notifications_enabled));
         let tool_plugin_provenance = Arc::new(tool_plugin_provenance);
         let startup_submit_id = submit_id.clone();
         let codex_apps_auth_provider = auth
@@ -263,6 +282,10 @@ impl McpConnectionManager {
                 runtime_context.clone(),
                 runtime_auth_provider,
                 client_elicitation_capability.clone(),
+                // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+                Arc::clone(&mcp_notifications_enabled_flag),
+                // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+                Arc::clone(&sampling_requests),
             );
             clients.insert(server_name.clone(), async_managed_client.clone());
             let tx_event = tx_event.clone();
@@ -306,6 +329,10 @@ impl McpConnectionManager {
             host_owned_codex_apps_enabled,
             prefix_mcp_tool_names,
             elicitation_requests: elicitation_requests.clone(),
+            // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+            sampling_requests,
+            // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+            mcp_notifications_enabled: mcp_notifications_enabled_flag,
             startup_cancellation_token: cancel_token.clone(),
         };
         tokio::spawn(async move {
@@ -342,6 +369,38 @@ impl McpConnectionManager {
         self.elicitation_requests
             .resolve(server_name, id, response)
             .await
+    }
+
+    /// SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    ///
+    /// Resolve a pending `sampling/createMessage` request originated by an
+    /// MCP server. The consumer of `EventMsg::McpSamplingRequest` calls this
+    /// once it has produced a reply.
+    pub async fn resolve_sampling_request(
+        &self,
+        server_name: &str,
+        request_id: &RequestId,
+        result: CreateMessageResult,
+    ) -> Result<()> {
+        self.sampling_requests
+            .resolve(server_name, request_id, result)
+            .await
+    }
+
+    /// SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    ///
+    /// Returns the shared handle that gates whether the bridge forwards
+    /// notifications and accepts sampling requests. Production code reads
+    /// this to flip the flag at runtime when feature state changes; tests
+    /// use it to drive on/off paths.
+    pub fn mcp_notifications_enabled_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.mcp_notifications_enabled)
+    }
+
+    /// SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    pub fn set_mcp_notifications_enabled(&self, enabled: bool) {
+        self.mcp_notifications_enabled
+            .store(enabled, Ordering::Relaxed);
     }
 
     pub async fn wait_for_server_ready(&self, server_name: &str, timeout: Duration) -> bool {

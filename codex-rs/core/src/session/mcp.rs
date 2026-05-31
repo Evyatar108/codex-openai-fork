@@ -1,4 +1,5 @@
 use super::*;
+use codex_features::Feature;
 use codex_mcp::ElicitationReviewRequest;
 use codex_mcp::ElicitationReviewer;
 use codex_mcp::ElicitationReviewerHandle;
@@ -358,6 +359,8 @@ impl Session {
             tool_plugin_provenance,
             auth.as_ref(),
             elicitation_reviewer,
+            // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+            config.features.enabled(Feature::McpServerNotifications),
         )
         .await;
         {

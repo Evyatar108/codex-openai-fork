@@ -287,6 +287,9 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry) -> ModelInfo {
         input_modalities: default_input_modalities(),
         used_fallback_model_metadata: false,
         supports_search_tool: false,
+        // SANDBOX PATCH: new field added upstream after rebase; Copilot does
+        // not expose a default service tier in the /models wire shape.
+        default_service_tier: None,
     }
 }
 

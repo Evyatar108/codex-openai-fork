@@ -276,7 +276,10 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::ReasoningContentDelta(_)
         | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::CollabResumeBegin(_)
-        | EventMsg::CollabResumeEnd(_) => None,
+        | EventMsg::CollabResumeEnd(_)
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications) — not traced
+        | EventMsg::McpServerNotification(_)
+        | EventMsg::McpSamplingRequest(_) => None,
     }
 }
 
@@ -355,7 +358,10 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::CollabCloseBegin(_)
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeBegin(_)
-        | EventMsg::CollabResumeEnd(_) => None,
+        | EventMsg::CollabResumeEnd(_)
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications) — not traced
+        | EventMsg::McpServerNotification(_)
+        | EventMsg::McpSamplingRequest(_) => None,
     }
 }
 

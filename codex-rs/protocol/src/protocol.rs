@@ -1238,6 +1238,13 @@ pub enum EventMsg {
 
     McpToolCallEnd(McpToolCallEndEvent),
 
+    // SANDBOX PATCH: invariant 25 (mcp-server-notifications) — feature-gated
+    // bridge of MCP server-initiated traffic onto the agent event stream.
+    McpServerNotification(McpServerNotificationEvent),
+
+    // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    McpSamplingRequest(McpSamplingRequestEvent),
+
     WebSearchBegin(WebSearchBeginEvent),
 
     WebSearchEnd(WebSearchEndEvent),
@@ -2245,6 +2252,43 @@ pub struct McpToolCallEndEvent {
     pub duration: Duration,
     /// Result of the tool call. Note this could be an error.
     pub result: Result<CallToolResult, String>,
+}
+
+// SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+/// Categorical tag for the seven server-initiated MCP notification kinds
+/// bridged onto the codex event stream.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpNotificationKind {
+    Progress,
+    Cancelled,
+    ResourceUpdated,
+    ResourceListChanged,
+    ToolListChanged,
+    PromptListChanged,
+    LoggingMessage,
+}
+
+// SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
+pub struct McpServerNotificationEvent {
+    pub server_name: String,
+    pub kind: McpNotificationKind,
+    /// Raw rmcp notification payload as JSON. Stage A keeps the shape
+    /// untyped to allow forward-compat extension; typed variants by-kind
+    /// are deferred to a follow-up.
+    pub params: serde_json::Value,
+}
+
+// SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
+pub struct McpSamplingRequestEvent {
+    pub server_name: String,
+    pub request_id: RequestId,
+    /// Raw rmcp `CreateMessageRequestParams` payload as JSON. The host
+    /// consumer is expected to call `McpConnectionManager::resolve_sampling_request`
+    /// to deliver the reply.
+    pub params: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]

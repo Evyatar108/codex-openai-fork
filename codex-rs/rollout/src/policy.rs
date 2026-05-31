@@ -216,6 +216,10 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::CollabAgentInteractionBegin(_)
         | EventMsg::CollabWaitingBegin(_)
         | EventMsg::CollabCloseBegin(_)
-        | EventMsg::CollabResumeBegin(_) => None,
+        | EventMsg::CollabResumeBegin(_)
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications) — transient
+        // bridge events are not persisted to rollouts.
+        | EventMsg::McpServerNotification(_)
+        | EventMsg::McpSamplingRequest(_) => None,
     }
 }

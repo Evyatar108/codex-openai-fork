@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use codex_mcp_notification_bridge::NotificationBridge;
 use rmcp::RoleClient;
 use rmcp::model::ClientInfo;
 use rmcp::model::ClientResult;
@@ -28,6 +29,8 @@ pub(crate) struct ElicitationClientService {
     handler: LoggingClientHandler,
     send_elicitation: Arc<SendElicitation>,
     pause_state: ElicitationPauseState,
+    // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    bridge: Option<Arc<NotificationBridge>>,
 }
 
 impl ElicitationClientService {
@@ -35,15 +38,19 @@ impl ElicitationClientService {
         client_info: ClientInfo,
         send_elicitation: SendElicitation,
         pause_state: ElicitationPauseState,
+        // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+        bridge: Option<Arc<NotificationBridge>>,
     ) -> Self {
         let send_elicitation = Arc::new(send_elicitation);
         Self {
             handler: LoggingClientHandler::new(
                 client_info,
                 clone_send_elicitation(Arc::clone(&send_elicitation)),
+                bridge.clone(),
             ),
             send_elicitation,
             pause_state,
+            bridge,
         }
     }
 
@@ -77,6 +84,21 @@ impl Service<RoleClient> for ElicitationClientService {
                 // RMCP's typed CreateElicitationResult does not model result-level `_meta`.
                 let result = elicitation_response_result(response)?;
                 Ok(ClientResult::CustomResult(result))
+            }
+            // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+            ServerRequest::CreateMessageRequest(request) => {
+                let Some(bridge) = &self.bridge else {
+                    return Err(rmcp::ErrorData::internal_error(
+                        "sampling/createMessage rejected: mcp_server_notifications feature disabled"
+                            .to_string(),
+                        None,
+                    ));
+                };
+                let result = bridge
+                    .forward_sampling_request(context.id, request.params)
+                    .await
+                    .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
+                Ok(ClientResult::CreateMessageResult(Box::new(result)))
             }
             request => {
                 <LoggingClientHandler as Service<RoleClient>>::handle_request(

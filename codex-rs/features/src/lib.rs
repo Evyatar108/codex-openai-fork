@@ -188,6 +188,11 @@ pub enum Feature {
     ToolCallMcpElicitation,
     /// Prompt Codex Apps connector auth failures through MCP URL elicitations.
     AuthElicitation,
+    /// SANDBOX PATCH: invariant 25 — bridge MCP server-initiated notifications
+    /// and `sampling/createMessage` requests onto the agent event stream as
+    /// new typed `EventMsg::McpServer*` variants. Off by default; see
+    /// `codex-rs-overlay/codex-mcp-notification-bridge/`.
+    McpServerNotifications,
     /// Enable personality selection in the TUI.
     Personality,
     /// Enable native artifact tools.
@@ -1123,6 +1128,17 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::AuthElicitation,
         key: "auth_elicitation",
         stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
+    FeatureSpec {
+        id: Feature::McpServerNotifications,
+        key: "mcp_server_notifications",
+        stage: Stage::Experimental {
+            name: "MCP server notifications",
+            menu_description: "Bridge MCP server notifications and sampling/createMessage into the agent event stream.",
+            announcement: "",
+        },
         default_enabled: false,
     },
     FeatureSpec {
