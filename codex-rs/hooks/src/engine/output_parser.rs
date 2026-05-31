@@ -18,6 +18,10 @@ pub(crate) struct PreToolUseOutput {
     pub block_reason: Option<String>,
     pub additional_context: Option<String>,
     pub updated_input: Option<serde_json::Value>,
+    // SANDBOX PATCH: pre-tool-use synthetic_response (3h-tail) — short-circuits
+    // the tool handler with a synthetic success value when the hook chooses to
+    // answer on behalf of the model (e.g. options-mode auto-respond).
+    pub synthetic_response: Option<serde_json::Value>,
     pub invalid_reason: Option<String>,
 }
 
@@ -132,6 +136,7 @@ pub(crate) fn parse_pre_tool_use(stdout: &str) -> Option<PreToolUseOutput> {
         output.permission_decision.is_some()
             || output.permission_decision_reason.is_some()
             || output.updated_input.is_some()
+            || output.synthetic_response.is_some()
     });
     let invalid_reason = unsupported_pre_tool_use_universal(&universal).or_else(|| {
         if use_hook_specific_decision {
@@ -170,12 +175,23 @@ pub(crate) fn parse_pre_tool_use(stdout: &str) -> Option<PreToolUseOutput> {
     } else {
         None
     };
+    // SANDBOX PATCH: pre-tool-use synthetic_response (3h-tail). Surface the
+    // sentinel from the wire payload when the hook output is valid. The block
+    // path in the dispatcher takes precedence — if `block_reason` is also set
+    // the consumer (`hooks/src/events/pre_tool_use.rs`) discards the synthetic
+    // value before reporting an outcome.
+    let synthetic_response = if invalid_reason.is_none() {
+        hook_specific_output.and_then(|output| output.synthetic_response.clone())
+    } else {
+        None
+    };
 
     Some(PreToolUseOutput {
         universal,
         block_reason,
         additional_context,
         updated_input,
+        synthetic_response,
         invalid_reason,
     })
 }
@@ -518,6 +534,51 @@ mod tests {
     use serde_json::json;
 
     use super::parse_permission_request;
+    use super::parse_pre_tool_use;
+
+    #[test]
+    fn pre_tool_use_extracts_synthetic_response_without_permission_decision() {
+        let parsed = parse_pre_tool_use(
+            &json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "syntheticResponse": {
+                        "answers": { "q1": { "answers": ["Recommended"] } }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("pre tool use hook output should parse");
+
+        assert_eq!(parsed.invalid_reason, None);
+        assert_eq!(parsed.block_reason, None);
+        assert_eq!(parsed.updated_input, None);
+        assert_eq!(
+            parsed.synthetic_response,
+            Some(json!({ "answers": { "q1": { "answers": ["Recommended"] } } }))
+        );
+    }
+
+    #[test]
+    fn pre_tool_use_drops_synthetic_response_when_invalid() {
+        // permissionDecision:ask is unsupported and produces an invalid_reason,
+        // which must also wipe the synthetic_response.
+        let parsed = parse_pre_tool_use(
+            &json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                    "syntheticResponse": { "answers": {} }
+                }
+            })
+            .to_string(),
+        )
+        .expect("pre tool use hook output should parse");
+
+        assert!(parsed.invalid_reason.is_some());
+        assert_eq!(parsed.synthetic_response, None);
+    }
 
     #[test]
     fn permission_request_rejects_reserved_updated_input_field() {

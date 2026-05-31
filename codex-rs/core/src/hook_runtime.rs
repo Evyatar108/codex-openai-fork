@@ -54,6 +54,11 @@ pub(crate) struct HookRuntimeOutcome {
 pub(crate) enum PreToolUseHookResult {
     Continue { updated_input: Option<Value> },
     Blocked(String),
+    // SANDBOX PATCH: pre-tool-use synthetic_response (3h-tail). When the hook
+    // chain returns a synthetic value, the tool dispatcher short-circuits the
+    // handler and surfaces the value to the model as a successful tool result.
+    // Precedence: Blocked > SyntheticResponse > Continue.
+    SyntheticResponse(Value),
 }
 
 struct ContextInjectingHookOutcome {
@@ -188,11 +193,40 @@ pub(crate) async fn run_pre_tool_use_hooks(
         block_reason,
         additional_contexts,
         updated_input,
+        synthetic_response,
     } = hooks.run_pre_tool_use(request).await;
     emit_hook_completed_events(sess, turn_context, hook_events).await;
     record_additional_contexts(sess, turn_context, additional_contexts).await;
 
+    pre_tool_use_outcome_to_result(
+        tool_name,
+        tool_input,
+        should_block,
+        block_reason,
+        updated_input,
+        synthetic_response,
+    )
+}
+
+/// Translates a `PreToolUseOutcome` into the hook-runtime result variant the
+/// tool dispatcher matches on.
+///
+/// Pulled out of `run_pre_tool_use_hooks` so the precedence rules
+/// (Blocked > SyntheticResponse > Continue) are unit-testable without a live
+/// Session, TurnContext, or hook engine.
+// SANDBOX PATCH: pre-tool-use synthetic_response (3h-tail).
+fn pre_tool_use_outcome_to_result(
+    tool_name: &HookToolName,
+    tool_input: &Value,
+    should_block: bool,
+    block_reason: Option<String>,
+    updated_input: Option<Value>,
+    synthetic_response: Option<Value>,
+) -> PreToolUseHookResult {
     if !should_block {
+        if let Some(value) = synthetic_response {
+            return PreToolUseHookResult::SyntheticResponse(value);
+        }
         return PreToolUseHookResult::Continue { updated_input };
     }
 
@@ -770,10 +804,13 @@ mod tests {
     use codex_protocol::protocol::HookSource;
     use pretty_assertions::assert_eq;
 
+    use super::PreToolUseHookResult;
     use super::additional_context_messages;
     use super::hook_run_analytics_payload;
     use super::hook_run_metric_tags;
+    use super::pre_tool_use_outcome_to_result;
     use crate::session::tests::make_session_and_context;
+    use crate::tools::hook_names::HookToolName;
     use codex_protocol::protocol::HookCompletedEvent;
     use codex_protocol::protocol::HookRunSummary;
     use codex_utils_absolute_path::test_support::PathBufExt;
@@ -904,6 +941,104 @@ mod tests {
             completed_at: Some(37),
             duration_ms: Some(27),
             entries: Vec::new(),
+        }
+    }
+
+    // SANDBOX PATCH: pre-tool-use synthetic_response (3h-tail) — variant
+    // precedence tests. The integration path (hook command stdout -> dispatcher
+    // short-circuit) is covered by the focused unit test in
+    // `hooks/src/events/pre_tool_use.rs` plus the registry-level dispatch test;
+    // here we lock down the translation rules in isolation so a refactor can't
+    // silently change the Blocked > SyntheticResponse > Continue precedence.
+    #[test]
+    fn synthetic_response_short_circuits_continue_path() {
+        let tool_name = HookToolName::new("request_user_input");
+        let tool_input = serde_json::json!({ "questions": [] });
+        let synthetic = serde_json::json!({
+            "answers": { "q1": { "answers": ["Recommended"] } }
+        });
+
+        let result = pre_tool_use_outcome_to_result(
+            &tool_name,
+            &tool_input,
+            /*should_block*/ false,
+            /*block_reason*/ None,
+            /*updated_input*/ Some(serde_json::json!({ "ignored": true })),
+            Some(synthetic.clone()),
+        );
+
+        match result {
+            PreToolUseHookResult::SyntheticResponse(value) => assert_eq!(value, synthetic),
+            other => panic!("expected SyntheticResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synthetic_response_does_not_override_blocked() {
+        let tool_name = HookToolName::new("request_user_input");
+        let tool_input = serde_json::json!({});
+        let synthetic = serde_json::json!({ "answers": {} });
+
+        let result = pre_tool_use_outcome_to_result(
+            &tool_name,
+            &tool_input,
+            /*should_block*/ true,
+            /*block_reason*/ Some("policy denied".to_string()),
+            /*updated_input*/ None,
+            Some(synthetic),
+        );
+
+        match result {
+            PreToolUseHookResult::Blocked(message) => {
+                assert!(
+                    message.contains("policy denied"),
+                    "blocked message should contain the block reason, got: {message}"
+                );
+                assert!(
+                    message.contains("request_user_input"),
+                    "blocked message should name the tool, got: {message}"
+                );
+            }
+            other => panic!("expected Blocked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_synthetic_response_falls_through_to_continue() {
+        let tool_name = HookToolName::new("request_user_input");
+        let tool_input = serde_json::json!({});
+        let updated = serde_json::json!({ "rewritten": true });
+
+        let result = pre_tool_use_outcome_to_result(
+            &tool_name,
+            &tool_input,
+            /*should_block*/ false,
+            /*block_reason*/ None,
+            Some(updated.clone()),
+            /*synthetic_response*/ None,
+        );
+
+        match result {
+            PreToolUseHookResult::Continue { updated_input } => {
+                assert_eq!(updated_input, Some(updated));
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for PreToolUseHookResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PreToolUseHookResult::Continue { updated_input } => f
+                .debug_struct("Continue")
+                .field("updated_input", updated_input)
+                .finish(),
+            PreToolUseHookResult::Blocked(reason) => f.debug_tuple("Blocked").field(reason).finish(),
+            PreToolUseHookResult::SyntheticResponse(value) => {
+                f.debug_tuple("SyntheticResponse").field(value).finish()
+            }
         }
     }
 }

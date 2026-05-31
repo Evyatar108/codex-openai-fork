@@ -41,6 +41,11 @@ pub struct PreToolUseOutcome {
     pub block_reason: Option<String>,
     pub additional_contexts: Vec<String>,
     pub updated_input: Option<Value>,
+    // SANDBOX PATCH: pre-tool-use synthetic_response (3h-tail). When set, the
+    // PreToolUse hook short-circuits the tool handler and the registry returns
+    // the value as a synthetic success result. Mutually exclusive with
+    // `should_block`: if any handler in the chain blocks, this is cleared.
+    pub synthetic_response: Option<Value>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -49,6 +54,7 @@ struct PreToolUseHandlerData {
     block_reason: Option<String>,
     additional_contexts_for_model: Vec<String>,
     updated_input: Option<Value>,
+    synthetic_response: Option<Value>,
 }
 
 pub(crate) fn preview(
@@ -86,6 +92,7 @@ pub(crate) async fn run(
             block_reason: None,
             additional_contexts: Vec::new(),
             updated_input: None,
+            synthetic_response: None,
         };
     }
 
@@ -126,6 +133,15 @@ pub(crate) async fn run(
     } else {
         latest_updated_input(&results)
     };
+    // SANDBOX PATCH: pre-tool-use synthetic_response (3h-tail). Latest-wins by
+    // completion order, mirroring `latest_updated_input`. Cleared when any hook
+    // in the chain blocks so the registry can route to the Blocked branch
+    // without leaking the synthetic value.
+    let synthetic_response = if should_block {
+        None
+    } else {
+        latest_synthetic_response(&results)
+    };
 
     PreToolUseOutcome {
         hook_events: results
@@ -138,7 +154,29 @@ pub(crate) async fn run(
         block_reason,
         additional_contexts,
         updated_input,
+        synthetic_response,
     }
+}
+
+/// Chooses the synthetic-response value from the hook that finished last.
+///
+/// Hook results stay in configured order for stable reporting, but the
+/// `PreToolUse` contract resolves competing synthetic responses by completion
+/// order, mirroring the `updated_input` rule.
+fn latest_synthetic_response(
+    results: &[dispatcher::ParsedHandler<PreToolUseHandlerData>],
+) -> Option<Value> {
+    results
+        .iter()
+        .filter_map(|result| {
+            result
+                .data
+                .synthetic_response
+                .clone()
+                .map(|value| (result.completion_order, value))
+        })
+        .max_by_key(|(completion_order, _)| *completion_order)
+        .map(|(_, value)| value)
 }
 
 /// Chooses the rewrite from the hook that actually finished last.
@@ -196,6 +234,7 @@ fn parse_completed(
     let mut block_reason = None;
     let mut additional_contexts_for_model = Vec::new();
     let mut updated_input = None;
+    let mut synthetic_response = None;
 
     match run_result.error.as_deref() {
         Some(error) => {
@@ -241,6 +280,11 @@ fn parse_completed(
                         }
                         if !should_block {
                             updated_input = parsed.updated_input;
+                            // SANDBOX PATCH: pre-tool-use synthetic_response
+                            // (3h-tail). Honor the sentinel only on the non-
+                            // blocked path so a deny + synthetic_response
+                            // combination still routes to the Blocked branch.
+                            synthetic_response = parsed.synthetic_response;
                         }
                     }
                 } else if output_parser::looks_like_json(&run_result.stdout) {
@@ -297,6 +341,7 @@ fn parse_completed(
             block_reason,
             additional_contexts_for_model,
             updated_input,
+            synthetic_response,
         },
         completion_order: 0,
     }
@@ -309,6 +354,7 @@ fn serialization_failure_outcome(hook_events: Vec<HookCompletedEvent>) -> PreToo
         block_reason: None,
         additional_contexts: Vec::new(),
         updated_input: None,
+        synthetic_response: None,
     }
 }
 
@@ -363,6 +409,7 @@ mod tests {
                 block_reason: Some("do not run that".to_string()),
                 additional_contexts_for_model: Vec::new(),
                 updated_input: None,
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
@@ -394,6 +441,7 @@ mod tests {
                 block_reason: None,
                 additional_contexts_for_model: Vec::new(),
                 updated_input: Some(serde_json::json!({ "command": "echo rewritten" })),
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Completed);
@@ -448,6 +496,7 @@ mod tests {
                 block_reason: None,
                 additional_contexts_for_model: Vec::new(),
                 updated_input: None,
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
@@ -479,6 +528,7 @@ mod tests {
                 block_reason: Some("do not run that".to_string()),
                 additional_contexts_for_model: Vec::new(),
                 updated_input: None,
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
@@ -510,6 +560,7 @@ mod tests {
                 block_reason: Some("do not run that".to_string()),
                 additional_contexts_for_model: vec!["remember this".to_string()],
                 updated_input: None,
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
@@ -547,6 +598,7 @@ mod tests {
                 block_reason: None,
                 additional_contexts_for_model: Vec::new(),
                 updated_input: None,
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
@@ -574,6 +626,7 @@ mod tests {
                 block_reason: None,
                 additional_contexts_for_model: Vec::new(),
                 updated_input: None,
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
@@ -605,6 +658,7 @@ mod tests {
                 block_reason: Some("do not run that".to_string()),
                 additional_contexts_for_model: vec!["nope".to_string()],
                 updated_input: None,
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);
@@ -638,6 +692,7 @@ mod tests {
                 block_reason: None,
                 additional_contexts_for_model: Vec::new(),
                 updated_input: None,
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Completed);
@@ -659,6 +714,7 @@ mod tests {
                 block_reason: None,
                 additional_contexts_for_model: Vec::new(),
                 updated_input: None,
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Failed);
@@ -686,6 +742,7 @@ mod tests {
                 block_reason: Some("blocked by policy".to_string()),
                 additional_contexts_for_model: Vec::new(),
                 updated_input: None,
+                synthetic_response: None,
             }
         );
         assert_eq!(parsed.completed.run.status, HookRunStatus::Blocked);

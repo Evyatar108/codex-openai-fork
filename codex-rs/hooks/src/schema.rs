@@ -244,6 +244,11 @@ pub(crate) struct PreToolUseHookSpecificOutputWire {
     pub updated_input: Option<Value>,
     #[serde(default)]
     pub additional_context: Option<String>,
+    // SANDBOX PATCH: pre-tool-use synthetic_response (3h-tail) — additive sentinel
+    // that lets PreToolUse hooks short-circuit the tool handler with a synthetic
+    // success value. Optional; serde default keeps existing hook payloads valid.
+    #[serde(default)]
+    pub synthetic_response: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

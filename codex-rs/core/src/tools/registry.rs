@@ -527,6 +527,71 @@ impl ToolRegistry {
                 PreToolUseHookResult::Continue {
                     updated_input: None,
                 } => {}
+                // SANDBOX PATCH: pre-tool-use synthetic_response (3h-tail).
+                // Short-circuits the tool handler: serialize the hook-provided
+                // value as the tool result, mark the dispatch complete, and
+                // return without ever calling tool.handle(). PostToolUse hooks
+                // are intentionally skipped — the handler never ran, so there
+                // is no real tool output to observe.
+                PreToolUseHookResult::SyntheticResponse(value) => {
+                    let content = match serde_json::to_string(&value) {
+                        Ok(content) => content,
+                        Err(err) => {
+                            let err = FunctionCallError::Fatal(format!(
+                                "failed to serialize PreToolUse synthetic response for {}: {err}",
+                                pre_tool_use_payload.tool_name.name()
+                            ));
+                            dispatch_trace.record_failed(&err);
+                            if let Some(terminal_outcome_reached) = &terminal_outcome_reached {
+                                terminal_outcome_reached.store(true, Ordering::Release);
+                            }
+                            notify_tool_finish(
+                                &invocation,
+                                ToolCallOutcome::Failed {
+                                    handler_executed: false,
+                                },
+                            )
+                            .await;
+                            return Err(err);
+                        }
+                    };
+                    let synthetic_output: Box<dyn ToolOutput> =
+                        Box::new(FunctionToolOutput::from_text(content, Some(true)));
+                    let synthetic_call_id = invocation.call_id.clone();
+                    let synthetic_payload = invocation.payload.clone();
+                    dispatch_trace.record_completed(
+                        &invocation,
+                        &synthetic_call_id,
+                        &synthetic_payload,
+                        synthetic_output.as_ref(),
+                    );
+                    if let Some(terminal_outcome_reached) = &terminal_outcome_reached {
+                        terminal_outcome_reached.store(true, Ordering::Release);
+                    }
+                    notify_tool_finish(
+                        &invocation,
+                        ToolCallOutcome::Completed { success: true },
+                    )
+                    .await;
+                    if let Err(err) = invocation
+                        .session
+                        .goal_runtime_apply(GoalRuntimeEvent::ToolCompleted {
+                            turn_context: invocation.turn.as_ref(),
+                            tool_name: tool_name.name.as_str(),
+                        })
+                        .await
+                    {
+                        warn!(
+                            "failed to account thread goal progress after synthetic PreToolUse response: {err}"
+                        );
+                    }
+                    return Ok(AnyToolResult {
+                        call_id: synthetic_call_id,
+                        payload: synthetic_payload,
+                        result: synthetic_output,
+                        post_tool_use_payload: None,
+                    });
+                }
             }
         }
 
