@@ -178,6 +178,7 @@ impl RemoteAppServerClient {
                 Self::connect_with_stream(channel_capacity, endpoint, stream, initialize_params)
                     .await
             }
+        }
     }
 
     pub fn server_version(&self) -> Option<&str> {
