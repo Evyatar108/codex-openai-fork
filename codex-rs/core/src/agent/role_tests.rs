@@ -472,6 +472,59 @@ fn built_in_roles_include_agent_spawner_with_description() {
     );
 }
 
+// SANDBOX PATCH: builtin-roles-extension
+#[test]
+fn built_in_roles_include_plan_with_config_file() {
+    let plan = built_in::configs()
+        .get("plan")
+        .expect("plan built-in role should be registered");
+    assert_eq!(
+        plan.config_file
+            .as_ref()
+            .and_then(|p| p.to_str())
+            .map(str::to_string),
+        Some("plan.toml".to_string()),
+    );
+    assert!(
+        plan.description
+            .as_deref()
+            .is_some_and(|description| description.contains("planning agent")),
+    );
+}
+
+// SANDBOX PATCH: builtin-roles-extension
+#[test]
+fn built_in_roles_include_verification_with_config_file() {
+    let verification = built_in::configs()
+        .get("verification")
+        .expect("verification built-in role should be registered");
+    assert_eq!(
+        verification
+            .config_file
+            .as_ref()
+            .and_then(|p| p.to_str())
+            .map(str::to_string),
+        Some("verification.toml".to_string()),
+    );
+    assert!(
+        verification
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("verification agent")),
+    );
+}
+
+// SANDBOX PATCH: builtin-roles-extension
+#[test]
+fn built_in_config_file_contents_load_plan_and_verification() {
+    let plan = built_in::config_file_contents(std::path::Path::new("plan.toml"))
+        .expect("plan.toml content embedded");
+    assert!(plan.contains("planning agent"));
+    let verification = built_in::config_file_contents(std::path::Path::new("verification.toml"))
+        .expect("verification.toml content embedded");
+    assert!(verification.contains("VERDICT: PASS"));
+}
+
 #[test]
 fn spawn_tool_spec_lists_user_defined_roles_before_built_ins() {
     let user_defined_roles = BTreeMap::from([(

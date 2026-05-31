@@ -358,6 +358,36 @@ Rules:
                         nickname_candidates: None,
                     }
                 ),
+                // SANDBOX PATCH: builtin-roles-extension
+                (
+                    "plan".to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Use `plan` for designing the approach to a coarse-grained task before any code is written.
+A planning agent investigates the codebase, identifies decision points, and produces a sequenced, checkable plan.
+Rules:
+- Use when the task description spans multiple files, has unclear scope, or has multiple plausible approaches.
+- Do NOT use for trivial single-file edits - plan-then-execute overhead is wasted there.
+- The planning agent does not modify code. Hand off the produced plan to a `worker` for execution.
+- You may spawn multiple `plan` agents in parallel when investigating independent sub-areas of a larger task."#.to_string()),
+                        config_file: Some("plan.toml".to_string().parse().unwrap_or_default()),
+                        nickname_candidates: None,
+                    }
+                ),
+                // SANDBOX PATCH: builtin-roles-extension
+                (
+                    "verification".to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Use `verification` to adversarially check another agent's claimed work.
+A verification agent reads the diff, runs the acceptance checks, and returns `VERDICT: PASS|FAIL|PARTIAL`.
+Rules:
+- Use after a `worker` or implementation agent reports done, before merging or marking the task shipped.
+- The verification agent is read-only - it does not implement fixes; it only emits a verdict + observations.
+- Give the verification agent the original task description AND the implementing agent's summary, so it can compare claim against reality.
+- The terminating line `VERDICT: PASS|FAIL|PARTIAL` is machine-parsed by downstream consumers; do not paraphrase it in the spawn prompt."#.to_string()),
+                        config_file: Some("verification.toml".to_string().parse().unwrap_or_default()),
+                        nickname_candidates: None,
+                    }
+                ),
                 // Awaiter is temp removed
 //                 (
 //                     "awaiter".to_string(),
@@ -385,9 +415,17 @@ Rules:
     pub(super) fn config_file_contents(path: &Path) -> Option<&'static str> {
         const EXPLORER: &str = include_str!("builtins/explorer.toml");
         const AWAITER: &str = include_str!("builtins/awaiter.toml");
+        // SANDBOX PATCH: builtin-roles-extension
+        const PLAN: &str = include_str!("builtins/plan.toml");
+        // SANDBOX PATCH: builtin-roles-extension
+        const VERIFICATION: &str = include_str!("builtins/verification.toml");
         match path.to_str()? {
             "explorer.toml" => Some(EXPLORER),
             "awaiter.toml" => Some(AWAITER),
+            // SANDBOX PATCH: builtin-roles-extension
+            "plan.toml" => Some(PLAN),
+            // SANDBOX PATCH: builtin-roles-extension
+            "verification.toml" => Some(VERIFICATION),
             _ => None,
         }
     }
