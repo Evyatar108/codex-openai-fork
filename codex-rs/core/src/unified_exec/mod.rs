@@ -121,6 +121,7 @@ pub(crate) struct AwaitBackgroundCompletionRequest {
     pub process_id: i32,
     pub timeout_ms: Option<u64>,
     pub max_output_tokens: Option<usize>,
+    pub truncation_policy: TruncationPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

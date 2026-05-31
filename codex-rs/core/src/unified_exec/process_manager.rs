@@ -821,6 +821,7 @@ impl UnifiedExecProcessManager {
             chunk_id,
             wall_time,
             raw_output: collected,
+            truncation_policy: request.truncation_policy,
             max_output_tokens: request.max_output_tokens,
             process_id: response_process_id,
             exit_code,

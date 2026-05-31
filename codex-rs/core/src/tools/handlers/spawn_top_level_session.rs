@@ -2,9 +2,10 @@ use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
-use crate::tools::registry::ToolHandler;
-use crate::tools::registry::ToolKind;
+use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolExecutor;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_tools::JsonSchema;
@@ -21,101 +22,115 @@ const HAPPY_CURRENT_SESSION_ID: &str = "HAPPY_CURRENT_SESSION_ID";
 const HAPPY_DAEMON_CONTROL_URL: &str = "HAPPY_DAEMON_CONTROL_URL";
 const PARENT_SESSION_ID_PATTERN: &str = "^[A-Za-z0-9_-]{1,128}$";
 
-// SANDBOX PATCH: plugin-scope-axis
+// SANDBOX PATCH: plugin-scope-axis — fork-only handler.
+// Trait migrated from old ToolHandler+ToolKind to new ToolExecutor<ToolInvocation>+CoreToolRuntime
+// shape (rebase-resume v0.135.0). Replant recipe: docs/implementation/patch-surface.md §15.
 pub struct SpawnTopLevelSessionHandler;
 
-impl ToolHandler for SpawnTopLevelSessionHandler {
-    type Output = FunctionToolOutput;
-
+#[async_trait::async_trait]
+impl ToolExecutor<ToolInvocation> for SpawnTopLevelSessionHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(TOOL_NAME)
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_spawn_top_level_session_tool())
+    fn spec(&self) -> ToolSpec {
+        create_spawn_top_level_session_tool()
     }
 
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        handle_spawn_top_level_session(invocation)
+            .await
+            .map(boxed_tool_output)
+    }
+}
+
+impl CoreToolRuntime for SpawnTopLevelSessionHandler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
+    }
+}
+
+async fn handle_spawn_top_level_session(
+    invocation: ToolInvocation,
+) -> Result<FunctionToolOutput, FunctionCallError> {
+    let ToolInvocation { turn, payload, .. } = invocation;
+    if !is_agent_spawner_subagent(&turn.session_source) {
+        return Err(FunctionCallError::RespondToModel(
+            "spawn_top_level_session is only available to agent-spawner subagents".to_string(),
+        ));
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
-        let ToolInvocation { turn, payload, .. } = invocation;
-        if !is_agent_spawner_subagent(&turn.session_source) {
+    let arguments = match payload {
+        ToolPayload::Function { arguments } => arguments,
+        _ => {
             return Err(FunctionCallError::RespondToModel(
-                "spawn_top_level_session is only available to agent-spawner subagents".to_string(),
+                "spawn_top_level_session received unsupported payload".to_string(),
             ));
         }
+    };
+    let args: SpawnTopLevelSessionArgs = parse_arguments(&arguments)?;
+    let parent_session_id = std::env::var(HAPPY_CURRENT_SESSION_ID).map_err(|_| {
+        FunctionCallError::RespondToModel(format!("missing {HAPPY_CURRENT_SESSION_ID}"))
+    })?;
+    if !is_valid_parent_session_id(&parent_session_id) {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "{HAPPY_CURRENT_SESSION_ID} must match {PARENT_SESSION_ID_PATTERN}"
+        )));
+    }
+    let control_url_str = std::env::var(HAPPY_DAEMON_CONTROL_URL).map_err(|_| {
+        FunctionCallError::RespondToModel(format!("missing {HAPPY_DAEMON_CONTROL_URL}"))
+    })?;
+    // SANDBOX PATCH: plugin-scope-axis — validate loopback-only before posting
+    let control_url = validate_loopback_control_url(&control_url_str)?;
+    let endpoint = format!(
+        "{}/spawn-session-from-session",
+        control_url.as_str().trim_end_matches('/')
+    );
+    let body = SpawnTopLevelSessionRequest {
+        parent_session_id,
+        config: args,
+    };
 
-        let arguments = match payload {
-            ToolPayload::Function { arguments } => arguments,
-            _ => {
-                return Err(FunctionCallError::RespondToModel(
-                    "spawn_top_level_session received unsupported payload".to_string(),
-                ));
-            }
-        };
-        let args: SpawnTopLevelSessionArgs = parse_arguments(&arguments)?;
-        let parent_session_id = std::env::var(HAPPY_CURRENT_SESSION_ID).map_err(|_| {
-            FunctionCallError::RespondToModel(format!("missing {HAPPY_CURRENT_SESSION_ID}"))
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "failed to call Happy daemon spawn endpoint: {err}"
+            ))
         })?;
-        if !is_valid_parent_session_id(&parent_session_id) {
-            return Err(FunctionCallError::RespondToModel(format!(
-                "{HAPPY_CURRENT_SESSION_ID} must match {PARENT_SESSION_ID_PATTERN}"
-            )));
-        }
-        let control_url_str = std::env::var(HAPPY_DAEMON_CONTROL_URL).map_err(|_| {
-            FunctionCallError::RespondToModel(format!("missing {HAPPY_DAEMON_CONTROL_URL}"))
-        })?;
-        // SANDBOX PATCH: plugin-scope-axis — validate loopback-only before posting
-        let control_url = validate_loopback_control_url(&control_url_str)?;
-        let endpoint = format!(
-            "{}/spawn-session-from-session",
-            control_url.as_str().trim_end_matches('/')
-        );
-        let body = SpawnTopLevelSessionRequest {
-            parent_session_id,
-            config: args,
-        };
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(FunctionCallError::RespondToModel(format!(
+            "Happy daemon spawn endpoint returned {status}: {text}"
+        )));
+    }
 
-        let response = reqwest::Client::new()
-            .post(endpoint)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|err| {
+    match response
+        .json::<SpawnTopLevelSessionResponse>()
+        .await
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "failed to parse Happy daemon spawn response: {err}"
+            ))
+        })? {
+        SpawnTopLevelSessionResponse::Success { session_id } => {
+            let result = SpawnTopLevelSessionResult { session_id };
+            let text = serde_json::to_string(&result).map_err(|err| {
                 FunctionCallError::RespondToModel(format!(
-                    "failed to call Happy daemon spawn endpoint: {err}"
+                    "failed to serialize spawn_top_level_session result: {err}"
                 ))
             })?;
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(FunctionCallError::RespondToModel(format!(
-                "Happy daemon spawn endpoint returned {status}: {text}"
-            )));
+            Ok(FunctionToolOutput::from_text(text, Some(true)))
         }
-
-        match response
-            .json::<SpawnTopLevelSessionResponse>()
-            .await
-            .map_err(|err| {
-                FunctionCallError::RespondToModel(format!(
-                    "failed to parse Happy daemon spawn response: {err}"
-                ))
-            })? {
-            SpawnTopLevelSessionResponse::Success { session_id } => {
-                let result = SpawnTopLevelSessionResult { session_id };
-                let text = serde_json::to_string(&result).map_err(|err| {
-                    FunctionCallError::RespondToModel(format!(
-                        "failed to serialize spawn_top_level_session result: {err}"
-                    ))
-                })?;
-                Ok(FunctionToolOutput::from_text(text, Some(true)))
-            }
-            SpawnTopLevelSessionResponse::Error { error_message } => {
-                Err(FunctionCallError::RespondToModel(error_message))
-            }
+        SpawnTopLevelSessionResponse::Error { error_message } => {
+            Err(FunctionCallError::RespondToModel(error_message))
         }
     }
 }
