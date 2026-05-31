@@ -21,7 +21,7 @@ use crate::tools::handlers::RequestPluginInstallHandler;
 use crate::tools::handlers::RequestUserInputHandler;
 use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::handlers::ShellCommandHandlerOptions;
-use crate::tools::handlers::ShellHandler;
+// SANDBOX PATCH: plugin-scope-axis — fork-only handler retained while upstream removed its re-export.
 use crate::tools::handlers::SpawnTopLevelSessionHandler;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandler;
@@ -90,6 +90,12 @@ use tracing::warn;
 const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
 type PlannedRuntime = Arc<dyn CoreToolRuntime>;
+
+#[derive(Default)]
+struct PlannedTools {
+    runtimes: Vec<PlannedRuntime>,
+    hosted_specs: Vec<ToolSpec>,
+}
 
 impl PlannedTools {
     fn add<T>(&mut self, handler: T)
@@ -621,67 +627,101 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         }));
     }
 
-    // SANDBOX PATCH: rebase-debt-fix v0.135.0 — re-port spec_plan orphan registrations.
-    // Pre-rebase, the spawn_top_level_session / multi-agent / multi-agent_v2 handler
-    // registrations lived inside the old builder-based fn signature. The v0.135.0
-    // upstream rebase squash migrated surrounding code to the planned_tools.add() API
-    // but left these registrations as an unparseable orphan block (referenced
-    // `config.X` / `params.X` / `builder.register_handler`). Restore them here using
-    // the new shape: builder.register_handler(Arc::new(X)) → planned_tools.add(X), and
-    // config.X → turn_context.{config,available_models,features} or existing helper fns.
-    // Replant recipe: see docs/implementation/patch-surface.md §15.
-
     // SANDBOX PATCH: plugin-scope-axis — agent-spawner subagent role.
     // Registration is unconditional; the handler itself enforces the agent-spawner
     // subagent gate ("spawn_top_level_session is only available to agent-spawner
     // subagents"). The pre-rebase fork-only `config.spawn_top_level_session` bool was
     // dropped by the rebase squash; the role-gate inside the handler is sufficient.
+    // Replant recipe: see docs/implementation/patch-surface.md §15.
     planned_tools.add(SpawnTopLevelSessionHandler);
+}
 
+fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
+    let turn_context = context.turn_context;
     if collab_tools_enabled(turn_context) {
         if multi_agent_v2_enabled(turn_context) {
-            planned_tools.add(SpawnAgentHandlerV2::new(SpawnAgentToolOptions {
-                available_models: turn_context.available_models.clone(),
-                agent_type_description: agent_type_description(
-                    turn_context,
-                    context.default_agent_type_description,
+            let exposure = if turn_context.config.multi_agent_v2.non_code_mode_only {
+                ToolExposure::DirectModelOnly
+            } else {
+                ToolExposure::Direct
+            };
+            let tool_namespace = namespace_tools_enabled(turn_context)
+                .then_some(turn_context.config.multi_agent_v2.tool_namespace.as_deref())
+                .flatten();
+            let agent_type_description =
+                agent_type_description(turn_context, context.default_agent_type_description);
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v2_handler(
+                    SpawnAgentHandlerV2::new(SpawnAgentToolOptions {
+                        available_models: turn_context.available_models.clone(),
+                        agent_type_description,
+                        hide_agent_type_model_reasoning: turn_context
+                            .config
+                            .multi_agent_v2
+                            .hide_spawn_agent_metadata,
+                        include_usage_hint: turn_context.config.multi_agent_v2.usage_hint_enabled,
+                        usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                        max_concurrent_threads_per_session: max_concurrent_threads_per_session(
+                            turn_context,
+                        ),
+                    }),
+                    tool_namespace,
                 ),
-                hide_agent_type_model_reasoning: turn_context
-                    .config
-                    .multi_agent_v2
-                    .hide_spawn_agent_metadata,
-                include_usage_hint: turn_context.config.multi_agent_v2.usage_hint_enabled,
-                usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                max_concurrent_threads_per_session: max_concurrent_threads_per_session(
-                    turn_context,
+                exposure,
+            ));
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v2_handler(SendMessageHandlerV2, tool_namespace),
+                exposure,
+            ));
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v2_handler(FollowupTaskHandlerV2, tool_namespace),
+                exposure,
+            ));
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v2_handler(
+                    WaitAgentHandlerV2::new(context.wait_agent_timeouts),
+                    tool_namespace,
                 ),
-            }));
-            planned_tools.add(SendMessageHandlerV2);
-            planned_tools.add(FollowupTaskHandlerV2);
-            planned_tools.add(WaitAgentHandlerV2::new(context.wait_agent_timeouts));
-            planned_tools.add(CloseAgentHandlerV2);
-            planned_tools.add(ListAgentsHandlerV2);
+                exposure,
+            ));
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v2_handler(CloseAgentHandlerV2, tool_namespace),
+                exposure,
+            ));
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v2_handler(ListAgentsHandlerV2, tool_namespace),
+                exposure,
+            ));
         } else {
-            planned_tools.add(SpawnAgentHandler::new(SpawnAgentToolOptions {
-                available_models: turn_context.available_models.clone(),
-                agent_type_description: agent_type_description(
-                    turn_context,
-                    context.default_agent_type_description,
-                ),
-                hide_agent_type_model_reasoning: turn_context
-                    .config
-                    .multi_agent_v2
-                    .hide_spawn_agent_metadata,
-                include_usage_hint: turn_context.config.multi_agent_v2.usage_hint_enabled,
-                usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                max_concurrent_threads_per_session: max_concurrent_threads_per_session(
-                    turn_context,
-                ),
-            }));
-            planned_tools.add(SendInputHandler);
-            planned_tools.add(ResumeAgentHandler);
-            planned_tools.add(WaitAgentHandler::new(context.wait_agent_timeouts));
-            planned_tools.add(CloseAgentHandler);
+            let agent_type_description =
+                agent_type_description(turn_context, context.default_agent_type_description);
+            let exposure =
+                if search_tool_enabled(turn_context) && namespace_tools_enabled(turn_context) {
+                    ToolExposure::Deferred
+                } else {
+                    ToolExposure::Direct
+                };
+            planned_tools.add_with_exposure(
+                SpawnAgentHandler::new(SpawnAgentToolOptions {
+                    available_models: turn_context.available_models.clone(),
+                    agent_type_description,
+                    hide_agent_type_model_reasoning: turn_context
+                        .config
+                        .multi_agent_v2
+                        .hide_spawn_agent_metadata,
+                    include_usage_hint: turn_context.config.multi_agent_v2.usage_hint_enabled,
+                    usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                    max_concurrent_threads_per_session: max_concurrent_threads_per_session(
+                        turn_context,
+                    ),
+                }),
+                exposure,
+            );
+            planned_tools.add_with_exposure(SendInputHandler, exposure);
+            planned_tools.add_with_exposure(ResumeAgentHandler, exposure);
+            planned_tools
+                .add_with_exposure(WaitAgentHandler::new(context.wait_agent_timeouts), exposure);
+            planned_tools.add_with_exposure(CloseAgentHandler, exposure);
         }
     }
 

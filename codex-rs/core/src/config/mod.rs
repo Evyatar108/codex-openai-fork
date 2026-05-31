@@ -3544,11 +3544,7 @@ impl Config {
             // terminals without bracketed-paste support can opt back in via
             // `disable_paste_burst = false` in `~/.codex/config.toml`.
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(true),
-            analytics_enabled: config_profile
-                .analytics
-                .as_ref()
-                .and_then(|a| a.enabled)
-                .or(cfg.analytics.as_ref().and_then(|a| a.enabled)),
+            analytics_enabled: cfg.analytics.as_ref().and_then(|a| a.enabled),
             feedback_enabled: cfg
                 .feedback
                 .as_ref()

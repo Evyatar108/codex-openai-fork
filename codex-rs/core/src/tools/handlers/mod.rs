@@ -69,12 +69,11 @@ pub use request_plugin_install::RequestPluginInstallHandler;
 pub use request_user_input::RequestUserInputHandler;
 pub use shell::ShellCommandHandler;
 pub(crate) use shell::ShellCommandHandlerOptions;
-pub use shell::ShellHandler;
+// SANDBOX PATCH: plugin-scope-axis — fork-only handler retained while upstream removed it.
 pub use spawn_top_level_session::SpawnTopLevelSessionHandler;
 pub use test_sync::TestSyncHandler;
 pub use tool_search::ToolSearchHandler;
-pub use unavailable_tool::UnavailableToolHandler;
-pub(crate) use unavailable_tool::unavailable_tool_message;
+// SANDBOX PATCH: D-002 — fork-only handler retained while upstream removed it.
 pub use unified_exec::AwaitBackgroundCompletionHandler;
 pub use unified_exec::ExecCommandHandler;
 pub(crate) use unified_exec::ExecCommandHandlerOptions;
