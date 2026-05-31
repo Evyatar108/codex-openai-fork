@@ -2,10 +2,22 @@ use codex_features::Feature;
 use codex_features::Features;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::TUI_VISIBLE_COLLABORATION_MODES;
+use codex_protocol::config_types::WebSearchConfig;
+use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::WebSearchToolType;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::path::PathBuf;
+
+use crate::can_request_original_image_detail;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ShellCommandBackendConfig {
@@ -264,7 +276,6 @@ impl ToolsConfig {
 
         let apply_patch_tool_type = match model_info.apply_patch_tool_type {
             Some(ApplyPatchToolType::Freeform) => Some(ApplyPatchToolType::Freeform),
-            Some(ApplyPatchToolType::Function) => Some(ApplyPatchToolType::Function),
             None => include_apply_patch_tool.then_some(ApplyPatchToolType::Freeform),
         };
 
