@@ -297,7 +297,8 @@ pub async fn read_mcp_resource(
         auth,
         /*elicitation_reviewer*/ None,
         // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
-        /*mcp_notifications_enabled*/ false,
+        /*mcp_notifications_enabled*/
+        false,
     )
     .await;
 
@@ -373,7 +374,8 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
         auth,
         /*elicitation_reviewer*/ None,
         // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
-        /*mcp_notifications_enabled*/ false,
+        /*mcp_notifications_enabled*/
+        false,
     )
     .await;
 

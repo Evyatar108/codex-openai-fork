@@ -27,8 +27,6 @@ use crate::codex_apps::normalize_codex_apps_tool_title;
 use crate::codex_apps::write_cached_codex_apps_tools_if_needed;
 use crate::elicitation::ElicitationRequestManager;
 // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
-use codex_mcp_notification_bridge::NotificationBridge;
-use codex_mcp_notification_bridge::SamplingRequestManager;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp::ToolPluginProvenance;
 use crate::runtime::McpRuntimeContext;
@@ -50,6 +48,8 @@ use codex_config::McpServerTransportConfig;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::HttpClient;
 use codex_exec_server::ReqwestHttpClient;
+use codex_mcp_notification_bridge::NotificationBridge;
+use codex_mcp_notification_bridge::SamplingRequestManager;
 use codex_protocol::protocol::Event;
 use codex_rmcp_client::ExecutorStdioServerLauncher;
 use codex_rmcp_client::LocalStdioServerLauncher;
