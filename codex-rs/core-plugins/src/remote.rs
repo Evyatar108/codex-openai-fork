@@ -577,6 +577,21 @@ pub async fn fetch_remote_installed_plugins(
     Ok(Vec::new())
 }
 
+// SANDBOX PATCH: rebase-debt-fix v0.135.0 — pure-data grouping stub.
+// Upstream's `group_remote_installed_plugins_by_marketplaces` was lost when
+// the v0.135.0 rebase squashed remote.rs; both call sites in manager.rs
+// already operate on input from the SANDBOX-stubbed
+// `fetch_remote_installed_plugins` above (always empty), so returning
+// `Vec::new()` is behavior-equivalent on this fork and preserves the
+// network-suppression invariant (enforced at the fetch boundary, not here).
+// Replant recipe: see docs/implementation/patch-surface.md §15.
+pub fn group_remote_installed_plugins_by_marketplaces(
+    _plugins: &[RemoteInstalledPlugin],
+    _visible_scopes: &[RemotePluginScope],
+) -> Vec<RemoteMarketplace> {
+    Vec::new()
+}
+
 // SANDBOX PATCH: reject plugin detail fetch — no HTTP requests to /ps/plugins/{id}.
 pub async fn fetch_remote_plugin_detail(
     _config: &RemotePluginServiceConfig,
