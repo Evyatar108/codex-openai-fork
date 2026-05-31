@@ -577,6 +577,24 @@ pub async fn fetch_remote_installed_plugins(
     Ok(Vec::new())
 }
 
+// SANDBOX PATCH: rebase-debt-fix v0.135.0 — share-context hydration stub.
+// Upstream's `fetch_remote_plugin_share_context` was lost when the v0.135.0
+// rebase squashed remote.rs; the sole caller in
+// `app-server/src/request_processors/plugins.rs::plugin_read` issues a
+// network fetch to hydrate share principals for a shared workspace plugin.
+// Returning `Ok(None)` preserves the network-suppression invariant and
+// drives the caller down its existing fallback path (warn + return the
+// locally-computed `PluginShareContext`). Remote plugin catalog is a
+// ChatGPT Business/Enterprise feature; copilot-api does not use it.
+// Replant recipe: see docs/implementation/patch-surface.md §15.
+pub async fn fetch_remote_plugin_share_context(
+    _config: &RemotePluginServiceConfig,
+    _auth: Option<&CodexAuth>,
+    _remote_plugin_id: &str,
+) -> Result<Option<RemotePluginShareContext>, RemotePluginCatalogError> {
+    Ok(None)
+}
+
 // SANDBOX PATCH: rebase-debt-fix v0.135.0 — pure-data grouping stub.
 // Upstream's `group_remote_installed_plugins_by_marketplaces` was lost when
 // the v0.135.0 rebase squashed remote.rs; both call sites in manager.rs
