@@ -418,6 +418,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
         default_zsh_path: None,
         base_instructions: None,
+        // SANDBOX PATCH: launcher safety rails config seam — exec-mode does not
+        // inject additional_instructions itself; callers can still set it via
+        // ~/.codex/config.toml (deserialized by ConfigToml -> Config below).
+        additional_instructions: None,
         developer_instructions: None,
         personality: None,
         compact_prompt: None,
