@@ -333,7 +333,13 @@ async fn run_codex_tool_session_inner(
                     EventMsg::AgentMessage(AgentMessageEvent { .. }) => {
                         // TODO: think how we want to support this in the MCP
                     }
-                    EventMsg::AgentReasoningRawContent(_)
+                    // SANDBOX PATCH: invariant 25 (mcp-server-notifications) —
+                    // already dispatched as MCP notifications via
+                    // send_event_as_notification above; no extra handling needed
+                    // in the mcp-server streaming loop.
+                    EventMsg::McpServerNotification(_)
+                    | EventMsg::McpSamplingRequest(_)
+                    | EventMsg::AgentReasoningRawContent(_)
                     | EventMsg::TurnStarted(_)
                     | EventMsg::ThreadSettingsApplied(_)
                     | EventMsg::TokenCount(_)
