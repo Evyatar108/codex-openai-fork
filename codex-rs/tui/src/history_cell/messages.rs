@@ -151,7 +151,7 @@ impl HistoryCell for UserHistoryCell {
             return Vec::new();
         }
 
-        let mut lines: Vec<Line<'static>> = vec![Line::from("").style(style)];
+        let mut lines: Vec<Line<'static>> = vec![Line::from("")];
 
         if let Some(wrapped_remote_images) = wrapped_remote_images {
             lines.extend(prefix_lines(
@@ -160,7 +160,7 @@ impl HistoryCell for UserHistoryCell {
                 "  ".into(),
             ));
             if wrapped_message.is_some() {
-                lines.push(Line::from("").style(style));
+                lines.push(Line::from(""));
             }
         }
 
@@ -172,7 +172,7 @@ impl HistoryCell for UserHistoryCell {
             ));
         }
 
-        lines.push(Line::from("").style(style));
+        lines.push(Line::from(""));
         lines
     }
 
