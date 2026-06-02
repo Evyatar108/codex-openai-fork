@@ -1742,6 +1742,18 @@ async fn try_run_sampling_request(
     let mut active_item_is_streaming_to_client = false;
     let receiving_span = trace_span!("receiving_stream");
     let mut completed_response_id: Option<String> = None;
+    // SANDBOX PATCH: opt-in stream-cut diagnostics (CODEX_STREAM_TRACE=1; off by default).
+    // See docs/implementation/patch-surface.md §14 invariant 26.
+    let diag_session_dir = turn_context
+        .config
+        .codex_home
+        .join(crate::rollout::SESSIONS_SUBDIR)
+        .join(sess.conversation_id.to_string());
+    let mut diag_tracker = Some(codex_stream_diagnostics::StreamCutTracker::new(
+        sess.conversation_id.to_string(),
+        turn_context.sub_id.clone(),
+        diag_session_dir.to_path_buf(),
+    ));
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
             parent: &receiving_span,
@@ -1764,19 +1776,40 @@ async fn try_run_sampling_request(
             .await
         {
             Ok(event) => event,
-            Err(codex_async_utils::CancelErr::Cancelled) => break Err(CodexErr::TurnAborted),
+            Err(codex_async_utils::CancelErr::Cancelled) => {
+                // SANDBOX PATCH: stream-cut diagnostics — finalize on cancel.
+                if let Some(t) = diag_tracker.take() {
+                    t.finish_with(codex_stream_diagnostics::StreamCutCause::ClientCancel);
+                }
+                break Err(CodexErr::TurnAborted);
+            }
         };
 
         let event = match event {
             Some(Ok(event)) => event,
-            Some(Err(err)) => break Err(err),
+            Some(Err(err)) => {
+                // SANDBOX PATCH: stream-cut diagnostics — finalize on provider error.
+                if let Some(t) = diag_tracker.take() {
+                    t.finish_with(codex_stream_diagnostics::StreamCutCause::ProviderError);
+                }
+                break Err(err);
+            }
             None => {
+                // SANDBOX PATCH: stream-cut diagnostics — finalize on EOF before completed.
+                if let Some(t) = diag_tracker.take() {
+                    t.finish_with(codex_stream_diagnostics::StreamCutCause::EofBeforeCompleted);
+                }
                 break Err(CodexErr::Stream(
                     "stream closed before response.completed".into(),
                     None,
                 ));
             }
         };
+
+        // SANDBOX PATCH: stream-cut diagnostics — record metadata for every event.
+        if let Some(t) = diag_tracker.as_mut() {
+            t.record(&event);
+        }
 
         sess.services
             .session_telemetry
@@ -1871,6 +1904,12 @@ async fn try_run_sampling_request(
                 needs_follow_up |= output_result.needs_follow_up;
                 // todo: remove before stabilizing multi-agent v2
                 if preempt_for_mailbox_mail && sess.input_queue.has_pending_mailbox_items().await {
+                    // SANDBOX PATCH: stream-cut diagnostics — finalize on preempt-mailbox break.
+                    // Treated as Completed because the upstream stream is still healthy; the
+                    // client chose to stop consuming.
+                    if let Some(t) = diag_tracker.take() {
+                        t.finish_with(codex_stream_diagnostics::StreamCutCause::Completed);
+                    }
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
                         last_agent_message,
@@ -2004,6 +2043,10 @@ async fn try_run_sampling_request(
                     needs_follow_up = true;
                 }
                 completed_response_id = Some(response_id);
+                // SANDBOX PATCH: stream-cut diagnostics — finalize on clean Completed.
+                if let Some(t) = diag_tracker.take() {
+                    t.finish_with(codex_stream_diagnostics::StreamCutCause::Completed);
+                }
                 break Ok(SamplingRequestResult {
                     needs_follow_up,
                     last_agent_message,

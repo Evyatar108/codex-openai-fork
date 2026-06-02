@@ -185,6 +185,12 @@ fn attach_windows_job(child: &Child) -> std::io::Result<()> {
     // This prevents PID recycling races when `kill_on_drop` closes the
     // Child's handle before the watcher runs.
     crate::windows_job::close_job_on_child_exit(raw_handle, job)?;
+    // SANDBOX PATCH: emit watcher-installed breadcrumb. Gated by CODEX_SHUTDOWN_TRACE=1; the
+    // corresponding `close` breadcrumb fires from `windows_job::close_job_on_child_exit`. See
+    // docs/implementation/patch-surface.md §14 invariant 26.
+    if let Some(pid) = child.id() {
+        codex_stream_diagnostics::trace_job_object_watcher_installed(pid);
+    }
     Ok(())
 }
 

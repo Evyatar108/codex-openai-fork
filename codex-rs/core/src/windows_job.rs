@@ -204,10 +204,22 @@ fn duplicate_for_wait(source_handle: HANDLE) -> io::Result<ProcessHandle> {
 /// `tokio::process::Child` closing its own handle (e.g. via `kill_on_drop`).
 pub fn close_job_on_child_exit(source_handle: HANDLE, job: JobHandle) -> io::Result<()> {
     let owned = duplicate_for_wait(source_handle)?;
+    // SANDBOX PATCH: capture handle addresses for the diagnostics breadcrumb. See
+    // docs/implementation/patch-surface.md §14 invariant 26. Correlate with the
+    // `watcher-installed` breadcrumb emitted from `spawn.rs::attach_windows_job` which
+    // carries the actual OS pid.
+    let diag_child_handle_addr = owned.0 as usize;
+    let diag_job_handle_addr = job.0 as usize;
     tokio::task::spawn_blocking(move || {
         // SAFETY: `owned.0` is a valid process handle with
         // `PROCESS_SYNCHRONIZE`; `INFINITE` is a documented wait timeout.
         unsafe { WaitForSingleObject(owned.0, INFINITE) };
+        // SANDBOX PATCH: emit breadcrumb just before the job close (drop). Gated by
+        // CODEX_SHUTDOWN_TRACE=1; zero overhead otherwise.
+        codex_stream_diagnostics::trace_job_object_close(
+            diag_child_handle_addr,
+            diag_job_handle_addr,
+        );
         drop(owned);
         drop(job);
     });

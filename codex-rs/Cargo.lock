@@ -2597,6 +2597,7 @@ dependencies = [
  "codex-shell-command",
  "codex-shell-escalation",
  "codex-state",
+ "codex-stream-diagnostics",
  "codex-terminal-detection",
  "codex-test-binary-support",
  "codex-thread-store",
@@ -3810,6 +3811,19 @@ dependencies = [
  "pretty_assertions",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "codex-stream-diagnostics"
+version = "0.135.0-copilot-api.1"
+dependencies = [
+ "codex-api",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

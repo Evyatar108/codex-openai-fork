@@ -52,6 +52,8 @@ codex-network-proxy = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
 codex-plugin-scope = { workspace = true }
+# SANDBOX PATCH: opt-in stream-cut diagnostics overlay (CODEX_STREAM_TRACE=1; off by default).
+codex-stream-diagnostics = { workspace = true }
 codex-model-provider = { workspace = true }
 codex-protocol = { workspace = true }
 codex-response-debug-context = { workspace = true }

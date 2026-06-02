@@ -118,6 +118,9 @@ members = [
     "../../../../codex-rs-overlay/codex-plugin-scope",
     "model-provider",
     "../../../../codex-rs-overlay/codex-invariant-tests",
+    # SANDBOX PATCH: opt-in stream-cut diagnostics overlay crate (gated by CODEX_STREAM_TRACE=1).
+    # Patch-surface §14 invariant 26; see docs/implementation/patch-surface.md.
+    "../../../../codex-rs-overlay/codex-stream-diagnostics",
 ]
 resolver = "2"
 
@@ -201,6 +204,8 @@ codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
 codex-plugin = { path = "plugin" }
 codex-plugin-scope = { path = "../../../../codex-rs-overlay/codex-plugin-scope" }
+# SANDBOX PATCH: opt-in stream-cut diagnostics overlay crate (gated by CODEX_STREAM_TRACE=1).
+codex-stream-diagnostics = { path = "../../../../codex-rs-overlay/codex-stream-diagnostics" }
 codex-model-provider = { path = "model-provider" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
