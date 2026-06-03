@@ -186,6 +186,10 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         show_raw_agent_reasoning: false,
         user_instructions: None,
         base_instructions: None,
+        // SANDBOX PATCH: launcher safety rails config seam — sample binary
+        // does not inject additional_instructions itself; callers can still
+        // set it via ~/.codex/config.toml (deserialized by ConfigToml -> Config below).
+        additional_instructions: None,
         developer_instructions: None,
         guardian_policy_config: None,
         include_permissions_instructions: false,
