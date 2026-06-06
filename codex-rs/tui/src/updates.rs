@@ -44,11 +44,14 @@ struct VersionInfo {
 }
 
 const VERSION_FILENAME: &str = "version.json";
-// We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
+// SANDBOX PATCH: this entire module is release-only (`#![cfg(not(debug_assertions))]`) and
+// dead (`get_upgrade_version` returns None). The upstream release API and the Homebrew cask
+// API are redirected/neutralized to the fork's GitHub releases API so no upstream
+// install/update references remain. The fork has no Homebrew cask.
 #[allow(dead_code)]
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+const HOMEBREW_CASK_API_URL: &str = "https://api.github.com/repos/gim-home/codex/releases/latest";
 #[allow(dead_code)]
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/gim-home/codex/releases/latest";
 
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]

@@ -201,10 +201,11 @@ impl WidgetRef for &UpdatePromptScreen {
             .dim(),
         ]));
         column.push("");
+        // SANDBOX PATCH: redirect upstream openai/codex release-notes link to the fork.
         column.push(
             Line::from(vec![
                 "Release notes: ".dim(),
-                "https://github.com/openai/codex/releases/latest"
+                "https://github.com/gim-home/codex/releases"
                     .dim()
                     .underlined(),
             ])
@@ -213,7 +214,7 @@ impl WidgetRef for &UpdatePromptScreen {
         column.push("");
         column.push(selection_option_row(
             0,
-            format!("Update now (runs `{update_command}`)"),
+            format!("Update now (see `{update_command}`)"),
             self.highlighted == UpdateSelection::UpdateNow,
         ));
         column.push(selection_option_row(

@@ -2,7 +2,10 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 #[cfg(not(debug_assertions))]
-pub(crate) const PACKAGE_URL: &str = "https://registry.npmjs.org/@openai%2fcodex";
+// SANDBOX PATCH: the fork publishes @gim-home/codex to GitHub Packages, not the public npm
+// registry. This const is dead (tui::updates::get_upgrade_version returns None); redirected
+// to remove the upstream public-npm @openai-scope reference.
+pub(crate) const PACKAGE_URL: &str = "https://npm.pkg.github.com/@gim-home%2fcodex";
 
 #[derive(Deserialize, Debug, Clone)]
 pub(crate) struct NpmPackageInfo {
@@ -76,7 +79,7 @@ mod tests {
         serde_json::json!({
             "dist": {
                 "integrity": format!("sha512-{version}"),
-                "tarball": format!("https://registry.npmjs.org/@openai/codex/-/codex-{version}.tgz"),
+                "tarball": format!("https://npm.pkg.github.com/@gim-home/codex/-/codex-{version}.tgz"),
             }
         })
     }

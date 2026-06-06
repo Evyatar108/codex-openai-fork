@@ -657,11 +657,13 @@ impl Daemon {
         }
 
         let managed_codex_path = self.managed_codex_bin.display();
+        // SANDBOX PATCH: the fork ships via GitHub Releases (gim-home/codex), not the upstream
+        // chatgpt.com installer script. Point users at the fork releases page.
         Err(anyhow!(
             "managed standalone Codex install not found at {managed_codex_path}\n\n\
              This command requires the standalone install managed by the Codex installer, because \
              the daemon starts and updates app-server from that fixed path.\n\n\
-             Install it with:\n  curl -fsSL https://chatgpt.com/codex/install.sh | sh\n\n\
+             Install it from the fork releases page:\n  https://github.com/gim-home/codex/releases\n\n\
              Then rerun the command you just tried."
         ))
     }

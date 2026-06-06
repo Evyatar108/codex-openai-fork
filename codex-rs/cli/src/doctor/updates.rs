@@ -22,8 +22,13 @@ use super::npm_global_root_check;
 use super::run_command;
 
 const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+// SANDBOX PATCH: redirect the doctor update probe from the upstream repo to the internal
+// fork (gim-home/codex). The fork ships via GitHub Releases / GitHub Packages. Internal-repo
+// visibility means an unauthenticated probe may 404, which updates_check degrades to a
+// Warning row (the upstream egress is eliminated regardless). The Homebrew cask probe (the
+// Homebrew formulae API) is removed entirely — the fork has no Homebrew cask.
+const GITHUB_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/gim-home/codex/releases/latest";
 
 /// Builds the update-health row for the current installation.
 ///
@@ -130,18 +135,27 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 }
 
 fn update_action_label(context: &InstallContext) -> &'static str {
+    // SANDBOX PATCH: upstream returned channel-specific commands referencing the upstream
+    // npm package, Homebrew, and the standalone installer. The fork ships via GitHub Releases
+    // / GitHub Packages, so every managed method points at the fork releases page instead.
     match &context.method {
-        InstallMethod::Npm => "npm install -g @openai/codex",
-        InstallMethod::Bun => "bun install -g @openai/codex",
-        InstallMethod::Brew => "brew upgrade --cask codex",
-        InstallMethod::Standalone { .. } => "standalone installer",
+        InstallMethod::Npm
+        | InstallMethod::Bun
+        | InstallMethod::Brew
+        | InstallMethod::Standalone { .. } => "see https://github.com/gim-home/codex/releases",
         InstallMethod::Other => "manual or unknown",
     }
 }
 
 fn fetch_latest_version(context: &InstallContext) -> Result<String, String> {
+    // SANDBOX PATCH: the fork has no Homebrew cask, so the brew probe to the Homebrew
+    // formulae API is neutralized (returns an error that degrades the updates row to a
+    // Warning). Every other method resolves the latest version from the fork's GitHub
+    // releases.
     match &context.method {
-        InstallMethod::Brew => fetch_homebrew_cask_version(),
+        InstallMethod::Brew => {
+            Err("the fork is not distributed via Homebrew; no cask version to probe".to_string())
+        }
         InstallMethod::Npm
         | InstallMethod::Bun
         | InstallMethod::Standalone { .. }
@@ -156,19 +170,16 @@ fn fetch_latest_github_release_version() -> Result<String, String> {
     }
 
     let info = http_get_json::<ReleaseInfo>(GITHUB_LATEST_RELEASE_URL)?;
-    info.tag_name
-        .strip_prefix("rust-v")
-        .map(str::to_string)
-        .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
+    parse_release_tag(&info.tag_name)
 }
 
-fn fetch_homebrew_cask_version() -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct HomebrewCaskInfo {
-        version: String,
-    }
-
-    http_get_json::<HomebrewCaskInfo>(HOMEBREW_CASK_API_URL).map(|info| info.version)
+// SANDBOX PATCH: fork release tags are `vX.Y.Z-copilot-api.N` (upstream used `rust-vX.Y.Z`),
+// so strip a leading `v` instead of `rust-v`. Extracted as a pure helper for unit testing.
+fn parse_release_tag(tag_name: &str) -> Result<String, String> {
+    tag_name
+        .strip_prefix('v')
+        .map(str::to_string)
+        .ok_or_else(|| format!("failed to parse latest tag {tag_name}"))
 }
 
 fn http_get_json<T>(url: &str) -> Result<T, String>
@@ -221,7 +232,7 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @openai/codex"
+            "see https://github.com/gim-home/codex/releases"
         );
         assert_eq!(
             update_action_label(&InstallContext {
@@ -230,5 +241,14 @@ mod tests {
             }),
             "manual or unknown"
         );
+    }
+
+    #[test]
+    fn parse_release_tag_strips_fork_v_prefix() {
+        assert_eq!(
+            parse_release_tag("v0.135.0-copilot-api.1"),
+            Ok("0.135.0-copilot-api.1".to_string())
+        );
+        assert!(parse_release_tag("rust-v0.135.0").is_err());
     }
 }

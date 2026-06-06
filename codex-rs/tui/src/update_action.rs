@@ -8,15 +8,19 @@ use codex_install_context::StandalonePlatform;
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via `npm install -g @openai/codex@latest`.
+    // SANDBOX PATCH: variants still identify the detected install method, but `command_args`
+    // no longer emits the upstream channel command (the upstream npm package, brew, or the
+    // chatgpt.com installer scripts). Every variant now resolves to the fork releases page
+    // (https://github.com/gim-home/codex/releases).
+    /// Detected an npm-managed install.
     NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
+    /// Detected a bun-managed install.
     BunGlobalLatest,
-    /// Update via `brew upgrade codex`.
+    /// Detected a Homebrew-managed install.
     BrewUpgrade,
-    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`.
+    /// Detected a standalone Unix install.
     StandaloneUnix,
-    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
+    /// Detected a standalone Windows install.
     StandaloneWindows,
 }
 
@@ -37,26 +41,20 @@ impl UpdateAction {
 
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
+        // SANDBOX PATCH: every upstream install/update channel (the upstream npm package,
+        // brew, and the chatgpt.com installer scripts) is redirected to the fork releases
+        // page. The fork ships via GitHub Releases / GitHub Packages and has no install.sh; a
+        // bare `npm install -g @gim-home/codex` also won't work for clean users (GitHub
+        // Packages needs a registry + read:packages token). This path is inert (tui::updates::
+        // get_upgrade_version returns None), but the hint is surfaced if a cell is built.
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
-            UpdateAction::StandaloneUnix => (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
-                ],
-            ),
-            UpdateAction::StandaloneWindows => (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
-                ],
-            ),
+            UpdateAction::NpmGlobalLatest
+            | UpdateAction::BunGlobalLatest
+            | UpdateAction::BrewUpgrade
+            | UpdateAction::StandaloneUnix
+            | UpdateAction::StandaloneWindows => {
+                ("https://github.com/gim-home/codex/releases", &[])
+            }
         }
     }
 
@@ -138,28 +136,23 @@ mod tests {
     }
 
     #[test]
-    fn standalone_update_commands_rerun_latest_installer() {
-        assert_eq!(
-            UpdateAction::StandaloneUnix.command_args(),
-            (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
-                ][..],
-            )
-        );
-        assert_eq!(
-            UpdateAction::StandaloneWindows.command_args(),
-            (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
-                ][..],
-            )
-        );
+    fn all_update_actions_point_at_fork_releases() {
+        // SANDBOX PATCH: upstream returned channel-specific installer commands; the fork
+        // redirects every variant to the releases page.
+        for action in [
+            UpdateAction::NpmGlobalLatest,
+            UpdateAction::BunGlobalLatest,
+            UpdateAction::BrewUpgrade,
+            UpdateAction::StandaloneUnix,
+            UpdateAction::StandaloneWindows,
+        ] {
+            let (command, args) = action.command_args();
+            assert_eq!(command, "https://github.com/gim-home/codex/releases");
+            assert!(args.is_empty());
+            assert_eq!(
+                action.command_str(),
+                "https://github.com/gim-home/codex/releases"
+            );
+        }
     }
 }

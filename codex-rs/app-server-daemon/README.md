@@ -33,10 +33,17 @@ running app-server version when applicable.
 
 ## Bootstrap flow
 
+> **Fork note (gim-home/codex):** this build ships via GitHub Releases and has no
+> `install.sh` self-updater. The standalone auto-update fetch is neutralized — the daemon
+> still launches and restarts the managed binary at its fixed path, but the updater loop no
+> longer downloads new binaries from the network. The "fetches via `install.sh`" rows below
+> describe the upstream mechanism that this fork disables; install or update the managed
+> binary manually from <https://github.com/gim-home/codex/releases>.
+
 For a new remote machine:
 
 ```sh
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+# Install the fork's standalone build from https://github.com/gim-home/codex/releases
 $HOME/.codex/packages/standalone/current/codex app-server daemon bootstrap --remote-control
 ```
 

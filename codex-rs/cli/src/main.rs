@@ -752,14 +752,20 @@ fn run_update_command() -> anyhow::Result<()> {
         );
     }
 
+    // SANDBOX PATCH: the fork ships via GitHub Releases / GitHub Packages, not the upstream
+    // npm/brew/chatgpt.com installers, so `codex update` cannot self-update. Point the user at
+    // the fork releases page instead of detecting an install method and spawning an installer
+    // (`UpdateAction::command_str()` is now the fork releases URL, not a runnable command).
+    // This also drops the upstream OpenAI install-docs fallback URL this subcommand used to
+    // print (the exact upstream literal is recorded in patch-surface.md Invariant 31).
+    // The auto-update-on-exit path (`handle_app_exit` -> `run_update_action`) stays inert
+    // because `tui::updates::get_upgrade_version` returns None, so no `UpdateAction` is ever
+    // produced for it.
     #[cfg(not(debug_assertions))]
     {
-        let Some(action) = codex_tui::get_update_action() else {
-            anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
-            );
-        };
-        run_update_action(action)
+        anyhow::bail!(
+            "`codex update` cannot self-update this build. Update Codex manually from https://github.com/gim-home/codex/releases"
+        );
     }
 }
 
