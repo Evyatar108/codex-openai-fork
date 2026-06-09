@@ -56,12 +56,23 @@ pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
+    // SANDBOX PATCH: D-001 Claude-via-Copilot chat-completions transport.
+    /// The OpenAI-compatible Chat Completions API at `/chat/completions`.
+    ///
+    /// Fork-only. This is never a provider-level default: the Copilot provider
+    /// keeps `wire_api = Responses`, and this variant is derived per-model at the
+    /// dispatch boundary (`core/src/client.rs`) from the `ModelInfo` wire-route
+    /// hint so a Claude row runs over chat while GPT-5.x keeps using Responses.
+    /// See `docs/implementation/patch-surface.md` §14.
+    ChatCompletions,
 }
 
 impl fmt::Display for WireApi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::Responses => "responses",
+            // SANDBOX PATCH: D-001 chat-completions wire value (see enum variant).
+            Self::ChatCompletions => "chatcompletions",
         };
         f.write_str(value)
     }
@@ -75,8 +86,14 @@ impl<'de> Deserialize<'de> for WireApi {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "responses" => Ok(Self::Responses),
+            // SANDBOX PATCH: D-001 accept the chat-completions wire value WITHOUT
+            // re-enabling the removed "chat" alias rejected on the next arm.
+            "chatcompletions" => Ok(Self::ChatCompletions),
             "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["responses", "chatcompletions"],
+            )),
         }
     }
 }

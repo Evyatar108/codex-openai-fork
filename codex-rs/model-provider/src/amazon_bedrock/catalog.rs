@@ -9,6 +9,7 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelVisibility;
+use codex_protocol::openai_models::ModelWireRoute;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
@@ -77,6 +78,8 @@ fn gpt_5_4_cmb_bedrock_model(priority: i32) -> ModelInfo {
         input_modalities: vec![InputModality::Text, InputModality::Image],
         used_fallback_model_metadata: false,
         supports_search_tool: true,
+        // SANDBOX PATCH: D-001 Bedrock models keep the provider-default wire route.
+        wire_route: ModelWireRoute::ProviderDefault,
     }
 }
 
@@ -119,6 +122,8 @@ fn bedrock_oss_model(slug: &str, display_name: &str, priority: i32) -> ModelInfo
         input_modalities: vec![InputModality::Text],
         used_fallback_model_metadata: false,
         supports_search_tool: false,
+        // SANDBOX PATCH: D-001 Bedrock models keep the provider-default wire route.
+        wire_route: ModelWireRoute::ProviderDefault,
     }
 }
 

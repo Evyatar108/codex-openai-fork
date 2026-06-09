@@ -32,6 +32,8 @@ codex-async-utils = { workspace = true }
 codex-code-mode = { workspace = true }
 codex-connectors = { workspace = true }
 codex-config = { workspace = true }
+# SANDBOX PATCH: D-001 Claude-via-Copilot chat-completions transport (overlay).
+codex-copilot = { workspace = true }
 codex-core-plugins = { workspace = true }
 codex-core-skills = { workspace = true }
 codex-exec-server = { workspace = true }

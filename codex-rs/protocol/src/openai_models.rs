@@ -257,6 +257,31 @@ const fn default_effective_context_window_percent() -> i64 {
     95
 }
 
+// SANDBOX PATCH: D-001 Claude-via-Copilot chat-completions transport.
+/// Fork-local per-model wire-transport route hint carried on [`ModelInfo`].
+///
+/// Defaults to [`ModelWireRoute::ProviderDefault`] so pre-hint `models_cache.json`
+/// entries and existing `ModelInfo` literals keep working. The Copilot `/models`
+/// translation sets [`ModelWireRoute::ChatCompletions`] for rows that advertise
+/// `/chat/completions` but not `/responses` (Claude), and `core/src/client.rs`
+/// maps this hint to `WireApi::ChatCompletions` at the dispatch boundary so a
+/// Claude row runs over chat while GPT-5.x keeps using Responses.
+///
+/// This is deliberately a protocol-local enum, NOT `Option<WireApi>`:
+/// `codex-protocol` must not depend on `model-provider-info` (cycle).
+/// See `docs/implementation/patch-surface.md` §14.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, TS, JsonSchema, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelWireRoute {
+    /// Use the provider's configured wire protocol (Responses for Copilot).
+    #[default]
+    ProviderDefault,
+    /// Route this model over the `/chat/completions` transport.
+    ChatCompletions,
+}
+
 /// Model metadata returned by the Codex backend `/models` endpoint.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ModelInfo {
@@ -318,6 +343,11 @@ pub struct ModelInfo {
     pub used_fallback_model_metadata: bool,
     #[serde(default)]
     pub supports_search_tool: bool,
+    // SANDBOX PATCH: D-001 per-model chat-completions wire-route hint.
+    /// Fork-local: which wire transport this model is routed over. `#[serde(default)]`
+    /// so pre-hint caches deserialize to `ProviderDefault`. See [`ModelWireRoute`].
+    #[serde(default)]
+    pub wire_route: ModelWireRoute,
 }
 
 impl ModelInfo {
@@ -612,6 +642,7 @@ mod tests {
             input_modalities: default_input_modalities(),
             used_fallback_model_metadata: false,
             supports_search_tool: false,
+            wire_route: crate::openai_models::ModelWireRoute::ProviderDefault,
         }
     }
 

@@ -284,6 +284,11 @@ fn proto_string_map(values: HashMap<String, String>) -> proto::StringMap {
 fn proto_wire_api(wire_api: WireApi) -> proto::WireApi {
     match wire_api {
         WireApi::Responses => proto::WireApi::Responses,
+        // SANDBOX PATCH: D-001. ChatCompletions is a fork-local per-model dispatch
+        // route with no remote-thread-config protobuf representation (and remote
+        // thread config / remote_control is force-disabled in this fork), so it maps
+        // to Unspecified. This helper is only exercised with Responses in real tests.
+        WireApi::ChatCompletions => proto::WireApi::Unspecified,
     }
 }
 

@@ -122,6 +122,34 @@ wire_api = "chat"
     assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
 }
 
+// SANDBOX PATCH: D-001. The chat-completions wire value round-trips and is
+// distinct from the removed "chat" alias (which still hard-errors above).
+#[test]
+fn test_chat_completions_wire_api_serde_round_trip() {
+    // Display agrees on the new wire value.
+    assert_eq!(WireApi::ChatCompletions.to_string(), "chatcompletions");
+    // Provider TOML can opt a provider into the chat wire, and it round-trips.
+    let provider: ModelProviderInfo = toml::from_str(
+        r#"
+name = "Chat provider"
+base_url = "https://api.githubcopilot.com"
+wire_api = "chatcompletions"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(provider.wire_api, WireApi::ChatCompletions);
+    // The legacy "chat" alias is still rejected with the migration error.
+    let err = toml::from_str::<ModelProviderInfo>(
+        r#"
+name = "Legacy"
+base_url = "https://api.openai.com/v1"
+wire_api = "chat"
+        "#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
+}
+
 #[test]
 fn test_deserialize_websocket_connect_timeout() {
     let provider_toml = r#"

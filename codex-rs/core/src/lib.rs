@@ -8,6 +8,8 @@
 mod apply_patch;
 mod apps;
 mod client;
+// SANDBOX PATCH: D-001 Claude-via-Copilot chat-completions transport (core seam).
+mod chat_transport;
 mod client_common;
 mod realtime_context;
 mod realtime_conversation;

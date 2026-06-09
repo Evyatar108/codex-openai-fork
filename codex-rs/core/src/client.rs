@@ -1579,7 +1579,10 @@ impl ModelClientSession {
         turn_metadata_header: Option<&str>,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
-        let wire_api = self.client.state.provider.info().wire_api;
+        let provider_wire = self.client.state.provider.info().wire_api;
+        // SANDBOX PATCH: D-001. Per-model routing: map the protocol-local route hint
+        // to the effective wire (the only place WireApi is derived from wire_route).
+        let wire_api = crate::chat_transport::effective_wire_api(model_info.wire_route, provider_wire);
         match wire_api {
             WireApi::Responses => {
                 if self.client.responses_websocket_enabled() {
@@ -1615,6 +1618,30 @@ impl ModelClientSession {
                     service_tier,
                     turn_metadata_header,
                     inference_trace,
+                )
+                .await
+            }
+            // SANDBOX PATCH: D-001 chat-completions dispatch arm. Builds the same
+            // ResponsesApiRequest core builds, serializes it, and routes it through
+            // the overlay chat transport (api.githubcopilot.com/chat/completions).
+            WireApi::ChatCompletions => {
+                let client_setup = self.client.current_client_setup().await?;
+                let request = self.client.build_responses_request(
+                    &client_setup.api_provider,
+                    prompt,
+                    model_info,
+                    effort,
+                    summary,
+                    service_tier,
+                )?;
+                let responses_body = serde_json::to_value(&request).map_err(|err| {
+                    CodexErr::Fatal(format!("serialize chat request body: {err}"))
+                })?;
+                let base_url = self.client.state.provider.info().base_url.clone();
+                crate::chat_transport::stream_chat_completions(
+                    responses_body,
+                    &model_info.slug,
+                    base_url.as_deref(),
                 )
                 .await
             }

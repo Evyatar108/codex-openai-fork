@@ -98,6 +98,7 @@ async fn models_client_hits_models_endpoint() {
             input_modalities: default_input_modalities(),
             used_fallback_model_metadata: false,
             supports_search_tool: false,
+            wire_route: codex_protocol::openai_models::ModelWireRoute::ProviderDefault,
         }],
     };
 

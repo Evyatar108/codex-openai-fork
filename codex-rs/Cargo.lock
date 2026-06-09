@@ -2568,6 +2568,7 @@ dependencies = [
  "codex-code-mode",
  "codex-config",
  "codex-connectors",
+ "codex-copilot",
  "codex-core-plugins",
  "codex-core-skills",
  "codex-exec-server",
