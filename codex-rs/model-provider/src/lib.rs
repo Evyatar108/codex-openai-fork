@@ -1,4 +1,7 @@
 mod amazon_bedrock;
+// SANDBOX PATCH: process-global resolution of the Anthropic-models opt-in gate
+// (`--enable-anthropic` flag / `features.anthropic_models` config / env fallback).
+mod anthropic_gate;
 mod auth;
 mod bearer_auth_provider;
 // SANDBOX PATCH: Copilot session routing lives in `copilot.rs`
@@ -15,6 +18,11 @@ mod provider;
 
 pub use auth::auth_provider_from_auth;
 pub use auth::unauthenticated_auth_provider;
+// SANDBOX PATCH: Anthropic-models gate accessors. `install_anthropic_gate` is
+// called once at config-build time; `anthropic_models_resolved` is read at the
+// transport/model-list gate call sites.
+pub use anthropic_gate::anthropic_models_resolved;
+pub use anthropic_gate::install_anthropic_gate;
 pub use bearer_auth_provider::BearerAuthProvider;
 // SANDBOX PATCH: dropped `pub use BearerAuthProvider as CoreAuthProvider` alias.
 // It collides with `codex_api::CoreAuthProvider` (the fork's Copilot-aware

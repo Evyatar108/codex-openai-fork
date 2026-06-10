@@ -25,7 +25,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use codex_copilot::CopilotAuth;
 use codex_copilot::CopilotHeaderSource;
-use codex_copilot::anthropic_models_enabled;
 use codex_login::default_client::build_reqwest_client;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::ModelsEndpointClient;
@@ -47,6 +46,8 @@ use serde::Deserialize;
 use tokio::sync::OnceCell;
 use tokio::time::timeout;
 use tracing::warn;
+
+use crate::anthropic_gate::anthropic_models_resolved;
 
 const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const MODELS_PATH: &str = "/models";
@@ -184,7 +185,7 @@ impl ModelsEndpointClient for CopilotModelsEndpoint {
             .map(|resp| resp.models)
             .unwrap_or_default();
 
-        let anthropic_enabled = anthropic_models_enabled();
+        let anthropic_enabled = anthropic_models_resolved();
         let models = body
             .data
             .into_iter()

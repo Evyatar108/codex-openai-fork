@@ -128,6 +128,10 @@ pub enum Feature {
     Collab,
     /// Enable task-path-based multi-agent routing.
     MultiAgentV2,
+    // SANDBOX PATCH: opt-in gate for the Claude-via-Copilot (Anthropic) transport.
+    /// Enable Anthropic (Claude-via-Copilot) models. Default off; also settable via
+    /// the `--enable-anthropic` flag or the `CODEX_ENABLE_ANTHROPIC` env var.
+    AnthropicModels,
     /// Enable CSV-backed agent job tools.
     SpawnCsv,
     /// Enable apps.
@@ -946,6 +950,15 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::MultiAgentV2,
         key: "multi_agent_v2",
         stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: opt-in gate for the Claude-via-Copilot (Anthropic) transport.
+    // Default off; the runtime gate also honors the legacy `CODEX_ENABLE_ANTHROPIC`
+    // env var and the `--enable-anthropic` flag (see codex-model-provider gate).
+    FeatureSpec {
+        id: Feature::AnthropicModels,
+        key: "anthropic_models",
+        stage: Stage::Stable,
         default_enabled: false,
     },
     FeatureSpec {
