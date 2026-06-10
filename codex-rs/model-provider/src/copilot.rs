@@ -2,6 +2,8 @@
 // CopilotHeaderSource + CoreAuthProvider.with_copilot, so call sites can use
 // provider.api_auth().await? uniformly without branching on is_copilot().
 
+mod gated_models_manager;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,6 +13,7 @@ use codex_api::Provider;
 use codex_api::SharedAuthProvider;
 use codex_copilot::CopilotAuth;
 use codex_copilot::CopilotHeaderSource;
+use codex_copilot::anthropic_models_enabled;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
@@ -23,6 +26,7 @@ use codex_protocol::openai_models::ModelsResponse;
 use tokio::sync::OnceCell;
 use tracing::warn;
 
+use crate::copilot::gated_models_manager::GatedModelsManager;
 use crate::copilot_models_endpoint::CopilotModelsEndpoint;
 use crate::provider::ModelProvider;
 use crate::provider::ProviderAccountResult;
@@ -58,10 +62,7 @@ impl std::fmt::Debug for CopilotModelProvider {
 }
 
 impl CopilotModelProvider {
-    pub(crate) fn new(
-        info: ModelProviderInfo,
-        auth_manager: Option<Arc<AuthManager>>,
-    ) -> Self {
+    pub(crate) fn new(info: ModelProviderInfo, auth_manager: Option<Arc<AuthManager>>) -> Self {
         Self {
             info,
             auth_manager,
@@ -119,10 +120,13 @@ impl ModelProvider for CopilotModelProvider {
         // Copilot-only slugs). When the caller provides an explicit
         // `model_catalog`, honor it as authoritative.
         if let Some(model_catalog) = config_model_catalog {
-            return Arc::new(StaticModelsManager::new(
-                self.auth_manager.clone(),
-                model_catalog,
-            ));
+            return GatedModelsManager::wrap(
+                Arc::new(StaticModelsManager::new(
+                    self.auth_manager.clone(),
+                    model_catalog,
+                )),
+                anthropic_models_enabled(),
+            );
         }
 
         let base_url = self
@@ -134,11 +138,14 @@ impl ModelProvider for CopilotModelProvider {
             base_url,
             Arc::clone(&self.copilot_auth),
         ));
-        Arc::new(OpenAiModelsManager::new(
-            codex_home,
-            endpoint,
-            self.auth_manager.clone(),
-        ))
+        GatedModelsManager::wrap(
+            Arc::new(OpenAiModelsManager::new(
+                codex_home,
+                endpoint,
+                self.auth_manager.clone(),
+            )),
+            anthropic_models_enabled(),
+        )
     }
 
     async fn api_provider(&self) -> CodexResult<Provider> {
@@ -172,10 +179,7 @@ impl ModelProvider for CopilotModelProvider {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    fn inject_copilot_auth_for_tests(
-        &self,
-        auth: Arc<CopilotAuth>,
-    ) -> Result<(), &'static str> {
+    fn inject_copilot_auth_for_tests(&self, auth: Arc<CopilotAuth>) -> Result<(), &'static str> {
         self.copilot_auth
             .set(auth)
             .map_err(|_| "copilot auth was already initialized")
@@ -288,9 +292,8 @@ mod tests {
             .await;
 
         let (_tmp, copilot_auth) = test_copilot_auth(&server);
-        let chatgpt_auth_manager = AuthManager::from_auth_for_testing(
-            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
-        );
+        let chatgpt_auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
         let provider = create_copilot_provider();
         let model_provider = CopilotModelProvider::new(provider, Some(chatgpt_auth_manager));
         model_provider

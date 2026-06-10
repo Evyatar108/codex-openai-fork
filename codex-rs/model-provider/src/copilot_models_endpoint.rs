@@ -25,6 +25,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use codex_copilot::CopilotAuth;
 use codex_copilot::CopilotHeaderSource;
+use codex_copilot::anthropic_models_enabled;
 use codex_login::default_client::build_reqwest_client;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::ModelsEndpointClient;
@@ -52,14 +53,6 @@ const MODELS_PATH: &str = "/models";
 const COPILOT_RESPONSES_ENDPOINT: &str = "/responses";
 // SANDBOX PATCH: D-001 Claude-via-Copilot chat-completions transport.
 const COPILOT_CHAT_ENDPOINT: &str = "/chat/completions";
-// SANDBOX PATCH: D-001 hidden-until-transport guardrail. While `false`, a
-// chat-only Claude row stays hidden from the picker even though the /models
-// filter recognizes it, preventing a partial-rollout false affordance (a
-// Claude row selectable before `core/src/client.rs` can route it). Flipped to
-// `true` once the chat-completions transport is wired in core (US-005); the
-// `core::chat_transport` static assert keeps the two in lockstep.
-// See `docs/implementation/patch-surface.md` §14.
-pub(crate) const CHAT_TRANSPORT_AVAILABLE: bool = true;
 
 #[derive(Debug, Deserialize)]
 struct CopilotModelsResponse {
@@ -191,11 +184,12 @@ impl ModelsEndpointClient for CopilotModelsEndpoint {
             .map(|resp| resp.models)
             .unwrap_or_default();
 
+        let anthropic_enabled = anthropic_models_enabled();
         let models = body
             .data
             .into_iter()
-            .filter(is_chat_responses_picker_entry)
-            .map(|entry| translate_entry(entry, &bundled))
+            .filter(|entry| is_chat_responses_picker_entry(entry, anthropic_enabled))
+            .map(|entry| translate_entry(entry, &bundled, anthropic_enabled))
             .collect::<Vec<_>>();
 
         if models.is_empty() {
@@ -205,19 +199,9 @@ impl ModelsEndpointClient for CopilotModelsEndpoint {
     }
 }
 
-// SANDBOX PATCH: D-001. Relaxed to ALSO surface chat-only Claude rows (advertising
-// `/chat/completions` but not `/responses`) once the chat transport is available,
-// tagging them to the chat wire via `wire_route`. A GPT `/responses` row is
-// unaffected. The `chat_transport_available` arg drives the hidden-until-transport
-// guardrail (see `CHAT_TRANSPORT_AVAILABLE`); the production caller passes the const.
-fn is_chat_responses_picker_entry(entry: &CopilotModelEntry) -> bool {
-    is_picker_entry_with_transport(entry, CHAT_TRANSPORT_AVAILABLE)
-}
-
-fn is_picker_entry_with_transport(
-    entry: &CopilotModelEntry,
-    chat_transport_available: bool,
-) -> bool {
+// SANDBOX PATCH: D-001/D-002. Surface chat-only Claude rows only when the
+// Anthropic transport opt-in is enabled. GPT `/responses` rows stay unaffected.
+fn is_chat_responses_picker_entry(entry: &CopilotModelEntry, anthropic_enabled: bool) -> bool {
     if !entry.model_picker_enabled {
         return false;
     }
@@ -237,12 +221,13 @@ fn is_picker_entry_with_transport(
         .supported_endpoints
         .iter()
         .any(|e| e == COPILOT_CHAT_ENDPOINT);
-    has_responses || (chat_transport_available && has_chat)
+    has_responses || (anthropic_enabled && has_chat)
 }
 
-// SANDBOX PATCH: D-001. A row advertising `/chat/completions` but NOT `/responses`
-// routes over the chat transport; everything else keeps the provider default.
-fn wire_route_for(entry: &CopilotModelEntry) -> ModelWireRoute {
+// SANDBOX PATCH: D-001/D-002. A row advertising `/chat/completions` but NOT
+// `/responses` routes over the chat transport only when Anthropic is opted in;
+// everything else keeps the provider default.
+fn wire_route_for(entry: &CopilotModelEntry, anthropic_enabled: bool) -> ModelWireRoute {
     let has_responses = entry
         .supported_endpoints
         .iter()
@@ -251,16 +236,20 @@ fn wire_route_for(entry: &CopilotModelEntry) -> ModelWireRoute {
         .supported_endpoints
         .iter()
         .any(|e| e == COPILOT_CHAT_ENDPOINT);
-    if has_chat && !has_responses {
+    if anthropic_enabled && has_chat && !has_responses {
         ModelWireRoute::ChatCompletions
     } else {
         ModelWireRoute::ProviderDefault
     }
 }
 
-fn translate_entry(entry: CopilotModelEntry, bundled: &[ModelInfo]) -> ModelInfo {
+fn translate_entry(
+    entry: CopilotModelEntry,
+    bundled: &[ModelInfo],
+    anthropic_enabled: bool,
+) -> ModelInfo {
     // SANDBOX PATCH: D-001 compute the wire-route before `entry` is consumed below.
-    let wire_route = wire_route_for(&entry);
+    let wire_route = wire_route_for(&entry, anthropic_enabled);
     if let Some(known) = bundled.iter().find(|info| info.slug == entry.id) {
         let mut info = known.clone();
         if let Some(name) = entry.name {
@@ -272,12 +261,12 @@ fn translate_entry(entry: CopilotModelEntry, bundled: &[ModelInfo]) -> ModelInfo
         info.wire_route = wire_route;
         return info;
     }
-    synthesize_from_capabilities(entry)
+    synthesize_from_capabilities(entry, anthropic_enabled)
 }
 
-fn synthesize_from_capabilities(entry: CopilotModelEntry) -> ModelInfo {
+fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: bool) -> ModelInfo {
     // SANDBOX PATCH: D-001 derive the wire-route before `entry` fields are moved below.
-    let wire_route = wire_route_for(&entry);
+    let wire_route = wire_route_for(&entry, anthropic_enabled);
     let supports = entry
         .capabilities
         .as_ref()
@@ -369,21 +358,27 @@ mod chat_transport_tests {
     }
 
     #[test]
-    fn chat_only_row_hidden_until_transport_available() {
+    fn chat_only_row_hidden_until_anthropic_enabled() {
         let chat_only = entry(json!({
             "id": "claude-sonnet-4.6",
             "model_picker_enabled": true,
             "supported_endpoints": ["/chat/completions", "/v1/messages"],
             "capabilities": { "type": "chat" }
         }));
-        // Hidden when the transport is not yet available; surfaced once it is.
-        assert!(!is_picker_entry_with_transport(
-            &chat_only, /*chat_transport_available*/ false
+        assert!(!is_chat_responses_picker_entry(
+            &chat_only, /*anthropic_enabled*/ false
         ));
-        assert!(is_picker_entry_with_transport(
-            &chat_only, /*chat_transport_available*/ true
+        assert!(is_chat_responses_picker_entry(
+            &chat_only, /*anthropic_enabled*/ true
         ));
-        assert_eq!(wire_route_for(&chat_only), ModelWireRoute::ChatCompletions);
+        assert_eq!(
+            wire_route_for(&chat_only, /*anthropic_enabled*/ false),
+            ModelWireRoute::ProviderDefault
+        );
+        assert_eq!(
+            wire_route_for(&chat_only, /*anthropic_enabled*/ true),
+            ModelWireRoute::ChatCompletions
+        );
 
         // A /responses GPT row is surfaced regardless and keeps the provider default.
         let responses_row = entry(json!({
@@ -392,12 +387,12 @@ mod chat_transport_tests {
             "supported_endpoints": ["/responses"],
             "capabilities": { "type": "chat" }
         }));
-        assert!(is_picker_entry_with_transport(
+        assert!(is_chat_responses_picker_entry(
             &responses_row,
-            /*chat_transport_available*/ false
+            /*anthropic_enabled*/ false
         ));
         assert_eq!(
-            wire_route_for(&responses_row),
+            wire_route_for(&responses_row, /*anthropic_enabled*/ false),
             ModelWireRoute::ProviderDefault
         );
     }
@@ -405,12 +400,15 @@ mod chat_transport_tests {
     #[test]
     fn wire_route_survives_models_cache_round_trip() {
         // A synthesized chat-only Claude row carries the ChatCompletions hint.
-        let info = synthesize_from_capabilities(entry(json!({
-            "id": "claude-sonnet-4.6",
-            "model_picker_enabled": true,
-            "supported_endpoints": ["/chat/completions", "/v1/messages"],
-            "capabilities": { "type": "chat" }
-        })));
+        let info = synthesize_from_capabilities(
+            entry(json!({
+                "id": "claude-sonnet-4.6",
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/chat/completions", "/v1/messages"],
+                "capabilities": { "type": "chat" }
+            })),
+            /*anthropic_enabled*/ true,
+        );
         assert_eq!(info.wire_route, ModelWireRoute::ChatCompletions);
 
         // Serialize -> re-read (the models_cache.json round trip) preserves the hint.
@@ -423,5 +421,28 @@ mod chat_transport_tests {
         without_hint.as_object_mut().unwrap().remove("wire_route");
         let legacy: ModelInfo = serde_json::from_value(without_hint).expect("legacy reload");
         assert_eq!(legacy.wire_route, ModelWireRoute::ProviderDefault);
+    }
+
+    #[test]
+    fn gpt_responses_row_unaffected_by_gate_in_both_states() {
+        // US-006 / AC #7: the opt-in gate must never touch a GPT `/responses` row. It
+        // is admitted identically and keeps `ProviderDefault` whether Anthropic is
+        // opted in or not — the gate branch is only reachable for chat-only rows.
+        let responses_row = entry(json!({
+            "id": "gpt-5.5",
+            "model_picker_enabled": true,
+            "supported_endpoints": ["/responses"],
+            "capabilities": { "type": "chat" }
+        }));
+        for anthropic_enabled in [false, true] {
+            assert!(is_chat_responses_picker_entry(
+                &responses_row,
+                anthropic_enabled
+            ));
+            assert_eq!(
+                wire_route_for(&responses_row, anthropic_enabled),
+                ModelWireRoute::ProviderDefault
+            );
+        }
     }
 }

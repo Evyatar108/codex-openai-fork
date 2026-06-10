@@ -24,11 +24,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use codex_api::ResponseEvent;
-use codex_copilot::ChatStreamEvent;
 use codex_copilot::ChatSseParser;
+use codex_copilot::ChatStreamEvent;
 use codex_copilot::ChatUsage;
 use codex_copilot::CopilotAuth;
 use codex_copilot::CopilotHeaderSource;
+use codex_copilot::anthropic_models_enabled;
 use codex_copilot::build_chat_request_body;
 use codex_copilot::payload::Initiator;
 use codex_copilot::payload::request_initiator;
@@ -50,12 +51,21 @@ const COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 
 /// Maps a model's protocol-local route hint to the EFFECTIVE wire protocol at the
 /// dispatch boundary. This is the single place `ModelWireRoute` becomes a `WireApi`:
-/// a chat-hinted model routes to `ChatCompletions`, everything else to the provider's
-/// wire. See `docs/implementation/patch-surface.md` §14 invariant 35.
+/// a chat-hinted model routes to `ChatCompletions` only when Anthropic transport
+/// is opted in, everything else to the provider's wire. See
+/// `docs/implementation/patch-surface.md` §14 invariant 35.
 pub(crate) fn effective_wire_api(route: ModelWireRoute, provider_wire: WireApi) -> WireApi {
+    effective_wire_api_gated(route, provider_wire, anthropic_models_enabled())
+}
+
+pub(crate) fn effective_wire_api_gated(
+    route: ModelWireRoute,
+    provider_wire: WireApi,
+    anthropic_enabled: bool,
+) -> WireApi {
     match route {
-        ModelWireRoute::ChatCompletions => WireApi::ChatCompletions,
-        ModelWireRoute::ProviderDefault => provider_wire,
+        ModelWireRoute::ChatCompletions if anthropic_enabled => WireApi::ChatCompletions,
+        ModelWireRoute::ChatCompletions | ModelWireRoute::ProviderDefault => provider_wire,
     }
 }
 
@@ -211,12 +221,10 @@ async fn handle_event(
     tx_event: &mpsc::Sender<Result<ResponseEvent>>,
 ) -> bool {
     match event {
-        ChatStreamEvent::ContentDelta(text) => {
-            tx_event
-                .send(Ok(ResponseEvent::OutputTextDelta(text)))
-                .await
-                .is_ok()
-        }
+        ChatStreamEvent::ContentDelta(text) => tx_event
+            .send(Ok(ResponseEvent::OutputTextDelta(text)))
+            .await
+            .is_ok(),
         ChatStreamEvent::ToolCallDelta {
             index,
             id,
@@ -280,20 +288,41 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn routing_maps_hint_to_effective_wire() {
-        // A chat-hinted model routes to ChatCompletions (never Responses).
+    fn routing_maps_hint_to_effective_wire_when_anthropic_enabled() {
         assert_eq!(
-            effective_wire_api(ModelWireRoute::ChatCompletions, WireApi::Responses),
+            effective_wire_api_gated(
+                ModelWireRoute::ChatCompletions,
+                WireApi::Responses,
+                /*anthropic_enabled*/ true,
+            ),
             WireApi::ChatCompletions,
         );
-        // A provider-default model keeps the provider's wire (Responses for GPT).
         assert_eq!(
-            effective_wire_api(ModelWireRoute::ProviderDefault, WireApi::Responses),
+            effective_wire_api_gated(
+                ModelWireRoute::ProviderDefault,
+                WireApi::Responses,
+                /*anthropic_enabled*/ true,
+            ),
             WireApi::Responses,
         );
-        // A Claude row never reaches the Responses transport.
-        assert_ne!(
-            effective_wire_api(ModelWireRoute::ChatCompletions, WireApi::Responses),
+    }
+
+    #[test]
+    fn routing_falls_back_to_responses_when_anthropic_disabled() {
+        assert_eq!(
+            effective_wire_api_gated(
+                ModelWireRoute::ChatCompletions,
+                WireApi::Responses,
+                /*anthropic_enabled*/ false,
+            ),
+            WireApi::Responses,
+        );
+        assert_eq!(
+            effective_wire_api_gated(
+                ModelWireRoute::ProviderDefault,
+                WireApi::Responses,
+                /*anthropic_enabled*/ false,
+            ),
             WireApi::Responses,
         );
     }
