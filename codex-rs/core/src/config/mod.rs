@@ -2557,7 +2557,7 @@ impl Config {
             web_search_request: override_tools_web_search_request,
         };
 
-        let configured_features = Features::from_sources(
+        let mut configured_features = Features::from_sources(
             FeatureConfigSource {
                 features: cfg.features.as_ref(),
                 experimental_use_unified_exec_tool: cfg.experimental_use_unified_exec_tool,
@@ -2567,6 +2567,22 @@ impl Config {
             },
             feature_overrides,
         );
+        // SANDBOX PATCH: resolve the Anthropic-models opt-in gate. The
+        // `--enable-anthropic` flag and `features.anthropic_models` config key
+        // collapse into a single explicit tri-state (the flag is injected as a
+        // `-c features.anthropic_models=true` override that outranks config.toml);
+        // `install_anthropic_gate` installs the process-global gate read by the
+        // transport/model-list call sites and returns the effective value, folding
+        // in the `CODEX_ENABLE_ANTHROPIC` env back-compat fallback. Reflect the
+        // effective value in the resolved feature set so `features list` and the
+        // config lock agree with runtime (env-only opt-in is never downgraded).
+        let anthropic_models_explicit = cfg
+            .features
+            .as_ref()
+            .and_then(|features| features.entries().get(Feature::AnthropicModels.key()).copied());
+        let anthropic_models_enabled =
+            codex_model_provider::install_anthropic_gate(anthropic_models_explicit);
+        configured_features.set_enabled(Feature::AnthropicModels, anthropic_models_enabled);
         let features = ManagedFeatures::from_configured_with_warnings(
             configured_features,
             feature_requirements,

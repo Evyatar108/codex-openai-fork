@@ -29,12 +29,12 @@ use codex_copilot::ChatStreamEvent;
 use codex_copilot::ChatUsage;
 use codex_copilot::CopilotAuth;
 use codex_copilot::CopilotHeaderSource;
-use codex_copilot::anthropic_models_enabled;
 use codex_copilot::build_chat_request_body;
 use codex_copilot::payload::Initiator;
 use codex_copilot::payload::request_initiator;
 use codex_copilot::send_chat_request;
 use codex_login::default_client::build_reqwest_client;
+use codex_model_provider::anthropic_models_resolved;
 use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
@@ -55,7 +55,7 @@ const COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 /// is opted in, everything else to the provider's wire. See
 /// `docs/implementation/patch-surface.md` §14 invariant 35.
 pub(crate) fn effective_wire_api(route: ModelWireRoute, provider_wire: WireApi) -> WireApi {
-    effective_wire_api_gated(route, provider_wire, anthropic_models_enabled())
+    effective_wire_api_gated(route, provider_wire, anthropic_models_resolved())
 }
 
 pub(crate) fn effective_wire_api_gated(

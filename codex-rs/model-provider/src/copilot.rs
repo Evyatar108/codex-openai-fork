@@ -13,7 +13,6 @@ use codex_api::Provider;
 use codex_api::SharedAuthProvider;
 use codex_copilot::CopilotAuth;
 use codex_copilot::CopilotHeaderSource;
-use codex_copilot::anthropic_models_enabled;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
@@ -26,6 +25,7 @@ use codex_protocol::openai_models::ModelsResponse;
 use tokio::sync::OnceCell;
 use tracing::warn;
 
+use crate::anthropic_gate::anthropic_models_resolved;
 use crate::copilot::gated_models_manager::GatedModelsManager;
 use crate::copilot_models_endpoint::CopilotModelsEndpoint;
 use crate::provider::ModelProvider;
@@ -125,7 +125,7 @@ impl ModelProvider for CopilotModelProvider {
                     self.auth_manager.clone(),
                     model_catalog,
                 )),
-                anthropic_models_enabled(),
+                anthropic_models_resolved(),
             );
         }
 
@@ -144,7 +144,7 @@ impl ModelProvider for CopilotModelProvider {
                 endpoint,
                 self.auth_manager.clone(),
             )),
-            anthropic_models_enabled(),
+            anthropic_models_resolved(),
         )
     }
 

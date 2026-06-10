@@ -70,6 +70,7 @@ use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::find_codex_home;
 use codex_core::config::resolve_profile_v2_config_path;
 use codex_features::FEATURES;
+use codex_features::Feature;
 use codex_features::Stage;
 use codex_features::is_known_feature_key;
 use codex_login::AuthManager;
@@ -792,6 +793,15 @@ struct FeatureToggles {
     /// Disable a feature (repeatable). Equivalent to `-c features.<name>=false`.
     #[arg(long = "disable", value_name = "FEATURE", action = clap::ArgAction::Append, global = true)]
     disable: Vec<String>,
+
+    // SANDBOX PATCH: friendlier opt-in for the Claude-via-Copilot (Anthropic)
+    // transport. Folds into `-c features.anthropic_models=true` so it outranks
+    // config.toml and flows to every subcommand. Default off; the gate also
+    // honors the legacy `CODEX_ENABLE_ANTHROPIC` env var as a fallback.
+    /// Enable Anthropic (Claude-via-Copilot) models. Equivalent to
+    /// `-c features.anthropic_models=true`. Default off.
+    #[arg(long = "enable-anthropic", global = true)]
+    enable_anthropic: bool,
 }
 
 #[derive(Debug, Default, Parser, Clone)]
@@ -818,6 +828,12 @@ impl FeatureToggles {
         for feature in &self.disable {
             Self::validate_feature(feature)?;
             v.push(format!("features.{feature}=false"));
+        }
+        // SANDBOX PATCH: fold `--enable-anthropic` into the same `-c` override
+        // path as `--enable anthropic_models`. Pushed last so it wins over any
+        // earlier `--disable anthropic_models` in the same invocation.
+        if self.enable_anthropic {
+            v.push(format!("features.{}=true", Feature::AnthropicModels.key()));
         }
         Ok(v)
     }
@@ -3446,6 +3462,7 @@ mod tests {
         let toggles = FeatureToggles {
             enable: vec!["web_search_request".to_string()],
             disable: vec!["unified_exec".to_string()],
+            ..Default::default()
         };
         let overrides = toggles.to_overrides().expect("valid features");
         assert_eq!(
@@ -3458,10 +3475,31 @@ mod tests {
     }
 
     #[test]
+    fn feature_toggles_enable_anthropic_folds_into_config_override() {
+        // The `--enable-anthropic` flag folds into the same `-c` override path,
+        // realizing the "flag > config" precedence (a `-c` override outranks
+        // config.toml for the same key).
+        let toggles = FeatureToggles {
+            enable_anthropic: true,
+            ..Default::default()
+        };
+        let overrides = toggles.to_overrides().expect("valid features");
+        assert_eq!(
+            overrides,
+            vec!["features.anthropic_models=true".to_string()]
+        );
+
+        // Default off: no override emitted when the flag is absent.
+        let toggles = FeatureToggles::default();
+        assert!(toggles.to_overrides().expect("valid features").is_empty());
+    }
+
+    #[test]
     fn feature_toggles_accept_legacy_linux_sandbox_flag() {
         let toggles = FeatureToggles {
             enable: vec!["use_linux_sandbox_bwrap".to_string()],
             disable: Vec::new(),
+            ..Default::default()
         };
         let overrides = toggles.to_overrides().expect("valid features");
         assert_eq!(
@@ -3475,6 +3513,7 @@ mod tests {
         let toggles = FeatureToggles {
             enable: vec!["image_detail_original".to_string()],
             disable: Vec::new(),
+            ..Default::default()
         };
         let overrides = toggles.to_overrides().expect("valid features");
         assert_eq!(
@@ -3488,6 +3527,7 @@ mod tests {
         let toggles = FeatureToggles {
             enable: vec!["does_not_exist".to_string()],
             disable: Vec::new(),
+            ..Default::default()
         };
         let err = toggles
             .to_overrides()
