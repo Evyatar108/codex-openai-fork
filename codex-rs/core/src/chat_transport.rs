@@ -38,6 +38,7 @@ use codex_login::default_client::build_reqwest_client;
 use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelWireRoute;
 use codex_protocol::protocol::TokenUsage;
@@ -81,6 +82,53 @@ struct ToolAccumulator {
     call_id: Option<String>,
     name: Option<String>,
     arguments: String,
+}
+
+/// Accumulates the streamed assistant message so the chat transport can emit the
+/// item lifecycle the session state machine requires: an `OutputItemAdded`
+/// (assistant message opened) BEFORE the first `OutputTextDelta` — without an open
+/// item the turn loop hits `error_or_panic("OutputTextDelta without active item")`
+/// (`session/turn.rs`) — and a closing `OutputItemDone` carrying the full text so
+/// the assistant message is recorded. The `/responses` path gets these item events
+/// from the provider; the chat path must synthesize them. The same `id` is reused
+/// for open and close so both refer to one item.
+#[derive(Default)]
+struct AssistantMessageItem {
+    id: Option<String>,
+    text: String,
+}
+
+impl AssistantMessageItem {
+    fn is_open(&self) -> bool {
+        self.id.is_some()
+    }
+
+    /// Marks the message open and returns the empty assistant-message item to send
+    /// as `OutputItemAdded`.
+    fn open(&mut self) -> ResponseItem {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.id = Some(id.clone());
+        ResponseItem::Message {
+            id: Some(id),
+            role: "assistant".to_string(),
+            content: Vec::new(),
+            phase: None,
+        }
+    }
+
+    /// Returns the finalized assistant-message item (full accumulated text) to send
+    /// as `OutputItemDone`, or `None` when no text was ever streamed.
+    fn finish(&self) -> Option<ResponseItem> {
+        let id = self.id.clone()?;
+        Some(ResponseItem::Message {
+            id: Some(id),
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: self.text.clone(),
+            }],
+            phase: None,
+        })
+    }
 }
 
 /// Stream a turn for a chat-routed (Claude-via-Copilot) model.
@@ -154,6 +202,7 @@ async fn run_chat_stream(
     let mut parser = ChatSseParser::new();
     let mut anthropic_parser = AnthropicSseParser::new();
     let mut tools: BTreeMap<i64, ToolAccumulator> = BTreeMap::new();
+    let mut message = AssistantMessageItem::default();
     let mut usage: Option<ChatUsage> = None;
     let mut finish_reason: Option<String> = None;
 
@@ -165,8 +214,15 @@ async fn run_chat_stream(
         match chunk {
             Ok(Some(bytes)) => {
                 for event in parser.push(&bytes) {
-                    if !handle_event(event, &mut tools, &mut usage, &mut finish_reason, &tx_event)
-                        .await
+                    if !handle_event(
+                        event,
+                        &mut tools,
+                        &mut message,
+                        &mut usage,
+                        &mut finish_reason,
+                        &tx_event,
+                    )
+                    .await
                     {
                         return;
                     }
@@ -179,6 +235,7 @@ async fn run_chat_stream(
                 if !handle_translated_events(
                     anthropic_parser.push(&bytes),
                     &mut tools,
+                    &mut message,
                     &mut usage,
                     &mut finish_reason,
                     &tx_event,
@@ -198,18 +255,39 @@ async fn run_chat_stream(
         }
     }
     for event in parser.finish() {
-        if !handle_event(event, &mut tools, &mut usage, &mut finish_reason, &tx_event).await {
+        if !handle_event(
+            event,
+            &mut tools,
+            &mut message,
+            &mut usage,
+            &mut finish_reason,
+            &tx_event,
+        )
+        .await
+        {
             return;
         }
     }
     if !handle_translated_events(
         anthropic_parser.finish(),
         &mut tools,
+        &mut message,
         &mut usage,
         &mut finish_reason,
         &tx_event,
     )
     .await
+    {
+        return;
+    }
+
+    // SANDBOX PATCH: D-001. Close the streamed assistant message (opened on its
+    // first text delta) so its full text is recorded, before finalizing tool calls.
+    if let Some(item) = message.finish()
+        && tx_event
+            .send(Ok(ResponseEvent::OutputItemDone(item)))
+            .await
+            .is_err()
     {
         return;
     }
@@ -252,6 +330,7 @@ async fn run_chat_stream(
 async fn handle_translated_events(
     events: Vec<TranslatedSseEvent>,
     tools: &mut BTreeMap<i64, ToolAccumulator>,
+    message: &mut AssistantMessageItem,
     usage: &mut Option<ChatUsage>,
     finish_reason: &mut Option<String>,
     tx_event: &mpsc::Sender<Result<ResponseEvent>>,
@@ -259,12 +338,14 @@ async fn handle_translated_events(
     for event in events {
         match event {
             TranslatedSseEvent::Chat(chat) => {
-                if !handle_event(chat, tools, usage, finish_reason, tx_event).await {
+                if !handle_event(chat, tools, message, usage, finish_reason, tx_event).await {
                     return false;
                 }
             }
-            TranslatedSseEvent::StreamError(message) => {
-                let _ = tx_event.send(Err(CodexErr::Stream(message, None))).await;
+            TranslatedSseEvent::StreamError(error_message) => {
+                let _ = tx_event
+                    .send(Err(CodexErr::Stream(error_message, None)))
+                    .await;
                 return false;
             }
         }
@@ -277,15 +358,33 @@ async fn handle_translated_events(
 async fn handle_event(
     event: ChatStreamEvent,
     tools: &mut BTreeMap<i64, ToolAccumulator>,
+    message: &mut AssistantMessageItem,
     usage: &mut Option<ChatUsage>,
     finish_reason: &mut Option<String>,
     tx_event: &mpsc::Sender<Result<ResponseEvent>>,
 ) -> bool {
     match event {
-        ChatStreamEvent::ContentDelta(text) => tx_event
-            .send(Ok(ResponseEvent::OutputTextDelta(text)))
-            .await
-            .is_ok(),
+        ChatStreamEvent::ContentDelta(text) => {
+            // SANDBOX PATCH: D-001. Open the assistant message item on the first
+            // text delta so the session state machine has an active item to attach
+            // the `OutputTextDelta` to (otherwise `session/turn.rs` hits
+            // `error_or_panic("OutputTextDelta without active item")`).
+            if !message.is_open() {
+                let item = message.open();
+                if tx_event
+                    .send(Ok(ResponseEvent::OutputItemAdded(item)))
+                    .await
+                    .is_err()
+                {
+                    return false;
+                }
+            }
+            message.text.push_str(&text);
+            tx_event
+                .send(Ok(ResponseEvent::OutputTextDelta(text)))
+                .await
+                .is_ok()
+        }
         ChatStreamEvent::ToolCallDelta {
             index,
             id,
@@ -409,5 +508,90 @@ mod tests {
         assert_eq!(usage.input_tokens, 19);
         assert_eq!(usage.output_tokens, 4);
         assert_eq!(usage.total_tokens, 23);
+    }
+
+    /// Regression: the chat path MUST open an assistant message item
+    /// (`OutputItemAdded`) before the first `OutputTextDelta`. Without it the
+    /// session turn loop hits `error_or_panic("OutputTextDelta without active
+    /// item")` (it panics in debug builds). The open event must be emitted exactly
+    /// once, and `finish()` must yield the full accumulated text as the closing
+    /// `OutputItemDone` item.
+    #[tokio::test]
+    async fn content_delta_opens_assistant_item_before_text_then_finishes() {
+        let (tx_event, mut rx_event) = mpsc::channel::<Result<ResponseEvent>>(16);
+        let mut tools: BTreeMap<i64, ToolAccumulator> = BTreeMap::new();
+        let mut message = AssistantMessageItem::default();
+        let mut usage: Option<ChatUsage> = None;
+        let mut finish_reason: Option<String> = None;
+
+        for delta in ["Hel", "lo"] {
+            assert!(
+                handle_event(
+                    ChatStreamEvent::ContentDelta(delta.to_string()),
+                    &mut tools,
+                    &mut message,
+                    &mut usage,
+                    &mut finish_reason,
+                    &tx_event,
+                )
+                .await
+            );
+        }
+        // Close the message exactly as `run_chat_stream` does at end of stream.
+        let done_item = message.finish().expect("assistant message should be open");
+        tx_event
+            .send(Ok(ResponseEvent::OutputItemDone(done_item)))
+            .await
+            .expect("send done");
+        drop(tx_event);
+
+        let mut events = Vec::new();
+        while let Some(event) = rx_event.recv().await {
+            events.push(event.expect("event"));
+        }
+
+        // First event opens an empty assistant message item.
+        match &events[0] {
+            ResponseEvent::OutputItemAdded(ResponseItem::Message { role, content, .. }) => {
+                assert_eq!(role, "assistant");
+                assert!(content.is_empty());
+            }
+            other => panic!("expected OutputItemAdded(assistant message), got {other:?}"),
+        }
+        // Then the text deltas, in order.
+        assert!(matches!(&events[1], ResponseEvent::OutputTextDelta(t) if t == "Hel"));
+        assert!(matches!(&events[2], ResponseEvent::OutputTextDelta(t) if t == "lo"));
+        // The item is opened exactly once across multiple deltas.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ResponseEvent::OutputItemAdded(_)))
+                .count(),
+            1,
+        );
+        // Last event closes the message with the full accumulated text.
+        match events.last() {
+            Some(ResponseEvent::OutputItemDone(ResponseItem::Message {
+                role, content, ..
+            })) => {
+                assert_eq!(role, "assistant");
+                assert_eq!(
+                    content,
+                    &vec![ContentItem::OutputText {
+                        text: "Hello".to_string()
+                    }]
+                );
+            }
+            other => panic!("expected OutputItemDone(assistant message), got {other:?}"),
+        }
+    }
+
+    /// A turn with no assistant text (pure tool call) must NOT synthesize an
+    /// assistant message item.
+    #[test]
+    fn no_text_leaves_assistant_message_unopened() {
+        let message = AssistantMessageItem::default();
+        assert!(!message.is_open());
+        assert!(message.finish().is_none());
     }
 }
