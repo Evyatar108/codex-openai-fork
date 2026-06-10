@@ -46,6 +46,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client_common::ResponseStream;
 
+mod anthropic_sse;
+
+use anthropic_sse::AnthropicSseParser;
+use anthropic_sse::TranslatedSseEvent;
+
 const CHANNEL_CAPACITY: usize = 1600;
 const COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 
@@ -147,6 +152,7 @@ async fn run_chat_stream(
         };
 
     let mut parser = ChatSseParser::new();
+    let mut anthropic_parser = AnthropicSseParser::new();
     let mut tools: BTreeMap<i64, ToolAccumulator> = BTreeMap::new();
     let mut usage: Option<ChatUsage> = None;
     let mut finish_reason: Option<String> = None;
@@ -165,6 +171,22 @@ async fn run_chat_stream(
                         return;
                     }
                 }
+                // SANDBOX PATCH: D-001. Also decode the Anthropic Messages-API SSE
+                // shape (the overlay `ChatSseParser` only understands the OpenAI
+                // chat shape and silently drops Anthropic text blocks). The two
+                // shapes are disjoint, so feeding the same bytes to both yields at
+                // most one decoder's events per stream.
+                if !handle_translated_events(
+                    anthropic_parser.push(&bytes),
+                    &mut tools,
+                    &mut usage,
+                    &mut finish_reason,
+                    &tx_event,
+                )
+                .await
+                {
+                    return;
+                }
             }
             Ok(None) => break,
             Err(err) => {
@@ -179,6 +201,17 @@ async fn run_chat_stream(
         if !handle_event(event, &mut tools, &mut usage, &mut finish_reason, &tx_event).await {
             return;
         }
+    }
+    if !handle_translated_events(
+        anthropic_parser.finish(),
+        &mut tools,
+        &mut usage,
+        &mut finish_reason,
+        &tx_event,
+    )
+    .await
+    {
+        return;
     }
 
     // Finalize assembled tool calls as typed function_call items (ordered by index).
@@ -209,6 +242,34 @@ async fn run_chat_stream(
             end_turn,
         }))
         .await;
+}
+
+/// Routes the Anthropic decoder's [`TranslatedSseEvent`]s: chat events reuse the
+/// shared [`handle_event`] mapping, while an in-band stream error aborts the turn
+/// (so an Anthropic `error` event surfaces as a visible error instead of a silent
+/// blank). Returns `false` when the consumer dropped or the stream errored, so
+/// the caller can stop.
+async fn handle_translated_events(
+    events: Vec<TranslatedSseEvent>,
+    tools: &mut BTreeMap<i64, ToolAccumulator>,
+    usage: &mut Option<ChatUsage>,
+    finish_reason: &mut Option<String>,
+    tx_event: &mpsc::Sender<Result<ResponseEvent>>,
+) -> bool {
+    for event in events {
+        match event {
+            TranslatedSseEvent::Chat(chat) => {
+                if !handle_event(chat, tools, usage, finish_reason, tx_event).await {
+                    return false;
+                }
+            }
+            TranslatedSseEvent::StreamError(message) => {
+                let _ = tx_event.send(Err(CodexErr::Stream(message, None))).await;
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Maps one neutral [`ChatStreamEvent`] into `ResponseEvent`(s). Returns `false`
@@ -262,6 +323,17 @@ async fn handle_event(
             true
         }
         ChatStreamEvent::Usage(chat_usage) => {
+            // Ignore content-free usage events. This also neutralizes a benign
+            // cross-shape false positive: the overlay `ChatSseParser` decodes the
+            // Anthropic `message_delta` line's top-level `usage` object as an
+            // all-`None` `ChatUsage`, which must not clobber the real token counts
+            // the Anthropic parser reports for the same line.
+            if chat_usage.prompt_tokens.is_none()
+                && chat_usage.completion_tokens.is_none()
+                && chat_usage.total_tokens.is_none()
+            {
+                return true;
+            }
             *usage = Some(chat_usage);
             true
         }
