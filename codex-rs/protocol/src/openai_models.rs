@@ -61,6 +61,48 @@ impl FromStr for ReasoningEffort {
     }
 }
 
+// SANDBOX PATCH: Knob B context-window tier. Fork-local concept (no upstream
+// equivalent) used to expose a per-model context-window selector for
+// Copilot-provider models that ship a curated default window below their full
+// ceiling. `Default` resolves to `ModelInfo::context_window` (the curated
+// default); `LongContext` resolves to `ModelInfo::max_context_window` (the full
+// window). Serialized snake_case so it matches both the `model_context_tier`
+// config key (`default`/`long_context`) and the v2 thread DTO wire form. See
+// docs/implementation/patch-surface.md §14 (Knob B invariants).
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Display,
+    JsonSchema,
+    TS,
+    EnumIter,
+    Hash,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum ContextWindowTier {
+    /// The model's curated default context window (`ModelInfo::context_window`).
+    #[default]
+    Default,
+    /// The model's full context window (`ModelInfo::max_context_window`).
+    LongContext,
+}
+
+impl FromStr for ContextWindowTier {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_value(serde_json::Value::String(s.to_string()))
+            .map_err(|_| format!("invalid context tier: {s}"))
+    }
+}
+
 /// Canonical user-input modality tags advertised by a model.
 #[derive(
     Debug,
@@ -164,6 +206,14 @@ pub struct ModelPreset {
     /// Input modalities accepted when composing user turns for this preset.
     #[serde(default = "default_input_modalities")]
     pub input_modalities: Vec<InputModality>,
+    // SANDBOX PATCH: Knob B context-window tier. The default (curated) and full
+    // context windows so the TUI picker can offer a `default | long_context`
+    // selector. `#[serde(default)]` so older caches/payloads omitting them
+    // deserialize as single-tier. See docs/implementation/patch-surface.md §14.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_window: Option<i64>,
 }
 
 /// Visibility of a model in the picker or APIs.
@@ -355,6 +405,29 @@ impl ModelInfo {
         self.context_window.or(self.max_context_window)
     }
 
+    // SANDBOX PATCH: Knob B context-window tier. A model exposes a selectable
+    // tier only when it ships a curated default window strictly below its full
+    // ceiling. See docs/implementation/patch-surface.md §14.
+    pub fn supports_context_window_tier_selection(&self) -> bool {
+        matches!(
+            (self.context_window, self.max_context_window),
+            (Some(default), Some(full)) if full > default
+        )
+    }
+
+    // SANDBOX PATCH: Knob B context-window tier. Resolve a tier to its window.
+    // Single-tier models ignore the tier and fall back to the resolved window,
+    // so a stale `long_context` selection can never widen a single-tier model.
+    pub fn context_window_for_tier(&self, tier: ContextWindowTier) -> Option<i64> {
+        if !self.supports_context_window_tier_selection() {
+            return self.resolved_context_window();
+        }
+        match tier {
+            ContextWindowTier::Default => self.context_window,
+            ContextWindowTier::LongContext => self.max_context_window,
+        }
+    }
+
     pub fn auto_compact_token_limit(&self) -> Option<i64> {
         let context_limit = self
             .resolved_context_window()
@@ -508,6 +581,10 @@ impl From<ModelInfo> for ModelPreset {
             availability_nux: info.availability_nux,
             supported_in_api: info.supported_in_api,
             input_modalities: info.input_modalities,
+            // SANDBOX PATCH: Knob B context-window tier. Carry both windows so
+            // the TUI picker can derive the tier options. See patch-surface §14.
+            context_window: info.context_window,
+            max_context_window: info.max_context_window,
         }
     }
 }
@@ -521,6 +598,28 @@ impl ModelPreset {
                 .additional_speed_tiers
                 .iter()
                 .any(|tier| tier == SPEED_TIER_FAST)
+    }
+
+    // SANDBOX PATCH: Knob B context-window tier. Mirrors
+    // `ModelInfo::supports_context_window_tier_selection` for the TUI picker,
+    // which operates on `ModelPreset`. See patch-surface §14.
+    pub fn supports_context_window_tier_selection(&self) -> bool {
+        matches!(
+            (self.context_window, self.max_context_window),
+            (Some(default), Some(full)) if full > default
+        )
+    }
+
+    // SANDBOX PATCH: Knob B context-window tier. The window for a tier, or the
+    // resolved single window for single-tier models.
+    pub fn context_window_for_tier(&self, tier: ContextWindowTier) -> Option<i64> {
+        if !self.supports_context_window_tier_selection() {
+            return self.context_window.or(self.max_context_window);
+        }
+        match tier {
+            ContextWindowTier::Default => self.context_window,
+            ContextWindowTier::LongContext => self.max_context_window,
+        }
     }
 }
 
@@ -883,6 +982,108 @@ mod tests {
 
         assert_eq!(model.resolved_context_window(), Some(400_000));
         assert_eq!(model.auto_compact_token_limit(), Some(360_000));
+    }
+
+    #[test]
+    fn context_window_tier_round_trips_serde() {
+        assert_eq!(
+            serde_json::to_string(&ContextWindowTier::Default).unwrap(),
+            "\"default\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ContextWindowTier::LongContext).unwrap(),
+            "\"long_context\""
+        );
+        assert_eq!("default".parse(), Ok(ContextWindowTier::Default));
+        assert_eq!("long_context".parse(), Ok(ContextWindowTier::LongContext));
+        assert!("bogus".parse::<ContextWindowTier>().is_err());
+        assert_eq!(ContextWindowTier::default(), ContextWindowTier::Default);
+    }
+
+    #[test]
+    fn context_window_tier_selection_only_when_full_exceeds_default() {
+        let two_tier = ModelInfo {
+            context_window: Some(400_000),
+            max_context_window: Some(1_050_000),
+            ..test_model(/*spec*/ None)
+        };
+        assert!(two_tier.supports_context_window_tier_selection());
+
+        let equal = ModelInfo {
+            context_window: Some(272_000),
+            max_context_window: Some(272_000),
+            ..test_model(/*spec*/ None)
+        };
+        assert!(!equal.supports_context_window_tier_selection());
+
+        let absent = ModelInfo {
+            context_window: None,
+            max_context_window: Some(400_000),
+            ..test_model(/*spec*/ None)
+        };
+        assert!(!absent.supports_context_window_tier_selection());
+    }
+
+    #[test]
+    fn context_window_for_tier_resolves_windows() {
+        let two_tier = ModelInfo {
+            context_window: Some(400_000),
+            max_context_window: Some(1_050_000),
+            ..test_model(/*spec*/ None)
+        };
+        assert_eq!(
+            two_tier.context_window_for_tier(ContextWindowTier::Default),
+            Some(400_000)
+        );
+        assert_eq!(
+            two_tier.context_window_for_tier(ContextWindowTier::LongContext),
+            Some(1_050_000)
+        );
+
+        // Single-tier models ignore a (possibly stale) tier and resolve to the
+        // single available window — `long_context` cannot widen them.
+        let single_tier = ModelInfo {
+            context_window: Some(200_000),
+            max_context_window: Some(200_000),
+            ..test_model(/*spec*/ None)
+        };
+        assert_eq!(
+            single_tier.context_window_for_tier(ContextWindowTier::LongContext),
+            Some(200_000)
+        );
+        assert_eq!(
+            single_tier.context_window_for_tier(ContextWindowTier::Default),
+            Some(200_000)
+        );
+    }
+
+    #[test]
+    fn model_preset_carries_context_windows() {
+        let preset = ModelPreset::from(ModelInfo {
+            context_window: Some(400_000),
+            max_context_window: Some(1_050_000),
+            ..test_model(/*spec*/ None)
+        });
+        assert_eq!(preset.context_window, Some(400_000));
+        assert_eq!(preset.max_context_window, Some(1_050_000));
+        assert!(preset.supports_context_window_tier_selection());
+        assert_eq!(
+            preset.context_window_for_tier(ContextWindowTier::LongContext),
+            Some(1_050_000)
+        );
+    }
+
+    #[test]
+    fn model_preset_deserializes_without_context_windows() {
+        // A preset with no tier windows serializes them away (skip_serializing_if)
+        // and must deserialize back cleanly, proving back-compat with older caches.
+        let preset = ModelPreset::from(test_model(/*spec*/ None));
+        let json = serde_json::to_string(&preset).unwrap();
+        assert!(!json.contains("context_window"));
+        let restored: ModelPreset = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.context_window, None);
+        assert_eq!(restored.max_context_window, None);
+        assert!(!restored.supports_context_window_tier_selection());
     }
 
     #[test]
