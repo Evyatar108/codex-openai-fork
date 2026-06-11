@@ -769,6 +769,25 @@ impl App {
             AppEvent::OpenReasoningPopup { model } => {
                 self.chat_widget.open_reasoning_popup(model);
             }
+            // SANDBOX PATCH: Knob B context-window tier.
+            AppEvent::OpenContextTierPopup { model, effort } => {
+                self.chat_widget.open_context_tier_popup(model, effort);
+            }
+            AppEvent::UpdateContextTier(tier) => {
+                self.on_update_context_tier(tier);
+                self.sync_active_thread_context_tier_setting(app_server, tier)
+                    .await;
+            }
+            AppEvent::PersistContextTier(tier) => {
+                if let Err(err) = crate::config_update::write_config_batch(
+                    app_server.request_handle(),
+                    crate::config_update::build_context_tier_selection_edits(tier),
+                )
+                .await
+                {
+                    tracing::error!(error = %err, "failed to persist context tier");
+                }
+            }
             AppEvent::OpenPlanReasoningScopePrompt { model, effort } => {
                 self.chat_widget
                     .open_plan_reasoning_scope_prompt(model, effort);

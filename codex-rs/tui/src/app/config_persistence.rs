@@ -716,6 +716,17 @@ impl App {
         self.chat_widget.set_reasoning_effort(effort);
     }
 
+    // SANDBOX PATCH: Knob B context-window tier. Apply the selected tier to the
+    // app config copy and the widget (which refreshes the gauge). Active-thread
+    // propagation is handled by `sync_active_thread_context_tier_setting`.
+    pub(super) fn on_update_context_tier(
+        &mut self,
+        tier: Option<codex_protocol::openai_models::ContextWindowTier>,
+    ) {
+        self.config.model_context_tier = tier;
+        self.chat_widget.set_context_tier(tier);
+    }
+
     pub(super) fn on_update_personality(&mut self, personality: Personality) {
         self.config.personality = Some(personality);
         self.chat_widget.set_personality(personality);

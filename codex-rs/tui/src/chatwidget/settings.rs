@@ -196,6 +196,17 @@ impl ChatWidget {
         self.refresh_model_dependent_surfaces();
     }
 
+    // SANDBOX PATCH: Knob B context-window tier. Store the selected tier in the
+    // widget's config copy and refresh the gauge / context surfaces so the new
+    // effective window is reflected.
+    pub(crate) fn set_context_tier(
+        &mut self,
+        tier: Option<codex_protocol::openai_models::ContextWindowTier>,
+    ) {
+        self.config.model_context_tier = tier;
+        self.refresh_model_dependent_surfaces();
+    }
+
     /// Set the personality in the widget's config copy.
     pub(crate) fn set_personality(&mut self, personality: Personality) {
         self.config.personality = Some(personality);
