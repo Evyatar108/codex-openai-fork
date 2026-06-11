@@ -611,6 +611,32 @@ fn hook_source_for_requirement_source(source: Option<&RequirementSource>) -> Hoo
     }
 }
 
+// SANDBOX PATCH: classify a discovered handler's `HookSource` as managed
+// (admin/MDM/system/legacy-managed-config or a managed requirement). This is the
+// exact inverse-free mirror of the per-source `is_managed` flag assigned during
+// discovery: config-layer sources map via `hook_metadata_for_config_layer_source`
+// (System/Mdm/LegacyManagedConfigFile/LegacyManagedConfigMdm => managed; the
+// rest unmanaged) and requirement handlers are always `is_managed = true` with a
+// source produced by `hook_source_for_requirement_source` (Mdm/System/
+// LegacyManagedConfigFile/LegacyManagedConfigMdm/CloudRequirements/Unknown). The
+// fork uses this to skip managed hooks by default (see `codex_hooks::managed_gate`).
+// The match is exhaustive on purpose: a new upstream `HookSource` variant forces
+// a compile error here so its managed-ness is decided deliberately on rebase.
+pub(crate) fn hook_source_is_managed(source: HookSource) -> bool {
+    match source {
+        HookSource::System
+        | HookSource::Mdm
+        | HookSource::LegacyManagedConfigFile
+        | HookSource::LegacyManagedConfigMdm
+        | HookSource::CloudRequirements
+        | HookSource::Unknown => true,
+        HookSource::User
+        | HookSource::Project
+        | HookSource::SessionFlags
+        | HookSource::Plugin => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use codex_config::ConfigLayerEntry;
@@ -1006,5 +1032,36 @@ mod tests {
             ),
             (HookSource::LegacyManagedConfigMdm, true),
         );
+    }
+
+    // SANDBOX PATCH: the source-based managed classifier must agree exactly with
+    // the per-source `is_managed` flag the discovery pipeline assigns, so the
+    // fork's managed-hook skip filter drops precisely the managed handlers.
+    #[test]
+    fn hook_source_is_managed_matches_discovery_managed_flag() {
+        for source in [
+            HookSource::System,
+            HookSource::Mdm,
+            HookSource::LegacyManagedConfigFile,
+            HookSource::LegacyManagedConfigMdm,
+            HookSource::CloudRequirements,
+            HookSource::Unknown,
+        ] {
+            assert!(
+                super::hook_source_is_managed(source),
+                "{source:?} should be classified managed"
+            );
+        }
+        for source in [
+            HookSource::User,
+            HookSource::Project,
+            HookSource::SessionFlags,
+            HookSource::Plugin,
+        ] {
+            assert!(
+                !super::hook_source_is_managed(source),
+                "{source:?} should be classified unmanaged"
+            );
+        }
     }
 }

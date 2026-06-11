@@ -485,6 +485,9 @@
             "js_repl_tools_only": {
               "type": "boolean"
             },
+            "managed_hooks": {
+              "type": "boolean"
+            },
             "memories": {
               "type": "boolean"
             },
@@ -4577,6 +4580,9 @@
           "type": "boolean"
         },
         "js_repl_tools_only": {
+          "type": "boolean"
+        },
+        "managed_hooks": {
           "type": "boolean"
         },
         "memories": {

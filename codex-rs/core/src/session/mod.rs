@@ -3374,6 +3374,9 @@ async fn build_hooks_for_config(
         legacy_notify_argv: config.notify.clone(),
         feature_enabled: config.features.enabled(Feature::CodexHooks),
         bypass_hook_trust: config.bypass_hook_trust,
+        // SANDBOX PATCH: skip managed/admin-config hooks unless the managed-hooks
+        // opt-in gate is enabled (fork default off).
+        skip_managed_hooks: !config.features.enabled(Feature::ManagedHooks),
         config_layer_stack: Some(config.config_layer_stack.clone()),
         plugin_hook_sources,
         plugin_hook_load_warnings,

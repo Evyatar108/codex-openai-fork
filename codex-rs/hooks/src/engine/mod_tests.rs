@@ -213,6 +213,7 @@ with Path(r"{log_path}").open("a", encoding="utf-8") as handle:
         legacy_notify_argv: None,
         feature_enabled: true,
         bypass_hook_trust: false,
+        skip_managed_hooks: false,
         config_layer_stack: Some(config_layer_stack.clone()),
         plugin_hook_sources: Vec::new(),
         plugin_hook_load_warnings: Vec::new(),
@@ -551,6 +552,94 @@ fn user_disablement_does_not_filter_managed_layer_hooks() {
     assert_eq!(
         discovered.hook_entries[0].trust_status,
         HookTrustStatus::Managed
+    );
+}
+
+// SANDBOX PATCH: managed/admin-config hooks are skipped (not listed, not
+// executed) by default and honored only when the managed-hooks opt-in gate is on.
+#[test]
+fn managed_hooks_skipped_by_default_and_honored_when_enabled() {
+    let temp = tempdir().expect("create temp dir");
+    let managed_config_path =
+        AbsolutePathBuf::try_from(temp.path().join("managed_config.toml")).expect("absolute path");
+    let user_config_path =
+        AbsolutePathBuf::try_from(temp.path().join("config.toml")).expect("absolute path");
+
+    let make_stack = || {
+        ConfigLayerStack::new(
+            vec![
+                ConfigLayerEntry::new(
+                    ConfigLayerSource::User {
+                        file: user_config_path.clone(),
+                        profile: None,
+                    },
+                    config_with_pre_tool_use_hook("python3 /tmp/user-hook.py"),
+                ),
+                ConfigLayerEntry::new(
+                    ConfigLayerSource::LegacyManagedConfigTomlFromFile {
+                        file: managed_config_path.clone(),
+                    },
+                    config_with_pre_tool_use_hook("python3 /tmp/managed-hook.py"),
+                ),
+            ],
+            ConfigRequirements::default(),
+            ConfigRequirementsToml::default(),
+        )
+        .expect("config layer stack")
+    };
+
+    // Listing: managed hook hidden by default, both present when honored.
+    let skipped = crate::list_hooks(crate::HooksConfig {
+        feature_enabled: true,
+        skip_managed_hooks: true,
+        config_layer_stack: Some(make_stack()),
+        ..Default::default()
+    });
+    assert_eq!(skipped.hooks.len(), 1);
+    assert!(
+        skipped.hooks.iter().all(|hook| !hook.is_managed),
+        "managed hooks must be skipped by default: {:?}",
+        skipped.hooks
+    );
+
+    let honored = crate::list_hooks(crate::HooksConfig {
+        feature_enabled: true,
+        skip_managed_hooks: false,
+        config_layer_stack: Some(make_stack()),
+        ..Default::default()
+    });
+    assert_eq!(honored.hooks.len(), 2);
+    assert!(honored.hooks.iter().any(|hook| hook.is_managed));
+
+    // Active engine: retaining non-managed handlers drops the managed handler
+    // (which would otherwise execute) while keeping the user handler.
+    let stack = make_stack();
+    let mut engine = ClaudeHooksEngine::new(
+        /*enabled*/ true,
+        /*bypass_hook_trust*/ true,
+        Some(&stack),
+        Vec::new(),
+        Vec::new(),
+        CommandShell {
+            program: String::new(),
+            args: Vec::new(),
+        },
+    );
+    assert!(
+        engine
+            .handlers
+            .iter()
+            .any(|handler| handler.source == HookSource::LegacyManagedConfigFile)
+    );
+    engine.retain_non_managed_handlers();
+    assert_eq!(engine.handlers.len(), 1);
+    assert_eq!(engine.handlers[0].source, HookSource::User);
+    assert!(
+        engine
+            .handlers
+            .iter()
+            .all(|handler| !super::discovery::hook_source_is_managed(handler.source)),
+        "managed handlers must not remain after retain"
     );
 }
 
@@ -1208,6 +1297,7 @@ print(json.dumps({
         legacy_notify_argv: None,
         feature_enabled: true,
         bypass_hook_trust: false,
+        skip_managed_hooks: false,
         config_layer_stack: None,
         plugin_hook_sources,
         plugin_hook_load_warnings: Vec::new(),

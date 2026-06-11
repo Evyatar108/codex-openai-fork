@@ -132,6 +132,11 @@ pub enum Feature {
     /// Enable Anthropic (Claude-via-Copilot) models. Default off; also settable via
     /// the `--enable-anthropic` flag or the `CODEX_ENABLE_ANTHROPIC` env var.
     AnthropicModels,
+    // SANDBOX PATCH: opt-in gate for honoring managed/admin-config hooks.
+    /// Honor managed/admin-config hooks (MDM/system/legacy-managed-config and
+    /// managed requirements). Default off in the fork; also settable via the
+    /// `--enable-managed-hooks` flag or the `CODEX_ENABLE_MANAGED_HOOKS` env var.
+    ManagedHooks,
     /// Enable CSV-backed agent job tools.
     SpawnCsv,
     /// Enable apps.
@@ -958,6 +963,16 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::AnthropicModels,
         key: "anthropic_models",
+        stage: Stage::Stable,
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: opt-in gate for honoring managed/admin-config hooks. Default
+    // off (the fork skips managed hooks); the gate also honors the
+    // `CODEX_ENABLE_MANAGED_HOOKS` env var and the `--enable-managed-hooks` flag
+    // (see codex-hooks managed_gate).
+    FeatureSpec {
+        id: Feature::ManagedHooks,
+        key: "managed_hooks",
         stage: Stage::Stable,
         default_enabled: false,
     },

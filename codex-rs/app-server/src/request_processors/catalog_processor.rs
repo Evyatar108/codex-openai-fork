@@ -623,6 +623,9 @@ impl CatalogRequestProcessor {
             let hooks = codex_hooks::list_hooks(codex_hooks::HooksConfig {
                 feature_enabled: config.features.enabled(Feature::CodexHooks),
                 bypass_hook_trust: config.bypass_hook_trust,
+                // SANDBOX PATCH: hide managed/admin-config hooks unless the
+                // managed-hooks opt-in gate is enabled (fork default off).
+                skip_managed_hooks: !config.features.enabled(Feature::ManagedHooks),
                 config_layer_stack: Some(config.config_layer_stack),
                 plugin_hook_sources: plugin_outcome.effective_plugin_hook_sources(),
                 plugin_hook_load_warnings: plugin_outcome.effective_plugin_hook_warnings(),

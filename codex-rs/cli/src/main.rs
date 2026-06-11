@@ -802,6 +802,16 @@ struct FeatureToggles {
     /// `-c features.anthropic_models=true`. Default off.
     #[arg(long = "enable-anthropic", global = true)]
     enable_anthropic: bool,
+
+    // SANDBOX PATCH: friendlier opt-in for honoring managed/admin-config hooks,
+    // which the fork skips by default. Folds into `-c features.managed_hooks=true`
+    // so it outranks config.toml and flows to every subcommand. Default off; the
+    // gate also honors the `CODEX_ENABLE_MANAGED_HOOKS` env var as a fallback.
+    /// Honor managed/admin-config hooks (MDM/system/legacy-managed-config and
+    /// managed requirements). Equivalent to `-c features.managed_hooks=true`.
+    /// Default off.
+    #[arg(long = "enable-managed-hooks", global = true)]
+    enable_managed_hooks: bool,
 }
 
 #[derive(Debug, Default, Parser, Clone)]
@@ -834,6 +844,12 @@ impl FeatureToggles {
         // earlier `--disable anthropic_models` in the same invocation.
         if self.enable_anthropic {
             v.push(format!("features.{}=true", Feature::AnthropicModels.key()));
+        }
+        // SANDBOX PATCH: fold `--enable-managed-hooks` into the same `-c` override
+        // path as `--enable managed_hooks`. Pushed last so it wins over any
+        // earlier `--disable managed_hooks` in the same invocation.
+        if self.enable_managed_hooks {
+            v.push(format!("features.{}=true", Feature::ManagedHooks.key()));
         }
         Ok(v)
     }
@@ -3488,6 +3504,23 @@ mod tests {
             overrides,
             vec!["features.anthropic_models=true".to_string()]
         );
+
+        // Default off: no override emitted when the flag is absent.
+        let toggles = FeatureToggles::default();
+        assert!(toggles.to_overrides().expect("valid features").is_empty());
+    }
+
+    // SANDBOX PATCH: the `--enable-managed-hooks` flag folds into the same `-c`
+    // override path, realizing the "flag > config" precedence (a `-c` override
+    // outranks config.toml for the same key).
+    #[test]
+    fn feature_toggles_enable_managed_hooks_folds_into_config_override() {
+        let toggles = FeatureToggles {
+            enable_managed_hooks: true,
+            ..Default::default()
+        };
+        let overrides = toggles.to_overrides().expect("valid features");
+        assert_eq!(overrides, vec!["features.managed_hooks=true".to_string()]);
 
         // Default off: no override emitted when the flag is absent.
         let toggles = FeatureToggles::default();

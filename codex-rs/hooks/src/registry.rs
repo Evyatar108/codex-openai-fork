@@ -31,6 +31,12 @@ pub struct HooksConfig {
     pub legacy_notify_argv: Option<Vec<String>>,
     pub feature_enabled: bool,
     pub bypass_hook_trust: bool,
+    // SANDBOX PATCH: when true, managed/admin-config hooks (MDM/system/legacy-
+    // managed-config sources and managed requirements) are dropped so they never
+    // execute or appear in listings. Defaults to false (managed hooks kept) so
+    // existing callers and tests are unaffected; the fork's config build sets it
+    // to `!features.managed_hooks` so managed hooks are skipped unless opted in.
+    pub skip_managed_hooks: bool,
     pub config_layer_stack: Option<ConfigLayerStack>,
     pub plugin_hook_sources: Vec<PluginHookSource>,
     pub plugin_hook_load_warnings: Vec<String>,
@@ -64,7 +70,7 @@ impl Hooks {
             .map(crate::notify_hook)
             .into_iter()
             .collect();
-        let engine = ClaudeHooksEngine::new(
+        let mut engine = ClaudeHooksEngine::new(
             config.feature_enabled,
             config.bypass_hook_trust,
             config.config_layer_stack.as_ref(),
@@ -75,6 +81,11 @@ impl Hooks {
                 args: config.shell_args,
             },
         );
+        // SANDBOX PATCH: skip managed/admin-config hooks by default (fork policy);
+        // re-enabled via the managed-hooks opt-in gate.
+        if config.skip_managed_hooks {
+            engine.retain_non_managed_handlers();
+        }
         Self {
             after_agent,
             engine,
@@ -216,8 +227,15 @@ pub fn list_hooks(config: HooksConfig) -> HookListOutcome {
         config.plugin_hook_load_warnings,
         config.bypass_hook_trust,
     );
+    // SANDBOX PATCH: hide managed/admin-config hooks from listings when the
+    // managed-hooks gate is off (fork default), matching the active engine.
+    let mut hook_entries = discovered.hook_entries;
+    if config.skip_managed_hooks {
+        hook_entries
+            .retain(|entry| !crate::engine::discovery::hook_source_is_managed(entry.source));
+    }
     HookListOutcome {
-        hooks: discovered.hook_entries,
+        hooks: hook_entries,
         warnings: discovered.warnings,
     }
 }

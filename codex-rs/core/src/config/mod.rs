@@ -2583,6 +2583,20 @@ impl Config {
         let anthropic_models_enabled =
             codex_model_provider::install_anthropic_gate(anthropic_models_explicit);
         configured_features.set_enabled(Feature::AnthropicModels, anthropic_models_enabled);
+        // SANDBOX PATCH: resolve the managed-hooks opt-in gate. The fork skips
+        // managed/admin-config hooks by default; re-enable via the
+        // `--enable-managed-hooks` flag (folded into `-c features.managed_hooks=true`),
+        // the `features.managed_hooks` config key, or the `CODEX_ENABLE_MANAGED_HOOKS`
+        // env var (highest wins). The flag/config value already flows through the
+        // normal features pipeline as an explicit tri-state; resolve folds in the
+        // env back-compat fallback and reflects the effective value in the feature
+        // set so `features list` and the hook-discovery gate agree.
+        let managed_hooks_explicit = cfg
+            .features
+            .as_ref()
+            .and_then(|features| features.entries().get(Feature::ManagedHooks.key()).copied());
+        let managed_hooks_enabled = codex_hooks::resolve_managed_hooks_gate(managed_hooks_explicit);
+        configured_features.set_enabled(Feature::ManagedHooks, managed_hooks_enabled);
         let features = ManagedFeatures::from_configured_with_warnings(
             configured_features,
             feature_requirements,

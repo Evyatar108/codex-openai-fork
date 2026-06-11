@@ -3,6 +3,8 @@ mod declarations;
 mod engine;
 pub(crate) mod events;
 mod legacy_notify;
+// SANDBOX PATCH: fork gate that skips managed/admin-config hooks by default.
+mod managed_gate;
 mod output_spill;
 mod registry;
 mod schema;
@@ -67,6 +69,9 @@ pub use events::user_prompt_submit::UserPromptSubmitOutcome;
 pub use events::user_prompt_submit::UserPromptSubmitRequest;
 pub use legacy_notify::legacy_notify_json;
 pub use legacy_notify::notify_hook;
+// SANDBOX PATCH: managed-hooks opt-in gate (default off; see managed_gate).
+pub use managed_gate::managed_hooks_env_enabled;
+pub use managed_gate::resolve_managed_hooks_gate;
 pub use registry::HookListOutcome;
 pub use registry::Hooks;
 pub use registry::HooksConfig;

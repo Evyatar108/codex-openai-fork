@@ -141,6 +141,15 @@ impl ClaudeHooksEngine {
         &self.warnings
     }
 
+    // SANDBOX PATCH: drop managed/admin-config handlers from the active engine so
+    // they never execute. Applied by `Hooks::new` when the managed-hooks gate is
+    // off (the fork default). `hook_source_is_managed` is the exact mirror of the
+    // per-source `is_managed` flag assigned during discovery.
+    pub(crate) fn retain_non_managed_handlers(&mut self) {
+        self.handlers
+            .retain(|handler| !discovery::hook_source_is_managed(handler.source));
+    }
+
     pub(crate) fn preview_session_start(
         &self,
         request: &SessionStartRequest,
