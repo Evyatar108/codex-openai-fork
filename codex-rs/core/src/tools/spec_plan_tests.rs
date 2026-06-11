@@ -109,7 +109,6 @@ impl ToolPlanProbe {
             exec_permission_approvals_enabled: false,
         }),
         create_write_stdin_tool(),
-        create_await_background_completion_tool(),
         create_update_plan_tool(),
         request_user_input_tool_spec(&request_user_input_available_modes(&features)),
         create_apply_patch_freeform_tool(),
@@ -1564,7 +1563,6 @@ fn test_parallel_support_flags() {
 
     assert!(find_tool(&tools, "exec_command").supports_parallel_tool_calls);
     assert!(!find_tool(&tools, "write_stdin").supports_parallel_tool_calls);
-    assert!(!find_tool(&tools, "await_background_completion").supports_parallel_tool_calls);
 }
 
 #[test]

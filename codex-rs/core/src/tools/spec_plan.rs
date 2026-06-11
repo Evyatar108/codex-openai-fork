@@ -2,7 +2,6 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
 use crate::tools::handlers::ApplyPatchHandler;
-use crate::tools::handlers::AwaitBackgroundCompletionHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
 use crate::tools::handlers::CreateGoalHandler;
@@ -547,9 +546,6 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
                 include_environment_id,
             }));
             planned_tools.add(WriteStdinHandler);
-            // SANDBOX PATCH: D-002 — register await_background_completion handler.
-            // Re-ported during rebase-debt-fix v0.135.0 from the dropped orphan block.
-            planned_tools.add(AwaitBackgroundCompletionHandler);
 
             // Keep the legacy shell tool registered while unified exec is
             // model-visible.

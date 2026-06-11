@@ -50,8 +50,6 @@ impl HeadTailBuffer {
         self.head_bytes.saturating_add(self.tail_bytes)
     }
 
-    // Used for tests.
-    #[allow(dead_code)]
     /// Total bytes that were dropped from the middle due to the size cap.
     pub(crate) fn omitted_bytes(&self) -> usize {
         self.omitted_bytes

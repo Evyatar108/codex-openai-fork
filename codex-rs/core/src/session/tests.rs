@@ -8166,6 +8166,70 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
     ));
 }
 
+/// US-001 regression: a background-process completion queued for the next turn while a
+/// later turn is active must wake a follow-up turn once that turn finishes.
+///
+/// `spawn_exit_watcher` calls `maybe_start_turn_for_pending_work`, but that no-ops when
+/// `active_turn.is_some()`, so the `<task_notification>` is stranded in the next-turn queue
+/// until something re-checks. `on_task_finished` performs that re-check, but ONLY after
+/// `active_turn` is cleared. This test fails if the seam is placed before the clear, because
+/// then `maybe_start_turn_for_pending_work` observes the still-active turn, no-ops, and the
+/// queued completion is never drained.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_completion_queued_during_active_turn_wakes_after_turn_finishes() {
+    let (sess, tc, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config
+                .features
+                .enable(Feature::BackgroundProcessNotification)
+                .expect("background process notification should be enableable in tests");
+        },
+    )
+    .await;
+
+    // A turn is active (e.g. a follow-up operator turn) ...
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    // ... and a background process completes while it is running, queuing its completion
+    // notification for the next turn (the watcher's own wake no-ops because a turn is active).
+    let queued_item = ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<task_notification><task_id>1</task_id><status>completed</status></task_notification>"
+                .to_string(),
+        }],
+        phase: None,
+    };
+    sess.input_queue
+        .queue_response_items_for_next_turn(vec![queued_item])
+        .await;
+
+    // Finishing the active turn re-checks pending work after `active_turn` is cleared and
+    // wakes a follow-up turn, draining the queued completion.
+    sess.on_task_finished(Arc::clone(&tc), /*last_agent_message*/ None)
+        .await;
+
+    assert!(
+        sess.take_queued_response_items_for_next_turn()
+            .await
+            .is_empty(),
+        "the queued background completion should be drained by the turn-end wake; a seam \
+         placed before active_turn is cleared would no-op and strand the notification"
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
 #[tokio::test]
 async fn steer_input_requires_active_turn() {
     let (sess, _tc, _rx) = make_session_and_context_with_rx().await;

@@ -54,8 +54,8 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::WarningEvent;
 
-use codex_features::Feature;
 use crate::util::escape_xml_text;
+use codex_features::Feature;
 pub(crate) use compact::CompactTask;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
@@ -128,7 +128,10 @@ pub(crate) fn coalesce_background_notifications(
     while let Some(item) = iter.next() {
         if background_notification_task(&item).is_some() {
             let mut run = vec![background_notification_task(&item).unwrap()];
-            while iter.peek().is_some_and(|next| background_notification_task(next).is_some()) {
+            while iter
+                .peek()
+                .is_some_and(|next| background_notification_task(next).is_some())
+            {
                 let next = iter.next().unwrap();
                 run.push(background_notification_task(&next).unwrap());
             }
@@ -905,6 +908,20 @@ impl Session {
             .await
         {
             warn!("failed to apply goal runtime maybe-continue event: {err}");
+        }
+
+        // SANDBOX PATCH: US-001 — feature-gated turn-end re-check for background-process
+        // completion. `spawn_exit_watcher` enqueues a `<task_notification>` and calls
+        // `maybe_start_turn_for_pending_work`, but that call no-ops when a later turn is still
+        // active (`active_turn.is_some()`), leaving the completion stranded in
+        // `idle_pending_input`. Re-check here, after `active_turn` has been cleared above and
+        // outside its mutex scope, so the stranded completion wakes a follow-up turn. This MUST
+        // stay after the clear (and after the early return at the `cleared_active_turn` guard) or
+        // it permanently no-ops. `maybe_start_turn_for_pending_work` returns on an empty queue and
+        // `start_task` drains queued items, so there is no wake loop.
+        // Replant recipe: docs/implementation/patch-surface.md §15.
+        if self.enabled(Feature::BackgroundProcessNotification) {
+            self.maybe_start_turn_for_pending_work().await;
         }
     }
 

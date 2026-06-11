@@ -16,11 +16,9 @@ use std::sync::Arc;
 #[cfg(test)]
 use crate::tools::handlers::parse_arguments;
 
-mod await_background_completion;
 mod exec_command;
 mod write_stdin;
 
-pub use await_background_completion::AwaitBackgroundCompletionHandler;
 pub use exec_command::ExecCommandHandler;
 pub(crate) use exec_command::ExecCommandHandlerOptions;
 pub use write_stdin::WriteStdinHandler;

@@ -116,18 +116,13 @@ pub(crate) struct WriteStdinRequest<'a> {
     pub truncation_policy: TruncationPolicy,
 }
 
-#[derive(Debug)]
-pub(crate) struct AwaitBackgroundCompletionRequest {
-    pub process_id: i32,
-    pub timeout_ms: Option<u64>,
-    pub max_output_tokens: Option<usize>,
-    pub truncation_policy: TruncationPolicy,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BackgroundCompletionEvent {
     pub process_id: i32,
     pub exit_code: i32,
+    /// Bounded, possibly-truncated aggregated process output, carried inline in the wake
+    /// notification so the woken agent can act without a follow-up retrieval call.
+    pub output: String,
 }
 
 #[derive(Default)]
@@ -155,10 +150,6 @@ impl UnifiedExecProcessManager {
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .max(MIN_EMPTY_YIELD_TIME_MS),
         }
-    }
-
-    pub fn max_background_wait_ms(&self) -> u64 {
-        self.max_write_stdin_yield_time_ms
     }
 }
 

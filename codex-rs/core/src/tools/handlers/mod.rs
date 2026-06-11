@@ -73,8 +73,6 @@ pub(crate) use shell::ShellCommandHandlerOptions;
 pub use spawn_top_level_session::SpawnTopLevelSessionHandler;
 pub use test_sync::TestSyncHandler;
 pub use tool_search::ToolSearchHandler;
-// SANDBOX PATCH: D-002 — fork-only handler retained while upstream removed it.
-pub use unified_exec::AwaitBackgroundCompletionHandler;
 pub use unified_exec::ExecCommandHandler;
 pub(crate) use unified_exec::ExecCommandHandlerOptions;
 pub use unified_exec::WriteStdinHandler;

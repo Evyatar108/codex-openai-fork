@@ -15,7 +15,6 @@ use super::BackgroundCompletionEvent;
 use super::UnifiedExecContext;
 use super::process::UnifiedExecProcess;
 use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
-use crate::util::escape_xml_text;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::events::ToolEmitter;
@@ -23,6 +22,7 @@ use crate::tools::events::ToolEventCtx;
 use crate::tools::events::ToolEventFailure;
 use crate::tools::events::ToolEventStage;
 use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
+use crate::util::escape_xml_text;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::protocol::EventMsg;
@@ -157,7 +157,7 @@ pub(crate) fn spawn_exit_watcher(
                 command,
                 cwd,
                 Some(process_id.to_string()),
-                transcript,
+                Arc::clone(&transcript),
                 String::new(),
                 exit_code,
                 duration,
@@ -168,9 +168,18 @@ pub(crate) fn spawn_exit_watcher(
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
             {
+                let output = {
+                    let guard = transcript.lock().await;
+                    build_background_completion_output(
+                        &guard.to_bytes(),
+                        guard.omitted_bytes(),
+                        BACKGROUND_COMPLETION_OUTPUT_MAX_BYTES,
+                    )
+                };
                 let message = background_completion_message(BackgroundCompletionEvent {
                     process_id,
                     exit_code,
+                    output,
                 });
                 session_ref
                     .input_queue
@@ -188,14 +197,68 @@ pub(crate) fn background_completion_message(event: BackgroundCompletionEvent) ->
     let summary = escape_xml_text(&format!(
         "Background shell command completed (exit code {exit_code})"
     ));
+    let output = escape_xml_text(&event.output);
     let text = format!(
-        "<task_notification><task_id>{task_id}</task_id><status>completed</status><exit_code>{exit_code}</exit_code><summary>{summary}</summary></task_notification>"
+        "<task_notification><task_id>{task_id}</task_id><status>completed</status><exit_code>{exit_code}</exit_code><summary>{summary}</summary><output>{output}</output></task_notification>"
     );
     ResponseInputItem::Message {
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text }],
         phase: None,
     }
+}
+
+/// Upper bound for the aggregated process output embedded inline in a background completion
+/// `<task_notification>`.
+///
+/// The shared transcript is already capped at `UNIFIED_EXEC_OUTPUT_MAX_BYTES` (1 MiB), but
+/// that wake notification is injected into the agent context on *every* background
+/// completion, so we apply a tighter head+tail window here. (The removed
+/// `await_background_completion` tool defaulted to `DEFAULT_MAX_OUTPUT_TOKENS` = 10_000
+/// tokens, on the order of 40 KiB; 16 KiB keeps the most relevant head and tail of typical
+/// command output without flooding context.)
+const BACKGROUND_COMPLETION_OUTPUT_MAX_BYTES: usize = 16 * 1024;
+
+/// Build the bounded process-output string embedded in a background completion notification.
+///
+/// `retained` is the transcript content still held by the head/tail buffer (already missing
+/// `buffer_omitted` bytes that the 1 MiB cap dropped from the middle). When the combined
+/// output exceeds `max_bytes`, keep a head and tail window on UTF-8 char boundaries and
+/// replace the middle with a single marker reporting the total omitted byte count; when only
+/// the upstream 1 MiB cap dropped bytes, append the same marker so the omission stays
+/// visible to the model.
+fn build_background_completion_output(
+    retained: &[u8],
+    buffer_omitted: usize,
+    max_bytes: usize,
+) -> String {
+    let text = String::from_utf8_lossy(retained);
+    let total_len = text.len();
+
+    if total_len <= max_bytes {
+        if buffer_omitted == 0 {
+            return text.into_owned();
+        }
+        return format!(
+            "{text}\n[... output truncated, {buffer_omitted} bytes omitted from the middle ...]"
+        );
+    }
+
+    let head_budget = max_bytes / 2;
+    let tail_budget = max_bytes - head_budget;
+    let head_end = (0..=head_budget)
+        .rev()
+        .find(|&i| text.is_char_boundary(i))
+        .unwrap_or(0);
+    let tail_start = (total_len.saturating_sub(tail_budget)..=total_len)
+        .find(|&i| text.is_char_boundary(i))
+        .unwrap_or(total_len);
+    let omitted = buffer_omitted.saturating_add(tail_start.saturating_sub(head_end));
+    format!(
+        "{head}\n[... output truncated, {omitted} bytes omitted from the middle ...]\n{tail}",
+        head = &text[..head_end],
+        tail = &text[tail_start..],
+    )
 }
 
 async fn process_chunk(
