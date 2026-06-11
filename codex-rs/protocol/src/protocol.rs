@@ -1909,6 +1909,8 @@ pub struct ThreadSettingsSnapshot {
     pub model_provider_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_tier: Option<ContextWindowTier>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
     pub permission_profile: PermissionProfile,

@@ -2332,6 +2332,7 @@ mod tests {
                 model: "gpt-5".to_string(),
                 model_provider: "openai".to_string(),
                 service_tier: None,
+                context_tier: None,
                 cwd,
                 runtime_workspace_roots: Vec::new(),
                 instruction_sources: vec![absolute_path("/tmp/AGENTS.md")],
@@ -2376,6 +2377,7 @@ mod tests {
                     "model": "gpt-5",
                     "modelProvider": "openai",
                     "serviceTier": null,
+                    "contextTier": null,
                     "cwd": absolute_path_string("tmp"),
                     "runtimeWorkspaceRoots": [],
                     "instructionSources": [absolute_path_string("tmp/AGENTS.md")],
@@ -3132,6 +3134,7 @@ mod tests {
                     model: "gpt-5.4".to_string(),
                     model_provider: "openai".to_string(),
                     service_tier: None,
+                    context_tier: None,
                     effort: None,
                     summary: None,
                     collaboration_mode: codex_protocol::config_types::CollaborationMode {

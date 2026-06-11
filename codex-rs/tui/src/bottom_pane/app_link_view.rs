@@ -796,9 +796,7 @@ impl crate::render::renderable::Renderable for AppLinkView {
             return;
         }
 
-        Block::default()
-            .style(popup_style())
-            .render(area, buf);
+        Block::default().style(popup_style()).render(area, buf);
 
         let actions_height = self.action_rows_height(area.width.saturating_sub(4));
         let [content_area, actions_area, hint_area] = Layout::vertical([

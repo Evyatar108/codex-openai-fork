@@ -75,7 +75,9 @@ pub(crate) fn build_model_selection_edits(
 
 // SANDBOX PATCH: Knob B context-window tier. Persist the selected tier (or clear
 // it to fall back to the model's default tier).
-pub(crate) fn build_context_tier_selection_edits(tier: Option<ContextWindowTier>) -> Vec<ConfigEdit> {
+pub(crate) fn build_context_tier_selection_edits(
+    tier: Option<ContextWindowTier>,
+) -> Vec<ConfigEdit> {
     let edit = tier.map_or_else(
         || clear_config_value("model_context_tier"),
         |tier| replace_config_value("model_context_tier", serde_json::json!(tier.to_string())),

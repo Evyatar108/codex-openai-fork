@@ -84,3 +84,38 @@ pub struct ProfileTui {
     #[serde(default)]
     pub session_picker_view: Option<SessionPickerViewMode>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigProfile;
+    use codex_protocol::openai_models::ContextWindowTier;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn profile_model_context_tier_round_trips() {
+        let profile: ConfigProfile =
+            toml::from_str("model_context_tier = \"long_context\"").expect("profile should parse");
+        assert_eq!(
+            profile.model_context_tier,
+            Some(ContextWindowTier::LongContext)
+        );
+
+        let serialized = toml::to_string(&profile).expect("profile should serialize");
+        let reparsed: ConfigProfile =
+            toml::from_str(&serialized).expect("serialized profile should parse");
+        assert_eq!(reparsed, profile);
+    }
+
+    #[test]
+    fn profile_rejects_unknown_context_tier_key() {
+        let path = std::path::Path::new("/tmp/profile.toml");
+        let error = crate::strict_config::config_error_from_ignored_toml_fields::<ConfigProfile>(
+            path,
+            "model_context_tier_typo = \"long_context\"",
+        )
+        .expect("unknown field should be rejected");
+        let message = error.message;
+        assert!(message.contains("unknown configuration field"));
+        assert!(message.contains("model_context_tier_typo"));
+    }
+}

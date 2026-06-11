@@ -274,6 +274,7 @@ pub struct ThreadSettingsUpdateParams {
     /// that makes a context-tier picker change take effect on the next turn
     /// without a restart.
     // SANDBOX PATCH: Knob B context-window tier. See patch-surface §14.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub context_tier: Option<ContextWindowTier>,
     /// Override the reasoning summary for subsequent turns.

@@ -11,6 +11,7 @@ export type { ClientNotification } from "./ClientNotification";
 export type { ClientRequest } from "./ClientRequest";
 export type { CollaborationMode } from "./CollaborationMode";
 export type { ContentItem } from "./ContentItem";
+export type { ContextWindowTier } from "./ContextWindowTier";
 export type { ConversationGitInfo } from "./ConversationGitInfo";
 export type { ConversationSummary } from "./ConversationSummary";
 export type { ExecCommandApprovalParams } from "./ExecCommandApprovalParams";

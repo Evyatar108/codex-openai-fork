@@ -205,6 +205,7 @@ mod tests {
             model_provider: "openai".to_string(),
             service_tier: None,
             effort: Some(ReasoningEffort::High),
+            context_tier: Some(codex_protocol::openai_models::ContextWindowTier::LongContext),
             summary: None,
             collaboration_mode: CollaborationMode {
                 mode: ModeKind::Default,

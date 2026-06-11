@@ -261,7 +261,8 @@ const ANTHROPIC_DEFAULT_CONTEXT_TIER_TOKENS: i64 = 264_000;
 /// default). Vendor is authoritative; the slug prefix is a fallback for entries
 /// that omit `vendor`.
 fn curated_default_context_tier(vendor: Option<&str>, slug: &str) -> Option<i64> {
-    let is_gpt = vendor.is_some_and(|v| v.eq_ignore_ascii_case("openai")) || slug.starts_with("gpt-");
+    let is_gpt =
+        vendor.is_some_and(|v| v.eq_ignore_ascii_case("openai")) || slug.starts_with("gpt-");
     let is_anthropic =
         vendor.is_some_and(|v| v.eq_ignore_ascii_case("anthropic")) || slug.starts_with("claude");
     if is_gpt {
@@ -277,7 +278,10 @@ fn curated_default_context_tier(vendor: Option<&str>, slug: &str) -> Option<i64>
 /// full window and a chosen default-tier cap. The default is clamped to the full
 /// window so a single-tier model (`full <= default`) collapses to one window and
 /// never offers a `default | long_context` toggle.
-fn knob_b_tier_windows(full: Option<i64>, chosen_default: Option<i64>) -> (Option<i64>, Option<i64>) {
+fn knob_b_tier_windows(
+    full: Option<i64>,
+    chosen_default: Option<i64>,
+) -> (Option<i64>, Option<i64>) {
     match full {
         Some(full) => {
             let default = chosen_default.map_or(full, |candidate| candidate.min(full));
@@ -375,7 +379,9 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
     // `/responses` rows are `ProviderDefault` and keep their existing
     // low-first default untouched.
     let default_reasoning_level = if wire_route == ModelWireRoute::ChatCompletions
-        && supported_reasoning_levels.iter().any(|p| p.effort == ReasoningEffort::Medium)
+        && supported_reasoning_levels
+            .iter()
+            .any(|p| p.effort == ReasoningEffort::Medium)
     {
         Some(ReasoningEffort::Medium)
     } else {
@@ -646,7 +652,10 @@ mod knob_b_tier_tests {
             Some(ANTHROPIC_DEFAULT_CONTEXT_TIER_TOKENS)
         );
         // Other families have no curated default.
-        assert_eq!(curated_default_context_tier(Some("Google"), "gemini-3.1-pro-preview"), None);
+        assert_eq!(
+            curated_default_context_tier(Some("Google"), "gemini-3.1-pro-preview"),
+            None
+        );
     }
 
     #[test]
@@ -661,7 +670,10 @@ mod knob_b_tier_tests {
             (Some(200_000), Some(200_000))
         );
         // no curated default -> single window.
-        assert_eq!(knob_b_tier_windows(Some(400_000), None), (Some(400_000), Some(400_000)));
+        assert_eq!(
+            knob_b_tier_windows(Some(400_000), None),
+            (Some(400_000), Some(400_000))
+        );
         assert_eq!(knob_b_tier_windows(None, Some(400_000)), (None, None));
     }
 

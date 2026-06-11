@@ -21,6 +21,7 @@ fn thread_settings_for_test(
             model_provider: "openai".to_string(),
             service_tier: Some(ServiceTier::Fast.request_value().to_string()),
             effort: Some(ReasoningEffortConfig::High),
+            context_tier: Some(codex_protocol::openai_models::ContextWindowTier::LongContext),
             summary: None,
             collaboration_mode: CollaborationMode {
                 mode: ModeKind::Plan,

@@ -174,6 +174,7 @@ async fn thread_settings_applied_event(sess: &Session) -> EventMsg {
             model: snapshot.model,
             model_provider_id: snapshot.model_provider_id,
             service_tier: snapshot.service_tier,
+            context_tier: snapshot.context_tier,
             approval_policy: snapshot.approval_policy,
             approvals_reviewer: snapshot.approvals_reviewer,
             permission_profile: snapshot.permission_profile,

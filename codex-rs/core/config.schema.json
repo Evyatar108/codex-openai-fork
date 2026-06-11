@@ -392,6 +392,9 @@
             "auth_elicitation": {
               "type": "boolean"
             },
+            "background_process_notification": {
+              "type": "boolean"
+            },
             "browser_use": {
               "type": "boolean"
             },
@@ -486,6 +489,9 @@
               "type": "boolean"
             },
             "managed_hooks": {
+              "type": "boolean"
+            },
+            "mcp_server_notifications": {
               "type": "boolean"
             },
             "memories": {
@@ -664,6 +670,9 @@
           ],
           "description": "Optional path to a JSON model catalog (applied on startup only)."
         },
+        "model_context_tier": {
+          "$ref": "#/definitions/ContextWindowTier"
+        },
         "model_instructions_file": {
           "allOf": [
             {
@@ -726,6 +735,24 @@
         }
       },
       "type": "object"
+    },
+    "ContextWindowTier": {
+      "oneOf": [
+        {
+          "description": "The model's curated default context window (`ModelInfo::context_window`).",
+          "enum": [
+            "default"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The model's full context window (`ModelInfo::max_context_window`).",
+          "enum": [
+            "long_context"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "DebugConfigLockToml": {
       "additionalProperties": false,
@@ -4297,6 +4324,13 @@
             "responses"
           ],
           "type": "string"
+        },
+        {
+          "description": "The OpenAI-compatible Chat Completions API at `/chat/completions`.\n\nFork-only. This is never a provider-level default: the Copilot provider keeps `wire_api = Responses`, and this variant is derived per-model at the dispatch boundary (`core/src/client.rs`) from the `ModelInfo` wire-route hint so a Claude row runs over chat while GPT-5.x keeps using Responses. See `docs/implementation/patch-surface.md` §14.",
+          "enum": [
+            "chatcompletions"
+          ],
+          "type": "string"
         }
       ]
     },
@@ -4306,6 +4340,10 @@
   },
   "description": "Base config deserialized from ~/.codex/config.toml.",
   "properties": {
+    "additional_instructions": {
+      "description": "Launcher-provided instructions appended to the model instructions.",
+      "type": "string"
+    },
     "agents": {
       "allOf": [
         {
@@ -4489,6 +4527,9 @@
         "auth_elicitation": {
           "type": "boolean"
         },
+        "background_process_notification": {
+          "type": "boolean"
+        },
         "browser_use": {
           "type": "boolean"
         },
@@ -4583,6 +4624,9 @@
           "type": "boolean"
         },
         "managed_hooks": {
+          "type": "boolean"
+        },
+        "mcp_server_notifications": {
           "type": "boolean"
         },
         "memories": {
@@ -4901,6 +4945,14 @@
         }
       ],
       "description": "Optional path to a JSON model catalog (applied on startup only). Per-thread `config` overrides are accepted but do not reapply this (no-ops)."
+    },
+    "model_context_tier": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ContextWindowTier"
+        }
+      ],
+      "description": "Knob B: selected context-window tier (`default` | `long_context`) for Copilot-provider models that expose a curated default window below their full ceiling. Persisted by the TUI context-tier picker; applied to the effective context window in `models-manager`."
     },
     "model_context_window": {
       "description": "Size of the context window for the model, in tokens.",

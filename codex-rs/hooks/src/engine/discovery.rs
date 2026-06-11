@@ -630,10 +630,9 @@ pub(crate) fn hook_source_is_managed(source: HookSource) -> bool {
         | HookSource::LegacyManagedConfigMdm
         | HookSource::CloudRequirements
         | HookSource::Unknown => true,
-        HookSource::User
-        | HookSource::Project
-        | HookSource::SessionFlags
-        | HookSource::Plugin => false,
+        HookSource::User | HookSource::Project | HookSource::SessionFlags | HookSource::Plugin => {
+            false
+        }
     }
 }
 

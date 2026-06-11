@@ -437,8 +437,7 @@ impl TurnRequestProcessor {
                     summary: params.summary,
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
-                    // SANDBOX PATCH: Knob B context-window tier.
-                    context_tier: params.context_tier,
+                    context_tier: None,
                 },
             )
             .await?;

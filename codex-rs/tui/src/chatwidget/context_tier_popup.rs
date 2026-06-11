@@ -28,7 +28,8 @@ impl ChatWidget {
             .ok()
             .and_then(|presets| presets.into_iter().find(|preset| preset.model == model));
 
-        let Some(preset) = preset.filter(ModelPreset::supports_context_window_tier_selection) else {
+        let Some(preset) = preset.filter(ModelPreset::supports_context_window_tier_selection)
+        else {
             // Single-tier (or unknown) model: nothing to choose. Persist the
             // model/effort selection directly so the flow still completes.
             self.app_event_tx
@@ -49,8 +50,8 @@ impl ChatWidget {
             if tier == ContextWindowTier::Default {
                 label.push_str(" (default)");
             }
-            let description =
-                window.map(|tokens| format!("{} token context window", format_token_window(tokens)));
+            let description = window
+                .map(|tokens| format!("{} token context window", format_token_window(tokens)));
 
             let model_for_action = model.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
