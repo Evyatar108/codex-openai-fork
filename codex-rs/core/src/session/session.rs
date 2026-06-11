@@ -48,6 +48,7 @@ pub(crate) struct SessionConfiguration {
     pub(super) collaboration_mode: CollaborationMode,
     pub(super) model_reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(super) service_tier: Option<String>,
+    pub(super) model_context_tier: Option<codex_protocol::openai_models::ContextWindowTier>,
 
     /// Developer instructions that supplement the base instructions.
     pub(super) developer_instructions: Option<String>,
@@ -178,6 +179,7 @@ impl SessionConfiguration {
             model: self.collaboration_mode.model().to_string(),
             model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
             service_tier: self.service_tier.clone(),
+            context_tier: self.model_context_tier,
             approval_policy: self.approval_policy.value(),
             approvals_reviewer: self.approvals_reviewer,
             permission_profile: self.permission_profile(),
@@ -239,6 +241,9 @@ impl SessionConfiguration {
                 ),
                 None => Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string()),
             };
+        }
+        if let Some(context_tier) = updates.context_tier {
+            next_configuration.model_context_tier = Some(context_tier);
         }
         if let Some(personality) = updates.personality {
             next_configuration.personality = Some(personality);
@@ -429,6 +434,10 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) service_tier: Option<Option<String>>,
+    // SANDBOX PATCH: Knob B context-window tier. Applied to the per-turn
+    // models-manager config so a thread/settings/update tier change takes effect
+    // on the next turn. See patch-surface §14.
+    pub(crate) context_tier: Option<codex_protocol::openai_models::ContextWindowTier>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
     /// Turn-local environment override. `None` inherits the sticky thread
     /// environments stored on `SessionConfiguration`; `Some([])` explicitly

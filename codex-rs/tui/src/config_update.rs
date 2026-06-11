@@ -19,6 +19,7 @@ use codex_config::loader::project_trust_key;
 use codex_features::FEATURES;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::TrustLevel;
+use codex_protocol::openai_models::ContextWindowTier;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -70,6 +71,18 @@ pub(crate) fn build_model_selection_edits(
         replace_config_value("model", serde_json::json!(model)),
         effort_edit,
     ]
+}
+
+// SANDBOX PATCH: Knob B context-window tier. Persist the selected tier (or clear
+// it to fall back to the model's default tier).
+pub(crate) fn build_context_tier_selection_edits(
+    tier: Option<ContextWindowTier>,
+) -> Vec<ConfigEdit> {
+    let edit = tier.map_or_else(
+        || clear_config_value("model_context_tier"),
+        |tier| replace_config_value("model_context_tier", serde_json::json!(tier.to_string())),
+    );
+    vec![edit]
 }
 
 pub(crate) fn build_service_tier_selection_edits(service_tier: Option<&str>) -> Vec<ConfigEdit> {

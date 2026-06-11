@@ -8134,6 +8134,24 @@
         "title": "ContextCompactedNotification",
         "type": "object"
       },
+      "ContextWindowTier": {
+        "oneOf": [
+          {
+            "description": "The model's curated default context window (`ModelInfo::context_window`).",
+            "enum": [
+              "default"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The model's full context window (`ModelInfo::max_context_window`).",
+            "enum": [
+              "long_context"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "CreditsSnapshot": {
         "properties": {
           "balance": {
@@ -17416,6 +17434,16 @@
           "collaborationMode": {
             "$ref": "#/definitions/v2/CollaborationMode"
           },
+          "contextTier": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ContextWindowTier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "cwd": {
             "$ref": "#/definitions/v2/AbsolutePathBuf"
           },
@@ -17583,6 +17611,16 @@
               "null"
             ]
           },
+          "contextTier": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ContextWindowTier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "cwd": {
             "type": [
               "string",
@@ -17683,6 +17721,16 @@
               }
             ],
             "description": "Reviewer currently used for approval requests on this thread."
+          },
+          "contextTier": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ContextWindowTier"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "cwd": {
             "$ref": "#/definitions/v2/AbsolutePathBuf"

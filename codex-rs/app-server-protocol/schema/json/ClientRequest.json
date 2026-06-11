@@ -554,6 +554,24 @@
         }
       ]
     },
+    "ContextWindowTier": {
+      "oneOf": [
+        {
+          "description": "The model's curated default context window (`ModelInfo::context_window`).",
+          "enum": [
+            "default"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The model's full context window (`ModelInfo::max_context_window`).",
+          "enum": [
+            "long_context"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "DynamicToolSpec": {
       "properties": {
         "deferLoading": {
@@ -3753,6 +3771,16 @@
           "type": [
             "object",
             "null"
+          ]
+        },
+        "contextTier": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ContextWindowTier"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "cwd": {

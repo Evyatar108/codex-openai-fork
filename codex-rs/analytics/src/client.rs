@@ -62,9 +62,7 @@ impl AnalyticsEventsQueue {
     pub(crate) fn new(_auth_manager: Arc<AuthManager>, _base_url: String) -> Self {
         let (sender, mut receiver) = mpsc::channel(ANALYTICS_EVENTS_QUEUE_SIZE);
         // SANDBOX PATCH: drain events without sending to disable telemetry
-        tokio::spawn(async move {
-            while receiver.recv().await.is_some() {}
-        });
+        tokio::spawn(async move { while receiver.recv().await.is_some() {} });
         Self {
             sender,
             app_used_emitted_keys: Arc::new(Mutex::new(HashSet::new())),

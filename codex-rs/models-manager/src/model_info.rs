@@ -27,6 +27,17 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
     {
         model.supports_reasoning_summaries = true;
     }
+    // SANDBOX PATCH: Knob B context-window tier. Apply the selected tier BEFORE
+    // the numeric `model_context_window` clamp below, so `long_context` widens
+    // the effective window to the full ceiling and the numeric override still
+    // caps it afterward. `context_window_for_tier` returns the single resolved
+    // window for single-tier models, so a stale `long_context` selection can
+    // never widen a model that exposes only one tier. See patch-surface §14.
+    if let Some(tier) = config.model_context_tier
+        && let Some(window) = model.context_window_for_tier(tier)
+    {
+        model.context_window = Some(window);
+    }
     if let Some(context_window) = config.model_context_window {
         model.context_window = Some(
             model

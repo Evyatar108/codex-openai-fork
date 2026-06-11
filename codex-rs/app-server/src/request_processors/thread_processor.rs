@@ -846,6 +846,7 @@ impl ThreadRequestProcessor {
             experimental_raw_events,
             personality,
             ephemeral,
+            context_tier: _context_tier,
             session_start_source,
             thread_source,
             environments,
@@ -1210,6 +1211,7 @@ impl ThreadRequestProcessor {
             sandbox,
             active_permission_profile,
             reasoning_effort: config_snapshot.reasoning_effort,
+            context_tier: config_snapshot.context_tier,
         };
         let notif = thread_started_notification(thread);
         listener_task_context

@@ -106,6 +106,7 @@ impl ChatWidget {
                     model.clone(),
                     Some(preset.default_reasoning_effort),
                     should_prompt_plan_mode_scope,
+                    preset.supports_context_window_tier_selection(),
                 );
                 SelectionItem {
                     name: model.clone(),
@@ -217,6 +218,7 @@ impl ChatWidget {
         model_for_action: String,
         effort_for_action: Option<ReasoningEffortConfig>,
         should_prompt_plan_mode_scope: bool,
+        supports_context_tier: bool,
     ) -> Vec<SelectionAction> {
         vec![Box::new(move |tx| {
             if should_prompt_plan_mode_scope {
@@ -229,11 +231,30 @@ impl ChatWidget {
 
             tx.send(AppEvent::UpdateModel(model_for_action.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
-            tx.send(AppEvent::PersistModelSelection {
-                model: model_for_action.clone(),
-                effort: effort_for_action,
-            });
+            // SANDBOX PATCH: Knob B convergence seam — chain into the context
+            // picker for two-tier models, else persist directly.
+            if supports_context_tier {
+                tx.send(AppEvent::OpenContextTierPopup {
+                    model: model_for_action.clone(),
+                    effort: effort_for_action,
+                });
+            } else {
+                tx.send(AppEvent::PersistModelSelection {
+                    model: model_for_action.clone(),
+                    effort: effort_for_action,
+                });
+            }
         })]
+    }
+
+    // SANDBOX PATCH: Knob B context-window tier. Whether `model` exposes a
+    // selectable context tier (a curated default below the full ceiling).
+    fn model_supports_context_tier(&self, model: &str) -> bool {
+        self.model_catalog
+            .try_list_models()
+            .ok()
+            .and_then(|presets| presets.into_iter().find(|preset| preset.model == model))
+            .is_some_and(|preset| preset.supports_context_window_tier_selection())
     }
 
     fn should_prompt_plan_mode_reasoning_scope(
@@ -295,6 +316,8 @@ impl ChatWidget {
             "Set the global default reasoning level and the Plan mode override. This replaces the current {plan_reasoning_source}."
         );
         let subtitle = format!("Choose where to apply {reasoning_phrase}.");
+        // SANDBOX PATCH: Knob B convergence seam — does this model expose a tier?
+        let supports_context_tier = self.model_supports_context_tier(&model);
 
         let plan_only_actions: Vec<SelectionAction> = vec![Box::new({
             let model = model.clone();
@@ -309,10 +332,18 @@ impl ChatWidget {
             tx.send(AppEvent::UpdateReasoningEffort(effort));
             tx.send(AppEvent::UpdatePlanModeReasoningEffort(effort));
             tx.send(AppEvent::PersistPlanModeReasoningEffort(effort));
-            tx.send(AppEvent::PersistModelSelection {
-                model: model.clone(),
-                effort,
-            });
+            // SANDBOX PATCH: Knob B convergence seam (plan-scope -> context -> apply).
+            if supports_context_tier {
+                tx.send(AppEvent::OpenContextTierPopup {
+                    model: model.clone(),
+                    effort,
+                });
+            } else {
+                tx.send(AppEvent::PersistModelSelection {
+                    model: model.clone(),
+                    effort,
+                });
+            }
         })];
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
@@ -345,6 +376,8 @@ impl ChatWidget {
     /// Open a popup to choose the reasoning effort (stage 2) for the given model.
     pub(crate) fn open_reasoning_popup(&mut self, preset: ModelPreset) {
         let default_effort: ReasoningEffortConfig = preset.default_reasoning_effort;
+        // SANDBOX PATCH: Knob B — capture two-tier support before `preset` fields move.
+        let supports_context_tier = preset.supports_context_window_tier_selection();
         let supported = preset.supported_reasoning_efforts;
         let in_plan_mode =
             self.collaboration_modes_enabled() && self.active_mode_kind() == ModeKind::Plan;
@@ -477,10 +510,18 @@ impl ChatWidget {
                 } else {
                     tx.send(AppEvent::UpdateModel(model_for_action.clone()));
                     tx.send(AppEvent::UpdateReasoningEffort(choice_effort));
-                    tx.send(AppEvent::PersistModelSelection {
-                        model: model_for_action.clone(),
-                        effort: choice_effort,
-                    });
+                    // SANDBOX PATCH: Knob B convergence seam.
+                    if supports_context_tier {
+                        tx.send(AppEvent::OpenContextTierPopup {
+                            model: model_for_action.clone(),
+                            effort: choice_effort,
+                        });
+                    } else {
+                        tx.send(AppEvent::PersistModelSelection {
+                            model: model_for_action.clone(),
+                            effort: choice_effort,
+                        });
+                    }
                 }
             })];
 
@@ -532,7 +573,14 @@ impl ChatWidget {
 
     fn apply_model_and_effort(&self, model: String, effort: Option<ReasoningEffortConfig>) {
         self.apply_model_and_effort_without_persist(model.clone(), effort);
-        self.app_event_tx
-            .send(AppEvent::PersistModelSelection { model, effort });
+        // SANDBOX PATCH: Knob B convergence seam — chain into the context picker
+        // for two-tier models, else persist the model/effort selection directly.
+        if self.model_supports_context_tier(&model) {
+            self.app_event_tx
+                .send(AppEvent::OpenContextTierPopup { model, effort });
+        } else {
+            self.app_event_tx
+                .send(AppEvent::PersistModelSelection { model, effort });
+        }
     }
 }

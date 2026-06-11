@@ -2347,6 +2347,8 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
             effort: ReasoningEffortConfig::Medium,
             description: "medium".to_string(),
         }],
+        context_window: Some(400_000),
+        max_context_window: Some(400_000),
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
@@ -2433,6 +2435,55 @@ async fn model_reasoning_selection_popup_extra_high_warning_snapshot() {
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("model_reasoning_selection_popup_extra_high_warning", popup);
+}
+
+#[tokio::test]
+async fn model_context_tier_selection_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.context_window = Some(400_000);
+    preset.max_context_window = Some(1_000_000);
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset]));
+
+    chat.open_context_tier_popup("gpt-5.4".to_string(), Some(ReasoningEffortConfig::High));
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("model_context_tier_selection_popup", popup);
+}
+
+#[tokio::test]
+async fn single_context_tier_option_skips_selection() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.context_window = Some(400_000);
+    preset.max_context_window = Some(400_000);
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset]));
+
+    chat.open_context_tier_popup("gpt-5.4".to_string(), Some(ReasoningEffortConfig::High));
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        !popup.contains("Select Context Window"),
+        "expected context-tier selection popup to be skipped"
+    );
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::PersistModelSelection { model, effort }
+                if model == "gpt-5.4" && *effort == Some(ReasoningEffortConfig::High)
+        )),
+        "expected model/effort persistence event; events: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::UpdateContextTier(_))),
+        "did not expect context-tier update event; events: {events:?}"
+    );
 }
 
 #[tokio::test]
@@ -2569,6 +2620,8 @@ async fn single_reasoning_option_skips_selection() {
         description: "".to_string(),
         default_reasoning_effort: ReasoningEffortConfig::High,
         supported_reasoning_efforts: single_effort,
+        context_window: Some(400_000),
+        max_context_window: Some(400_000),
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),

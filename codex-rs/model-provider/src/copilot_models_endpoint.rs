@@ -66,6 +66,10 @@ struct CopilotModelEntry {
     id: String,
     #[serde(default)]
     name: Option<String>,
+    // SANDBOX PATCH: Knob B context-window tier. Vendor drives the per-family
+    // curated default tier (OpenAI=400k, Anthropic=264k). See patch-surface §14.
+    #[serde(default)]
+    vendor: Option<String>,
     #[serde(default)]
     model_picker_enabled: bool,
     #[serde(default)]
@@ -244,6 +248,49 @@ fn wire_route_for(entry: &CopilotModelEntry, anthropic_enabled: bool) -> ModelWi
     }
 }
 
+// SANDBOX PATCH: Knob B context-window tier. The Copilot `/models` response does
+// NOT expose a per-tier context field (confirmed by a live capture — see the
+// spike findings). The "default" tier is a client-curated cap; the "full" tier
+// is the live `max_context_window_tokens`. These per-family defaults match the
+// VS Code Copilot CLI's curated defaults. See docs/implementation/patch-surface.md §14.
+const GPT_DEFAULT_CONTEXT_TIER_TOKENS: i64 = 400_000;
+const ANTHROPIC_DEFAULT_CONTEXT_TIER_TOKENS: i64 = 264_000;
+
+/// The per-family curated default-tier context window, or `None` for families
+/// without a curated default (those keep their single live window / bundled
+/// default). Vendor is authoritative; the slug prefix is a fallback for entries
+/// that omit `vendor`.
+fn curated_default_context_tier(vendor: Option<&str>, slug: &str) -> Option<i64> {
+    let is_gpt =
+        vendor.is_some_and(|v| v.eq_ignore_ascii_case("openai")) || slug.starts_with("gpt-");
+    let is_anthropic =
+        vendor.is_some_and(|v| v.eq_ignore_ascii_case("anthropic")) || slug.starts_with("claude");
+    if is_gpt {
+        Some(GPT_DEFAULT_CONTEXT_TIER_TOKENS)
+    } else if is_anthropic {
+        Some(ANTHROPIC_DEFAULT_CONTEXT_TIER_TOKENS)
+    } else {
+        None
+    }
+}
+
+/// Resolve the `(context_window, max_context_window)` pair for a model from its
+/// full window and a chosen default-tier cap. The default is clamped to the full
+/// window so a single-tier model (`full <= default`) collapses to one window and
+/// never offers a `default | long_context` toggle.
+fn knob_b_tier_windows(
+    full: Option<i64>,
+    chosen_default: Option<i64>,
+) -> (Option<i64>, Option<i64>) {
+    match full {
+        Some(full) => {
+            let default = chosen_default.map_or(full, |candidate| candidate.min(full));
+            (Some(default), Some(full))
+        }
+        None => (None, None),
+    }
+}
+
 fn translate_entry(
     entry: CopilotModelEntry,
     bundled: &[ModelInfo],
@@ -251,6 +298,14 @@ fn translate_entry(
 ) -> ModelInfo {
     // SANDBOX PATCH: D-001 compute the wire-route before `entry` is consumed below.
     let wire_route = wire_route_for(&entry, anthropic_enabled);
+    // SANDBOX PATCH: Knob B — capture the live full window + vendor before `entry`
+    // fields are moved, so we can overlay the tier windows below.
+    let live_max_context_window = entry
+        .capabilities
+        .as_ref()
+        .and_then(|c| c.limits.as_ref())
+        .and_then(|l| l.max_context_window_tokens);
+    let vendor = entry.vendor.clone();
     if let Some(known) = bundled.iter().find(|info| info.slug == entry.id) {
         let mut info = known.clone();
         if let Some(name) = entry.name {
@@ -260,6 +315,18 @@ fn translate_entry(
         info.used_fallback_model_metadata = false;
         // SANDBOX PATCH: D-001 tag the bundled-clone row to its wire route.
         info.wire_route = wire_route;
+        // SANDBOX PATCH: Knob B — overlay the live full window onto the (often
+        // stale) bundled ceiling and apply the per-family curated default tier.
+        // This is what recovers a model's long-context tier when the bundle was
+        // cut before the full window shipped (e.g. gpt-5.5 bundle 272k vs live
+        // 1.05M). For families without a curated default we preserve the bundled
+        // default window, clamped to the full ceiling. See patch-surface §14.
+        let full = live_max_context_window.or(info.max_context_window);
+        let chosen_default =
+            curated_default_context_tier(vendor.as_deref(), &info.slug).or(info.context_window);
+        let (context_window, max_context_window) = knob_b_tier_windows(full, chosen_default);
+        info.context_window = context_window;
+        info.max_context_window = max_context_window;
         return info;
     }
     synthesize_from_capabilities(entry, anthropic_enabled)
@@ -292,7 +359,14 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
         })
         .unwrap_or_default();
 
-    let context_window = limits.and_then(|l| l.max_context_window_tokens);
+    let full_context_window = limits.and_then(|l| l.max_context_window_tokens);
+    // SANDBOX PATCH: Knob B — apply the per-family curated default tier. Full
+    // tier = the live `max_context_window_tokens`; default tier = curated cap
+    // clamped to full (so single-tier families collapse to one window). See
+    // docs/implementation/patch-surface.md §14.
+    let curated_default = curated_default_context_tier(entry.vendor.as_deref(), &entry.id);
+    let (context_window, max_context_window) =
+        knob_b_tier_windows(full_context_window, curated_default);
     let display_name = entry.name.unwrap_or_else(|| entry.id.clone());
 
     // SANDBOX PATCH: D-001 Knob A default. Copilot's `/models` lists reasoning
@@ -305,7 +379,9 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
     // `/responses` rows are `ProviderDefault` and keep their existing
     // low-first default untouched.
     let default_reasoning_level = if wire_route == ModelWireRoute::ChatCompletions
-        && supported_reasoning_levels.iter().any(|p| p.effort == ReasoningEffort::Medium)
+        && supported_reasoning_levels
+            .iter()
+            .any(|p| p.effort == ReasoningEffort::Medium)
     {
         Some(ReasoningEffort::Medium)
     } else {
@@ -341,7 +417,7 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
         supports_parallel_tool_calls: supports.is_some_and(|s| s.parallel_tool_calls),
         supports_image_detail_original: supports.is_some_and(|s| s.vision),
         context_window,
-        max_context_window: context_window,
+        max_context_window,
         auto_compact_token_limit: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
@@ -530,5 +606,154 @@ mod chat_transport_tests {
         );
         assert_eq!(info.wire_route, ModelWireRoute::ChatCompletions);
         assert_eq!(info.default_reasoning_level, Some(ReasoningEffort::Low));
+    }
+}
+
+// SANDBOX PATCH: Knob B context-window tier parser tests.
+#[cfg(test)]
+mod knob_b_tier_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn entry(value: serde_json::Value) -> CopilotModelEntry {
+        serde_json::from_value(value).expect("valid entry")
+    }
+
+    fn synth(id: &str, vendor: &str, max_tokens: i64) -> ModelInfo {
+        synthesize_from_capabilities(
+            entry(json!({
+                "id": id,
+                "vendor": vendor,
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/responses"],
+                "capabilities": { "type": "chat", "limits": { "max_context_window_tokens": max_tokens } }
+            })),
+            /*anthropic_enabled*/ false,
+        )
+    }
+
+    #[test]
+    fn curated_default_context_tier_by_family() {
+        assert_eq!(
+            curated_default_context_tier(Some("OpenAI"), "gpt-5.5"),
+            Some(GPT_DEFAULT_CONTEXT_TIER_TOKENS)
+        );
+        assert_eq!(
+            curated_default_context_tier(Some("Anthropic"), "claude-opus-4.8"),
+            Some(ANTHROPIC_DEFAULT_CONTEXT_TIER_TOKENS)
+        );
+        // Vendor absent -> slug-prefix fallback.
+        assert_eq!(
+            curated_default_context_tier(None, "gpt-5.4"),
+            Some(GPT_DEFAULT_CONTEXT_TIER_TOKENS)
+        );
+        assert_eq!(
+            curated_default_context_tier(None, "claude-sonnet-4.6"),
+            Some(ANTHROPIC_DEFAULT_CONTEXT_TIER_TOKENS)
+        );
+        // Other families have no curated default.
+        assert_eq!(
+            curated_default_context_tier(Some("Google"), "gemini-3.1-pro-preview"),
+            None
+        );
+    }
+
+    #[test]
+    fn knob_b_tier_windows_clamps_default_to_full() {
+        assert_eq!(
+            knob_b_tier_windows(Some(1_050_000), Some(400_000)),
+            (Some(400_000), Some(1_050_000))
+        );
+        // default above full collapses to single-tier (default == full).
+        assert_eq!(
+            knob_b_tier_windows(Some(200_000), Some(264_000)),
+            (Some(200_000), Some(200_000))
+        );
+        // no curated default -> single window.
+        assert_eq!(
+            knob_b_tier_windows(Some(400_000), None),
+            (Some(400_000), Some(400_000))
+        );
+        assert_eq!(knob_b_tier_windows(None, Some(400_000)), (None, None));
+    }
+
+    #[test]
+    fn synthesized_gpt_is_two_tier() {
+        let info = synth("gpt-5.5", "OpenAI", 1_050_000);
+        assert_eq!(info.context_window, Some(400_000));
+        assert_eq!(info.max_context_window, Some(1_050_000));
+        assert!(info.supports_context_window_tier_selection());
+    }
+
+    #[test]
+    fn synthesized_gpt_single_tier_when_full_not_above_default() {
+        // gpt-5.3-codex / gpt-5.4-mini live at 400k == default -> single-tier.
+        let codex = synth("gpt-5.3-codex", "OpenAI", 400_000);
+        assert_eq!(codex.context_window, Some(400_000));
+        assert_eq!(codex.max_context_window, Some(400_000));
+        assert!(!codex.supports_context_window_tier_selection());
+        // gpt-5-mini live at 264k < 400k default -> clamp to 264k, single-tier.
+        let mini = synth("gpt-5-mini", "OpenAI", 264_000);
+        assert_eq!(mini.context_window, Some(264_000));
+        assert_eq!(mini.max_context_window, Some(264_000));
+        assert!(!mini.supports_context_window_tier_selection());
+    }
+
+    #[test]
+    fn synthesized_anthropic_two_tier_and_single_tier() {
+        // 1M Claude -> two-tier (264k default / 1M full).
+        let opus = synth("claude-opus-4.8", "Anthropic", 1_000_000);
+        assert_eq!(opus.context_window, Some(264_000));
+        assert_eq!(opus.max_context_window, Some(1_000_000));
+        assert!(opus.supports_context_window_tier_selection());
+        // 200k Claude -> full below the 264k default -> single-tier at 200k; a
+        // stale long_context cannot widen it.
+        let sonnet45 = synth("claude-sonnet-4.5", "Anthropic", 200_000);
+        assert_eq!(sonnet45.context_window, Some(200_000));
+        assert_eq!(sonnet45.max_context_window, Some(200_000));
+        assert!(!sonnet45.supports_context_window_tier_selection());
+    }
+
+    #[test]
+    fn synthesized_absent_limits_yields_no_window() {
+        let info = synthesize_from_capabilities(
+            entry(json!({
+                "id": "gpt-x",
+                "vendor": "OpenAI",
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/responses"],
+                "capabilities": { "type": "chat" }
+            })),
+            /*anthropic_enabled*/ false,
+        );
+        assert_eq!(info.context_window, None);
+        assert_eq!(info.max_context_window, None);
+        assert!(!info.supports_context_window_tier_selection());
+    }
+
+    #[test]
+    fn bundled_overlay_recovers_full_tier_from_stale_bundle() {
+        // Simulate a stale bundled gpt-5.5 (both windows at 272k) and a live
+        // /models row reporting the real 1.05M full window. The overlay must
+        // recover the long-context tier (default 400k / full 1.05M).
+        let mut stale = synth("gpt-5.5", "OpenAI", 272_000);
+        stale.context_window = Some(272_000);
+        stale.max_context_window = Some(272_000);
+        let bundled = vec![stale];
+
+        let info = translate_entry(
+            entry(json!({
+                "id": "gpt-5.5",
+                "vendor": "OpenAI",
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/responses"],
+                "capabilities": { "type": "chat", "limits": { "max_context_window_tokens": 1_050_000 } }
+            })),
+            &bundled,
+            /*anthropic_enabled*/ false,
+        );
+        assert_eq!(info.context_window, Some(400_000));
+        assert_eq!(info.max_context_window, Some(1_050_000));
+        assert!(info.supports_context_window_tier_selection());
     }
 }

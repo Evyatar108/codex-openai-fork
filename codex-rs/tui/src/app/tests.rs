@@ -5371,6 +5371,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             model_provider: "openai".to_string(),
             service_tier: None,
             effort: collaboration_mode.settings.reasoning_effort,
+            context_tier: Some(codex_protocol::openai_models::ContextWindowTier::LongContext),
             summary: None,
             collaboration_mode: collaboration_mode.clone(),
             personality: Some(Personality::Pragmatic),

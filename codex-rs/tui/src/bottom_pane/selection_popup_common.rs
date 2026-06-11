@@ -101,9 +101,7 @@ pub(crate) fn render_menu_surface(area: Rect, buf: &mut Buffer) -> Rect {
     if area.is_empty() {
         return area;
     }
-    Block::default()
-        .style(popup_style())
-        .render(area, buf);
+    Block::default().style(popup_style()).render(area, buf);
     menu_surface_inset(area)
 }
 

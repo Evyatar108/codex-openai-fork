@@ -369,6 +369,8 @@ use self::plugins::PluginsCacheState;
 mod plan_implementation;
 use self::plan_implementation::PLAN_IMPLEMENTATION_TITLE;
 mod model_popups;
+// SANDBOX PATCH: Knob B context-window tier picker.
+mod context_tier_popup;
 mod notifications;
 use self::notifications::Notification;
 mod permission_popups;

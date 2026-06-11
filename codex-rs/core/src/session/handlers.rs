@@ -130,6 +130,7 @@ async fn thread_settings_update(
         service_tier,
         collaboration_mode,
         personality,
+        context_tier,
     } = thread_settings;
     let collaboration_mode = match collaboration_mode {
         Some(collaboration_mode) => collaboration_mode,
@@ -157,6 +158,8 @@ async fn thread_settings_update(
         reasoning_summary: summary,
         service_tier,
         personality,
+        // SANDBOX PATCH: Knob B context-window tier.
+        context_tier,
         ..Default::default()
     }
 }
@@ -171,6 +174,7 @@ async fn thread_settings_applied_event(sess: &Session) -> EventMsg {
             model: snapshot.model,
             model_provider_id: snapshot.model_provider_id,
             service_tier: snapshot.service_tier,
+            context_tier: snapshot.context_tier,
             approval_policy: snapshot.approval_policy,
             approvals_reviewer: snapshot.approvals_reviewer,
             permission_profile: snapshot.permission_profile,

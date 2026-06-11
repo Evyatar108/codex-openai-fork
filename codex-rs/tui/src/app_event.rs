@@ -28,6 +28,7 @@ use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
+use codex_protocol::openai_models::ContextWindowTier;
 use codex_protocol::openai_models::ModelPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
@@ -629,6 +630,18 @@ pub(crate) enum AppEvent {
         model: String,
         effort: Option<ReasoningEffort>,
     },
+
+    // SANDBOX PATCH: Knob B context-window tier. Open the context-tier picker
+    // (stage 3) after the effort picker; only emitted for two-tier models.
+    OpenContextTierPopup {
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+    // SANDBOX PATCH: Knob B context-window tier. Apply the selected tier to the
+    // running app/widget (and sync the active thread).
+    UpdateContextTier(Option<ContextWindowTier>),
+    // SANDBOX PATCH: Knob B context-window tier. Persist the selected tier to config.
+    PersistContextTier(Option<ContextWindowTier>),
 
     /// Persist the selected personality to the appropriate config.
     PersistPersonalitySelection {

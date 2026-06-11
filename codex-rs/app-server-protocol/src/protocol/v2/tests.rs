@@ -3475,6 +3475,31 @@ fn thread_settings_update_params_preserve_explicit_null_service_tier() {
 }
 
 #[test]
+fn thread_settings_update_params_round_trip_context_tier() {
+    let params: ThreadSettingsUpdateParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "contextTier": "long_context"
+    }))
+    .expect("params should deserialize");
+    assert_eq!(
+        params.context_tier,
+        Some(codex_protocol::openai_models::ContextWindowTier::LongContext)
+    );
+
+    let serialized = serde_json::to_value(&params).expect("params should serialize");
+    assert_eq!(serialized.get("contextTier"), Some(&json!("long_context")));
+
+    let without_override = ThreadSettingsUpdateParams {
+        thread_id: "thread_123".to_string(),
+        context_tier: None,
+        ..Default::default()
+    };
+    let serialized_without_override =
+        serde_json::to_value(&without_override).expect("params should serialize");
+    assert_eq!(serialized_without_override.get("contextTier"), None);
+}
+
+#[test]
 fn thread_settings_update_params_preserve_field_level_experimental_gates() {
     let permissions = ThreadSettingsUpdateParams {
         thread_id: "thread_123".to_string(),

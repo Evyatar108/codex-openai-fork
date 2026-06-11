@@ -418,6 +418,24 @@
       ],
       "type": "string"
     },
+    "ContextWindowTier": {
+      "oneOf": [
+        {
+          "description": "The model's curated default context window (`ModelInfo::context_window`).",
+          "enum": [
+            "default"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The model's full context window (`ModelInfo::max_context_window`).",
+          "enum": [
+            "long_context"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "DynamicToolCallOutputContentItem": {
       "oneOf": [
         {
@@ -2250,6 +2268,16 @@
         }
       ],
       "description": "Reviewer currently used for approval requests on this thread."
+    },
+    "contextTier": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ContextWindowTier"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "cwd": {
       "$ref": "#/definitions/AbsolutePathBuf"
