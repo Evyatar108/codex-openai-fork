@@ -185,7 +185,7 @@ pub(crate) fn spawn_exit_watcher(
                     .input_queue
                     .queue_response_items_for_next_turn(vec![message])
                     .await;
-                session_ref.maybe_start_turn_for_pending_work().await;
+                session_ref.request_pending_work_wake().await;
             }
         }
     });

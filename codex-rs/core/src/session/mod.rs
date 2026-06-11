@@ -642,6 +642,7 @@ impl Codex {
             auth_manager.clone(),
             models_manager.clone(),
             exec_policy,
+            tx_sub.clone(),
             tx_event.clone(),
             agent_status_tx.clone(),
             conversation_history,
@@ -1103,6 +1104,18 @@ impl Session {
             .next_internal_sub_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         format!("auto-compact-{id}")
+    }
+
+    pub(crate) async fn request_pending_work_wake(&self) {
+        // SANDBOX PATCH: route background-completion wake onto the session submission loop.
+        let submission = Submission {
+            id: self.next_internal_sub_id(),
+            op: Op::WakePendingWork,
+            trace: current_span_w3c_trace_context(),
+        };
+        if self.tx_sub.send(submission).await.is_err() {
+            warn!("failed to enqueue wake_pending_work submission: session loop channel closed");
+        }
     }
 
     pub(crate) async fn route_realtime_text_input(self: &Arc<Self>, text: String) {

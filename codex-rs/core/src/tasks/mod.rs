@@ -911,17 +911,15 @@ impl Session {
         }
 
         // SANDBOX PATCH: US-001 — feature-gated turn-end re-check for background-process
-        // completion. `spawn_exit_watcher` enqueues a `<task_notification>` and calls
-        // `maybe_start_turn_for_pending_work`, but that call no-ops when a later turn is still
-        // active (`active_turn.is_some()`), leaving the completion stranded in
-        // `idle_pending_input`. Re-check here, after `active_turn` has been cleared above and
-        // outside its mutex scope, so the stranded completion wakes a follow-up turn. This MUST
-        // stay after the clear (and after the early return at the `cleared_active_turn` guard) or
-        // it permanently no-ops. `maybe_start_turn_for_pending_work` returns on an empty queue and
-        // `start_task` drains queued items, so there is no wake loop.
+        // completion. `spawn_exit_watcher` enqueues a `<task_notification>` and submits a wake
+        // op, but that wake no-ops when a later turn is still active (`active_turn.is_some()`),
+        // leaving the completion stranded in `idle_pending_input`. Re-submit wake here, after
+        // `active_turn` has been cleared above and outside its mutex scope, so the stranded
+        // completion wakes a follow-up turn. This MUST stay after the clear (and after the early
+        // return at the `cleared_active_turn` guard) or it permanently no-ops.
         // Replant recipe: docs/implementation/patch-surface.md §15.
         if self.enabled(Feature::BackgroundProcessNotification) {
-            self.maybe_start_turn_for_pending_work().await;
+            self.request_pending_work_wake().await;
         }
     }
 

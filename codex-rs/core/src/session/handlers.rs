@@ -782,6 +782,12 @@ pub(super) async fn submission_loop(
                     inter_agent_communication(&sess, sub.id.clone(), communication).await;
                     false
                 }
+                Op::WakePendingWork => {
+                    // SANDBOX PATCH: wake pending queued input on the session loop (non-Send-safe seam).
+                    sess.maybe_start_turn_for_pending_work_with_sub_id(sub.id.clone())
+                        .await;
+                    false
+                }
                 Op::ExecApproval {
                     id: approval_id,
                     turn_id,

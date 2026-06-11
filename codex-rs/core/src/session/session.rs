@@ -19,6 +19,7 @@ use tokio::sync::Semaphore;
 pub(crate) struct Session {
     pub(crate) conversation_id: ThreadId,
     pub(crate) installation_id: String,
+    pub(crate) tx_sub: Sender<Submission>,
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
     pub(super) out_of_band_elicitation_paused: watch::Sender<bool>,
@@ -490,6 +491,7 @@ impl Session {
         auth_manager: Arc<AuthManager>,
         models_manager: SharedModelsManager,
         exec_policy: Arc<ExecPolicyManager>,
+        tx_sub: Sender<Submission>,
         tx_event: Sender<Event>,
         agent_status: watch::Sender<AgentStatus>,
         initial_history: InitialHistory,
@@ -1050,6 +1052,7 @@ impl Session {
             let sess = Arc::new(Session {
                 conversation_id: thread_id,
                 installation_id,
+                tx_sub,
                 tx_event: tx_event.clone(),
                 agent_status,
                 out_of_band_elicitation_paused,

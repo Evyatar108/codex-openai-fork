@@ -4391,6 +4391,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
     };
 
     let (tx_event, _rx_event) = async_channel::unbounded();
+    let (tx_sub, _rx_sub) = async_channel::bounded(16);
     let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
     let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
@@ -4405,6 +4406,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         auth_manager,
         models_manager,
         Arc::new(ExecPolicyManager::default()),
+        tx_sub,
         tx_event,
         agent_status_tx,
         InitialHistory::New,
@@ -4436,6 +4438,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
 // todo: use online model info
 pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     let (tx_event, _rx_event) = async_channel::unbounded();
+    let (tx_sub, _rx_sub) = async_channel::bounded(16);
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let config = build_test_config(codex_home.path()).await;
     let config = Arc::new(config);
@@ -4637,6 +4640,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     let session = Session {
         conversation_id: thread_id,
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
+        tx_sub,
         tx_event,
         agent_status: agent_status_tx,
         out_of_band_elicitation_paused: watch::channel(false).0,
@@ -4753,6 +4757,7 @@ async fn make_session_with_config_and_rx(
     };
 
     let (tx_event, rx_event) = async_channel::unbounded();
+    let (tx_sub, _rx_sub) = async_channel::bounded(16);
     let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
     let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
@@ -4768,6 +4773,7 @@ async fn make_session_with_config_and_rx(
         auth_manager,
         models_manager,
         Arc::new(ExecPolicyManager::default()),
+        tx_sub,
         tx_event,
         agent_status_tx,
         InitialHistory::New,
@@ -4858,6 +4864,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     };
 
     let (tx_event, rx_event) = async_channel::unbounded();
+    let (tx_sub, _rx_sub) = async_channel::bounded(16);
     let (agent_status_tx, _agent_status_rx) = watch::channel(AgentStatus::PendingInit);
     let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
@@ -4873,6 +4880,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         auth_manager,
         models_manager,
         Arc::new(ExecPolicyManager::default()),
+        tx_sub,
         tx_event,
         agent_status_tx,
         initial_history,
@@ -6277,6 +6285,7 @@ where
     F: FnOnce(&mut Config),
 {
     let (tx_event, rx_event) = async_channel::unbounded();
+    let (tx_sub, _rx_sub) = async_channel::bounded(16);
     let mut config = build_test_config(codex_home).await;
     configure_config(&mut config);
     let state_db = if config.features.enabled(Feature::Goals) {
@@ -6490,6 +6499,7 @@ where
     let session = Arc::new(Session {
         conversation_id: thread_id,
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
+        tx_sub,
         tx_event,
         agent_status: agent_status_tx,
         out_of_band_elicitation_paused: watch::channel(false).0,
@@ -8169,12 +8179,11 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
 /// US-001 regression: a background-process completion queued for the next turn while a
 /// later turn is active must wake a follow-up turn once that turn finishes.
 ///
-/// `spawn_exit_watcher` calls `maybe_start_turn_for_pending_work`, but that no-ops when
-/// `active_turn.is_some()`, so the `<task_notification>` is stranded in the next-turn queue
-/// until something re-checks. `on_task_finished` performs that re-check, but ONLY after
-/// `active_turn` is cleared. This test fails if the seam is placed before the clear, because
-/// then `maybe_start_turn_for_pending_work` observes the still-active turn, no-ops, and the
-/// queued completion is never drained.
+/// `spawn_exit_watcher` submits a wake op, but that wake no-ops when `active_turn.is_some()`,
+/// so the `<task_notification>` is stranded in the next-turn queue until something re-checks.
+/// `on_task_finished` performs that re-check, but ONLY after `active_turn` is cleared. This test
+/// fails if the seam is placed before the clear, because then the wake observes the still-active
+/// turn, no-ops, and the queued completion is never drained.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn background_completion_queued_during_active_turn_wakes_after_turn_finishes() {
     let (sess, tc, _rx) = make_session_and_context_with_auth_and_config_and_rx(
@@ -8201,7 +8210,7 @@ async fn background_completion_queued_during_active_turn_wakes_after_turn_finish
     .await;
 
     // ... and a background process completes while it is running, queuing its completion
-    // notification for the next turn (the watcher's own wake no-ops because a turn is active).
+    // notification for the next turn (the watcher's wake-op no-ops because a turn is active).
     let queued_item = ResponseInputItem::Message {
         role: "user".to_string(),
         content: vec![ContentItem::InputText {

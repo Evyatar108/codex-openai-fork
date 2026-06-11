@@ -554,6 +554,9 @@ pub enum Op {
         communication: InterAgentCommunication,
     },
 
+    /// Internal wake signal to re-check queued next-turn or trigger-turn mailbox work.
+    WakePendingWork,
+
     /// Approve a command execution
     ExecApproval {
         /// The id of the submission we are approving
@@ -744,6 +747,7 @@ impl Op {
             Self::UserInput { .. } => "user_input",
             Self::ThreadSettings { .. } => "thread_settings",
             Self::InterAgentCommunication { .. } => "inter_agent_communication",
+            Self::WakePendingWork => "wake_pending_work",
             Self::ExecApproval { .. } => "exec_approval",
             Self::PatchApproval { .. } => "patch_approval",
             Self::ResolveElicitation { .. } => "resolve_elicitation",
