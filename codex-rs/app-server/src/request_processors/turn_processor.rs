@@ -66,6 +66,8 @@ struct ThreadSettingsBuildParams {
     model: Option<String>,
     service_tier: Option<Option<String>>,
     effort: Option<ReasoningEffort>,
+    // SANDBOX PATCH: Knob B context-window tier.
+    context_tier: Option<codex_protocol::openai_models::ContextWindowTier>,
     summary: Option<ReasoningSummary>,
     collaboration_mode: Option<CollaborationMode>,
     personality: Option<Personality>,
@@ -435,6 +437,8 @@ impl TurnRequestProcessor {
                     summary: params.summary,
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
+                    // SANDBOX PATCH: Knob B context-window tier.
+                    context_tier: params.context_tier,
                 },
             )
             .await?;
@@ -505,6 +509,7 @@ impl TurnRequestProcessor {
             summary,
             collaboration_mode,
             personality,
+            context_tier,
         } = params;
 
         if sandbox_policy.is_some() && permissions.is_some() {
@@ -534,6 +539,7 @@ impl TurnRequestProcessor {
             || model.is_some()
             || service_tier.is_some()
             || effort.is_some()
+            || context_tier.is_some()
             || summary.is_some()
             || collaboration_mode.is_some()
             || personality.is_some();
@@ -629,6 +635,8 @@ impl TurnRequestProcessor {
                     service_tier: service_tier.clone(),
                     collaboration_mode: collaboration_mode.clone(),
                     personality,
+                    // SANDBOX PATCH: Knob B context-window tier.
+                    context_tier,
                 })
                 .await
                 .map_err(|err| {
@@ -652,6 +660,8 @@ impl TurnRequestProcessor {
             service_tier,
             collaboration_mode,
             personality,
+            // SANDBOX PATCH: Knob B context-window tier.
+            context_tier,
         })
     }
 
@@ -678,6 +688,8 @@ impl TurnRequestProcessor {
                     summary: params.summary,
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
+                    // SANDBOX PATCH: Knob B context-window tier.
+                    context_tier: params.context_tier,
                 },
             )
             .await?;

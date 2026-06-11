@@ -20,6 +20,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ContextWindowTier;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AdditionalContextEntry;
 use codex_protocol::protocol::AskForApproval;
@@ -98,6 +99,8 @@ pub struct CodexThreadSettingsOverrides {
     pub windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub model: Option<String>,
     pub effort: Option<Option<ReasoningEffort>>,
+    // SANDBOX PATCH: Knob B context-window tier.
+    pub context_tier: Option<ContextWindowTier>,
     pub summary: Option<ReasoningSummary>,
     pub service_tier: Option<Option<String>>,
     pub collaboration_mode: Option<CollaborationMode>,
@@ -307,6 +310,7 @@ impl CodexThread {
             service_tier,
             collaboration_mode,
             personality,
+            context_tier,
         } = overrides;
         let collaboration_mode = if let Some(collaboration_mode) = collaboration_mode {
             collaboration_mode
@@ -332,6 +336,8 @@ impl CodexThread {
             reasoning_summary: summary,
             service_tier,
             personality,
+            // SANDBOX PATCH: Knob B context-window tier.
+            context_tier,
             ..Default::default()
         }
     }

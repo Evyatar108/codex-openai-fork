@@ -15,6 +15,7 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ContextWindowTier;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
@@ -135,6 +136,10 @@ pub struct ThreadStartParams {
     pub developer_instructions: Option<String>,
     #[ts(optional = nullable)]
     pub personality: Option<Personality>,
+    // SANDBOX PATCH: Knob B context-window tier. Start a thread on a non-default
+    // context tier (parity with service_tier). See patch-surface §14.
+    #[ts(optional = nullable)]
+    pub context_tier: Option<ContextWindowTier>,
     #[ts(optional = nullable)]
     pub ephemeral: Option<bool>,
     #[ts(optional = nullable)]
@@ -219,6 +224,9 @@ pub struct ThreadStartResponse {
     #[serde(default)]
     pub active_permission_profile: Option<ActivePermissionProfile>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    // SANDBOX PATCH: Knob B context-window tier. The resolved start tier so the
+    // client sees which tier the thread started on. See patch-surface §14.
+    pub context_tier: Option<ContextWindowTier>,
 }
 
 #[derive(
@@ -262,6 +270,12 @@ pub struct ThreadSettingsUpdateParams {
     /// Override the reasoning effort for subsequent turns.
     #[ts(optional = nullable)]
     pub effort: Option<ReasoningEffort>,
+    /// Override the context-window tier for subsequent turns. This is the field
+    /// that makes a context-tier picker change take effect on the next turn
+    /// without a restart.
+    // SANDBOX PATCH: Knob B context-window tier. See patch-surface §14.
+    #[ts(optional = nullable)]
+    pub context_tier: Option<ContextWindowTier>,
     /// Override the reasoning summary for subsequent turns.
     #[ts(optional = nullable)]
     pub summary: Option<ReasoningSummary>,
@@ -295,6 +309,9 @@ pub struct ThreadSettings {
     pub model_provider: String,
     pub service_tier: Option<String>,
     pub effort: Option<ReasoningEffort>,
+    // SANDBOX PATCH: Knob B context-window tier. Canonical current tier echoed
+    // by ThreadSettingsUpdatedNotification via thread_settings.
+    pub context_tier: Option<ContextWindowTier>,
     pub summary: Option<ReasoningSummary>,
     pub collaboration_mode: CollaborationMode,
     pub personality: Option<Personality>,

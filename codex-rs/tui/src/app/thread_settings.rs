@@ -91,6 +91,24 @@ impl App {
         self.send_thread_settings_update(app_server, params).await;
     }
 
+    // SANDBOX PATCH: Knob B context-window tier. Push the selected tier to the
+    // active thread so it takes effect on the next turn without a restart.
+    pub(super) async fn sync_active_thread_context_tier_setting(
+        &mut self,
+        app_server: &mut AppServerSession,
+        tier: Option<codex_protocol::openai_models::ContextWindowTier>,
+    ) {
+        let Some(thread_id) = self.active_thread_id else {
+            return;
+        };
+        let params = ThreadSettingsUpdateParams {
+            thread_id: thread_id.to_string(),
+            context_tier: tier,
+            ..ThreadSettingsUpdateParams::default()
+        };
+        self.send_thread_settings_update(app_server, params).await;
+    }
+
     pub(super) async fn sync_override_turn_context_settings(
         &mut self,
         app_server: &mut AppServerSession,
@@ -203,6 +221,7 @@ fn thread_settings_update_has_changes(params: &ThreadSettingsUpdateParams) -> bo
         || params.model.is_some()
         || params.service_tier.is_some()
         || params.effort.is_some()
+        || params.context_tier.is_some()
         || params.summary.is_some()
         || params.collaboration_mode.is_some()
         || params.personality.is_some()

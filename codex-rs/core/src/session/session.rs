@@ -428,6 +428,10 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) service_tier: Option<Option<String>>,
+    // SANDBOX PATCH: Knob B context-window tier. Applied to the per-turn
+    // models-manager config so a thread/settings/update tier change takes effect
+    // on the next turn. See patch-surface §14.
+    pub(crate) context_tier: Option<codex_protocol::openai_models::ContextWindowTier>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
     /// Turn-local environment override. `None` inherits the sticky thread
     /// environments stored on `SessionConfiguration`; `Some([])` explicitly
