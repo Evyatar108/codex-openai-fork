@@ -295,11 +295,28 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
     let context_window = limits.and_then(|l| l.max_context_window_tokens);
     let display_name = entry.name.unwrap_or_else(|| entry.id.clone());
 
+    // SANDBOX PATCH: D-001 Knob A default. Copilot's `/models` lists reasoning
+    // levels low-first, so `.first()` would default an UNSELECTED turn to
+    // "low" — a regression for Claude, which previously ran at "medium" (the
+    // chat-completions dispatch arm in core falls back to this
+    // `default_reasoning_level` when no effort is explicitly selected). For the
+    // Claude/Anthropic chat-completions route, prefer Medium when the model
+    // advertises it; otherwise keep the lowest advertised level. GPT
+    // `/responses` rows are `ProviderDefault` and keep their existing
+    // low-first default untouched.
+    let default_reasoning_level = if wire_route == ModelWireRoute::ChatCompletions
+        && supported_reasoning_levels.iter().any(|p| p.effort == ReasoningEffort::Medium)
+    {
+        Some(ReasoningEffort::Medium)
+    } else {
+        supported_reasoning_levels.first().map(|p| p.effort)
+    };
+
     ModelInfo {
         slug: entry.id,
         display_name,
         description: None,
-        default_reasoning_level: supported_reasoning_levels.first().map(|p| p.effort),
+        default_reasoning_level,
         supported_reasoning_levels,
         shell_type: ConfigShellToolType::ShellCommand,
         visibility: ModelVisibility::List,
@@ -445,5 +462,73 @@ mod chat_transport_tests {
                 ModelWireRoute::ProviderDefault
             );
         }
+    }
+
+    #[test]
+    fn synthesized_claude_defaults_reasoning_to_medium() {
+        // Knob A default: an UNSELECTED Claude/Copilot turn must default to
+        // "medium" — not the low-first `.first()` value — since the
+        // chat-completions dispatch arm falls back to `default_reasoning_level`
+        // when no effort is explicitly selected.
+        let info = synthesize_from_capabilities(
+            entry(json!({
+                "id": "claude-opus-4.8",
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/chat/completions", "/v1/messages"],
+                "capabilities": {
+                    "type": "chat",
+                    "supports": { "reasoning_effort": ["low", "medium", "high", "xhigh"] }
+                }
+            })),
+            /*anthropic_enabled*/ true,
+        );
+        assert_eq!(info.wire_route, ModelWireRoute::ChatCompletions);
+        assert_eq!(info.default_reasoning_level, Some(ReasoningEffort::Medium));
+        // Wire serialization (what the dispatch arm sends when unselected).
+        assert_eq!(
+            info.default_reasoning_level.map(|level| level.to_string()),
+            Some("medium".to_string())
+        );
+    }
+
+    #[test]
+    fn synthesized_gpt_keeps_low_first_default() {
+        // A synthesized GPT `/responses` row (ProviderDefault) must keep its
+        // existing low-first default; the Medium preference is scoped to the
+        // Claude/Anthropic chat-completions route only.
+        let info = synthesize_from_capabilities(
+            entry(json!({
+                "id": "gpt-5.5",
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/responses"],
+                "capabilities": {
+                    "type": "chat",
+                    "supports": { "reasoning_effort": ["low", "medium", "high", "xhigh"] }
+                }
+            })),
+            /*anthropic_enabled*/ true,
+        );
+        assert_eq!(info.wire_route, ModelWireRoute::ProviderDefault);
+        assert_eq!(info.default_reasoning_level, Some(ReasoningEffort::Low));
+    }
+
+    #[test]
+    fn synthesized_claude_without_medium_keeps_first() {
+        // Guard the "else keep the model default" branch: a Claude chat row that
+        // does not advertise Medium falls back to the lowest advertised level.
+        let info = synthesize_from_capabilities(
+            entry(json!({
+                "id": "claude-haiku-mini",
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/chat/completions", "/v1/messages"],
+                "capabilities": {
+                    "type": "chat",
+                    "supports": { "reasoning_effort": ["low", "high"] }
+                }
+            })),
+            /*anthropic_enabled*/ true,
+        );
+        assert_eq!(info.wire_route, ModelWireRoute::ChatCompletions);
+        assert_eq!(info.default_reasoning_level, Some(ReasoningEffort::Low));
     }
 }
