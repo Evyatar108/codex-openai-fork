@@ -14,6 +14,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::openai_models::ContextWindowTier;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 
@@ -36,6 +37,10 @@ pub struct ConfigProfile {
     pub plan_mode_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_verbosity: Option<Verbosity>,
+    // SANDBOX PATCH: Knob B context-window tier. Profile parity with the
+    // top-level `model_context_tier` key so a profile-selected model carries
+    // its tier (Finding-4). See patch-surface §14.
+    pub model_context_tier: Option<ContextWindowTier>,
     /// Optional path to a JSON model catalog (applied on startup only).
     pub model_catalog_json: Option<AbsolutePathBuf>,
     pub personality: Option<Personality>,

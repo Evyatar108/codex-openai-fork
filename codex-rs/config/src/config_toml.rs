@@ -47,6 +47,7 @@ use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::ContextWindowTier;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
@@ -145,6 +146,13 @@ pub struct ConfigToml {
 
     /// Size of the context window for the model, in tokens.
     pub model_context_window: Option<i64>,
+
+    /// Knob B: selected context-window tier (`default` | `long_context`) for
+    /// Copilot-provider models that expose a curated default window below their
+    /// full ceiling. Persisted by the TUI context-tier picker; applied to the
+    /// effective context window in `models-manager`.
+    // SANDBOX PATCH: Knob B context-window tier. See patch-surface §14.
+    pub model_context_tier: Option<ContextWindowTier>,
 
     /// Token usage threshold triggering auto-compaction of conversation history.
     pub model_auto_compact_token_limit: Option<i64>,
