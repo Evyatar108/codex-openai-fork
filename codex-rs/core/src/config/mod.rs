@@ -3551,15 +3551,7 @@ impl Config {
             active_project,
             notices,
             check_for_update_on_startup,
-            // SANDBOX PATCH: paste-burst heuristic OFF by default in this fork.
-            // The heuristic holds the first ASCII keystroke for ~30 ms on Windows
-            // (8 ms elsewhere) waiting to see if a fast burst follows, which adds
-            // perceptible per-keystroke latency. Bracketed paste (enabled in
-            // `tui::tui::EnableBracketedPaste`) already frames pastes correctly on
-            // every modern terminal, so the heuristic is redundant. Users on
-            // terminals without bracketed-paste support can opt back in via
-            // `disable_paste_burst = false` in `~/.codex/config.toml`.
-            disable_paste_burst: cfg.disable_paste_burst.unwrap_or(true),
+            disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
             analytics_enabled: cfg.analytics.as_ref().and_then(|a| a.enabled),
             feedback_enabled: cfg
                 .feedback
