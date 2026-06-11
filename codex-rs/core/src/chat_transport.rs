@@ -135,12 +135,17 @@ impl AssistantMessageItem {
 ///
 /// `responses_body` is the serialized `ResponsesApiRequest` core already builds;
 /// `base_url` is the Copilot endpoint (defaults to `api.githubcopilot.com`).
+/// `reasoning_effort`, when `Some`, is threaded to the overlay builder and
+/// emitted as a top-level `reasoning_effort` on the chat body — core strips it
+/// from `responses_body` for synthesized Claude rows
+/// (`supports_reasoning_summaries=false`), so the caller passes it explicitly.
 pub(crate) async fn stream_chat_completions(
     responses_body: serde_json::Value,
     model_slug: &str,
     base_url: Option<&str>,
+    reasoning_effort: Option<String>,
 ) -> Result<ResponseStream> {
-    let chat_body = build_chat_request_body(&responses_body, model_slug)
+    let chat_body = build_chat_request_body(&responses_body, model_slug, reasoning_effort)
         .map_err(|err| CodexErr::Fatal(err.to_string()))?;
     let initiator = request_initiator(&responses_body);
 

@@ -1638,10 +1638,22 @@ impl ModelClientSession {
                     CodexErr::Fatal(format!("serialize chat request body: {err}"))
                 })?;
                 let base_url = self.client.state.provider.info().base_url.clone();
+                // SANDBOX PATCH: D-001 Knob A. Thread the user-selected reasoning
+                // effort explicitly to the chat path: core's `build_reasoning`
+                // strips the `reasoning` object for synthesized Claude rows
+                // (`supports_reasoning_summaries=false`), so `responses_body`
+                // carries no effort. `ReasoningEffort`'s lowercase `Display`
+                // produces the wire string (low/medium/high/xhigh). This adds a
+                // request param (not a D-002 opt-in gate), so the "keep the
+                // dispatch arm gate-free" rule is unaffected.
+                let reasoning_effort = effort
+                    .or(model_info.default_reasoning_level)
+                    .map(|level| level.to_string());
                 crate::chat_transport::stream_chat_completions(
                     responses_body,
                     &model_info.slug,
                     base_url.as_deref(),
+                    reasoning_effort,
                 )
                 .await
             }
