@@ -335,31 +335,27 @@ impl ChatWidget {
         preview_data
     }
 
+    pub(super) fn status_line_selected_context_window_size(&self) -> Option<i64> {
+        self.config.model_context_window.or_else(|| {
+            let current_model = self.current_model();
+            let preset = self
+                .model_catalog
+                .try_list_models()
+                .ok()?
+                .into_iter()
+                .find(|preset| preset.model == current_model)?;
+            // SANDBOX PATCH: Knob B footer/status surfaces should show the
+            // selected tier's clean total window, not the runtime-effective
+            // window that already feeds the percent-left gauge.
+            preset.context_window_for_tier(self.config.model_context_tier.unwrap_or_default())
+        })
+    }
+
     pub(super) fn status_line_context_window_size(&self) -> Option<i64> {
         self.token_info
             .as_ref()
             .and_then(|info| info.model_context_window)
-            .or(self.config.model_context_window)
-            .or_else(|| {
-                let current_model = self.current_model();
-                let preset = self
-                    .model_catalog
-                    .try_list_models()
-                    .ok()?
-                    .into_iter()
-                    .find(|preset| preset.model == current_model)?;
-                // SANDBOX PATCH: Knob B footer/status surfaces should still show
-                // the effective default-tier window before the runtime sends
-                // token-usage metadata, and honor a persisted long-context tier.
-                if matches!(
-                    self.config.model_context_tier,
-                    Some(codex_protocol::openai_models::ContextWindowTier::LongContext)
-                ) {
-                    preset.max_context_window.or(preset.context_window)
-                } else {
-                    preset.context_window
-                }
-            })
+            .or_else(|| self.status_line_selected_context_window_size())
     }
 
     pub(super) fn status_line_context_remaining_percent(&self) -> Option<i64> {

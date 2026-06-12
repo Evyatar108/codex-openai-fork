@@ -2,6 +2,7 @@ use super::*;
 use crate::bottom_pane::goal_status_indicator_line;
 use crate::chatwidget::rate_limits::NUDGE_MODEL_SLUG;
 use crate::chatwidget::rate_limits::get_limits_duration;
+use codex_protocol::openai_models::ContextWindowTier;
 use pretty_assertions::assert_eq;
 use ratatui::backend::TestBackend;
 use serial_test::serial;
@@ -97,23 +98,31 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
 }
 
 #[tokio::test]
-async fn token_usage_update_uses_runtime_context_window() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    chat.config.model_context_window = Some(1_000_000);
+async fn token_usage_update_uses_selected_tier_total_for_size_and_runtime_window_for_gauge() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    set_fast_mode_test_catalog(&mut chat);
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.context_window = Some(400_000);
+    preset.max_context_window = Some(1_050_000);
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset]));
+    chat.config.model_context_tier = Some(ContextWindowTier::LongContext);
 
     handle_token_count(
         &mut chat,
         Some(make_token_info(
-            /*total_tokens*/ 0, /*context_window*/ 950_000,
+            /*total_tokens*/ 600_000, /*context_window*/ 997_500,
         )),
     );
 
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ContextWindowSize),
-        Some("950K window".to_string())
+        Some("1.05M window".to_string())
     );
-    assert_eq!(chat.bottom_pane.context_window_percent(), Some(100));
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ContextRemaining),
+        Some("Context 40% left".to_string())
+    );
+    assert_eq!(chat.bottom_pane.context_window_percent(), Some(40));
 
     chat.add_status_output(
         /*refreshing_rate_limits*/ false, /*request_id*/ None,
@@ -134,12 +143,12 @@ async fn token_usage_update_uses_runtime_context_window() {
         .expect("context window line");
 
     assert!(
-        context_line.contains("950K"),
+        context_line.contains("998K"),
         "expected /status to use runtime context window, got: {context_line}"
     );
     assert!(
-        !context_line.contains("1M"),
-        "expected /status to avoid raw config context window, got: {context_line}"
+         !context_line.contains("1.05M"),
+        "expected /status to avoid selected-tier total, got: {context_line}"
     );
 }
 
@@ -2263,6 +2272,37 @@ async fn status_line_model_with_reasoning_uses_selected_full_tier_context_window
 }
 
 #[tokio::test]
+async fn status_line_model_with_reasoning_uses_selected_default_tier_context_window() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    set_fast_mode_test_catalog(&mut chat);
+    chat.config.tui_status_line = Some(vec![
+        "model-with-reasoning".to_string(),
+        "context-remaining".to_string(),
+    ]);
+    chat.config.model_context_tier = Some(ContextWindowTier::Default);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.set_service_tier(Some(ServiceTier::Fast.request_value().to_string()));
+    set_chatgpt_auth(&mut chat);
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.context_window = Some(400_000);
+    preset.max_context_window = Some(1_050_000);
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset]));
+    handle_token_count(
+        &mut chat,
+        Some(make_token_info(
+            /*total_tokens*/ 100_000,
+            /*context_window*/ 380_000,
+        )),
+    );
+    chat.refresh_status_line();
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.4 high fast · 400K context · Context 76% left".to_string())
+    );
+}
+
+#[tokio::test]
 async fn status_line_model_with_reasoning_plan_mode_footer_snapshot() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -2392,6 +2432,92 @@ async fn status_line_model_with_reasoning_context_remaining_footer_snapshot() {
         .expect("draw model-with-reasoning footer");
     assert_chatwidget_snapshot!(
         "status_line_model_with_reasoning_context_remaining_footer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+}
+
+#[tokio::test]
+async fn status_line_model_with_reasoning_runtime_long_context_footer_snapshot() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    set_fast_mode_test_catalog(&mut chat);
+    chat.show_welcome_banner = false;
+    chat.config.cwd = test_project_path().abs();
+    chat.config.model_context_tier = Some(ContextWindowTier::LongContext);
+    chat.config.tui_status_line = Some(vec![
+        "model-with-reasoning".to_string(),
+        "context-remaining".to_string(),
+        "current-dir".to_string(),
+    ]);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.set_service_tier(Some(ServiceTier::Fast.request_value().to_string()));
+    set_chatgpt_auth(&mut chat);
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.context_window = Some(400_000);
+    preset.max_context_window = Some(1_050_000);
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset]));
+    handle_token_count(
+        &mut chat,
+        Some(make_token_info(
+            /*total_tokens*/ 600_000,
+            /*context_window*/ 997_500,
+        )),
+    );
+    chat.refresh_status_line();
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw model-with-reasoning footer");
+    assert_chatwidget_snapshot!(
+         "status_line_model_with_reasoning_runtime_long_context_footer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+}
+
+#[tokio::test]
+async fn status_line_model_with_reasoning_runtime_default_context_footer_snapshot() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    set_fast_mode_test_catalog(&mut chat);
+    chat.show_welcome_banner = false;
+    chat.config.cwd = test_project_path().abs();
+    chat.config.model_context_tier = Some(ContextWindowTier::Default);
+    chat.config.tui_status_line = Some(vec![
+        "model-with-reasoning".to_string(),
+        "context-remaining".to_string(),
+        "current-dir".to_string(),
+    ]);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.set_service_tier(Some(ServiceTier::Fast.request_value().to_string()));
+    set_chatgpt_auth(&mut chat);
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.context_window = Some(400_000);
+    preset.max_context_window = Some(1_050_000);
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset]));
+    handle_token_count(
+        &mut chat,
+        Some(make_token_info(
+            /*total_tokens*/ 100_000,
+            /*context_window*/ 380_000,
+        )),
+    );
+    chat.refresh_status_line();
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw model-with-reasoning footer");
+    assert_chatwidget_snapshot!(
+        "status_line_model_with_reasoning_runtime_default_context_footer",
         normalized_backend_snapshot(terminal.backend())
     );
 }

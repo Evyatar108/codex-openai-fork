@@ -637,7 +637,7 @@ impl ChatWidget {
             }
             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self
-                .status_line_context_window_size()
+                .status_line_selected_context_window_size()
                 .map(|cws| format!("{} window", format_tokens_compact(cws))),
             StatusLineItem::TotalInputTokens => Some(format!(
                 "{} in",
@@ -779,7 +779,7 @@ impl ChatWidget {
     }
 
     fn status_line_context_segment(&self) -> Option<String> {
-        self.status_line_context_window_size()
+        self.status_line_selected_context_window_size()
             .map(|window| format!("{} context", format_tokens_compact(window)))
     }
 
