@@ -10,6 +10,8 @@ use std::panic;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+#[cfg(windows)]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -94,13 +96,35 @@ impl Drop for Tui {
 mod tests {
     use std::io::Write as _;
 
+    #[cfg(windows)]
+    use super::ENABLE_VIRTUAL_TERMINAL_INPUT_BIT;
+    #[cfg(windows)]
+    use super::SavedVirtualTerminalInputState;
     use super::clear_for_viewport_change;
+    #[cfg(windows)]
+    use super::clear_virtual_terminal_input_mode;
+    #[cfg(windows)]
+    use super::restore_virtual_terminal_input_mode;
     use super::should_emit_notification;
     use crate::custom_terminal::Terminal as CustomTerminal;
     use crate::test_backend::VT100Backend;
     use codex_config::types::NotificationCondition;
+    #[cfg(windows)]
+    use pretty_assertions::assert_eq;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Console::ENABLE_ECHO_INPUT;
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Console::ENABLE_EXTENDED_FLAGS;
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Console::ENABLE_LINE_INPUT;
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Console::ENABLE_MOUSE_INPUT;
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Console::ENABLE_PROCESSED_INPUT;
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Console::ENABLE_WINDOW_INPUT;
 
     #[test]
     fn unfocused_notification_condition_is_suppressed_when_focused() {
@@ -166,10 +190,66 @@ mod tests {
             "expected stale cells inside the new viewport to be cleared, rows: {rows:?}"
         );
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn enter_codex_tui_input_mode_strips_only_virtual_terminal_input() {
+        let input_mode = ENABLE_VIRTUAL_TERMINAL_INPUT_BIT
+            | ENABLE_WINDOW_INPUT
+            | ENABLE_MOUSE_INPUT
+            | ENABLE_EXTENDED_FLAGS;
+
+        assert_eq!(
+            clear_virtual_terminal_input_mode(input_mode),
+            ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS,
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn restore_saved_virtual_terminal_input_mode_readds_only_the_saved_bit() {
+        let input_mode = ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS;
+
+        assert_eq!(
+            restore_virtual_terminal_input_mode(
+                input_mode,
+                SavedVirtualTerminalInputState::Enabled,
+            ),
+            input_mode | ENABLE_VIRTUAL_TERMINAL_INPUT_BIT,
+        );
+        assert_eq!(
+            restore_virtual_terminal_input_mode(
+                input_mode,
+                SavedVirtualTerminalInputState::Disabled,
+            ),
+            input_mode,
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn restore_saved_virtual_terminal_input_mode_preserves_keep_raw_bits() {
+        let keep_raw_mode = ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS;
+
+        assert_eq!(
+            restore_virtual_terminal_input_mode(
+                keep_raw_mode,
+                SavedVirtualTerminalInputState::Enabled,
+            ),
+            keep_raw_mode | ENABLE_VIRTUAL_TERMINAL_INPUT_BIT,
+        );
+        assert_eq!(
+            keep_raw_mode & (ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT),
+            0,
+        );
+    }
 }
 
 pub fn set_modes() -> Result<()> {
     ensure_virtual_terminal_processing()?;
+    // SANDBOX PATCH: normalize inherited Windows VT input so crossterm keeps seeing
+    // classic INPUT_RECORD key/focus events instead of leaking raw VT tails like [I/[6~.
+    enter_codex_tui_input_mode()?;
 
     execute!(stdout(), EnableBracketedPaste)?;
 
@@ -258,6 +338,9 @@ fn restore_common(
     if matches!(raw_mode_restore, RawModeRestore::Disable)
         && let Err(err) = disable_raw_mode()
     {
+        first_error.get_or_insert(err);
+    }
+    if let Err(err) = restore_saved_virtual_terminal_input_bit() {
         first_error.get_or_insert(err);
     }
     if let Err(err) = execute!(
@@ -1082,5 +1165,137 @@ fn ensure_virtual_terminal_processing() -> Result<()> {
 
 #[cfg(not(windows))]
 fn ensure_virtual_terminal_processing() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+const ENABLE_VIRTUAL_TERMINAL_INPUT_BIT: u32 =
+    windows_sys::Win32::System::Console::ENABLE_VIRTUAL_TERMINAL_INPUT;
+
+#[cfg(windows)]
+static SAVED_VIRTUAL_TERMINAL_INPUT_STATE: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SavedVirtualTerminalInputState {
+    Disabled,
+    Enabled,
+}
+
+#[cfg(windows)]
+impl SavedVirtualTerminalInputState {
+    fn from_input_mode(input_mode: u32) -> Self {
+        if input_mode & ENABLE_VIRTUAL_TERMINAL_INPUT_BIT == 0 {
+            Self::Disabled
+        } else {
+            Self::Enabled
+        }
+    }
+
+    fn store(self) {
+        let value = match self {
+            Self::Disabled => 0,
+            Self::Enabled => 1,
+        };
+        SAVED_VIRTUAL_TERMINAL_INPUT_STATE.store(value, Ordering::Relaxed);
+    }
+
+    fn load() -> Self {
+        if SAVED_VIRTUAL_TERMINAL_INPUT_STATE.load(Ordering::Relaxed) == 0 {
+            Self::Disabled
+        } else {
+            Self::Enabled
+        }
+    }
+}
+
+#[cfg(windows)]
+fn read_console_input_mode() -> Result<u32> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::GetConsoleMode;
+    use windows_sys::Win32::System::Console::GetStdHandle;
+    use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
+
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle == INVALID_HANDLE_VALUE || handle == 0 {
+        return Err(std::io::Error::other("failed to get stdin handle"));
+    }
+
+    let mut mode = 0;
+    if unsafe { GetConsoleMode(handle, &mut mode) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(mode)
+}
+
+#[cfg(windows)]
+fn write_console_input_mode(mode: u32) -> Result<()> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::GetStdHandle;
+    use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
+    use windows_sys::Win32::System::Console::SetConsoleMode;
+
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle == INVALID_HANDLE_VALUE || handle == 0 {
+        return Err(std::io::Error::other("failed to get stdin handle"));
+    }
+
+    if unsafe { SetConsoleMode(handle, mode) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn clear_virtual_terminal_input_mode(input_mode: u32) -> u32 {
+    input_mode & !ENABLE_VIRTUAL_TERMINAL_INPUT_BIT
+}
+
+#[cfg(windows)]
+fn restore_virtual_terminal_input_mode(
+    input_mode: u32,
+    saved_state: SavedVirtualTerminalInputState,
+) -> u32 {
+    match saved_state {
+        SavedVirtualTerminalInputState::Disabled => input_mode,
+        SavedVirtualTerminalInputState::Enabled => input_mode | ENABLE_VIRTUAL_TERMINAL_INPUT_BIT,
+    }
+}
+
+#[cfg(windows)]
+fn enter_codex_tui_input_mode() -> Result<()> {
+    let input_mode = read_console_input_mode()?;
+    let saved_state = SavedVirtualTerminalInputState::from_input_mode(input_mode);
+    saved_state.store();
+
+    let normalized_mode = clear_virtual_terminal_input_mode(input_mode);
+    if normalized_mode != input_mode {
+        write_console_input_mode(normalized_mode)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn restore_saved_virtual_terminal_input_bit() -> Result<()> {
+    let input_mode = read_console_input_mode()?;
+    let restored_mode =
+        restore_virtual_terminal_input_mode(input_mode, SavedVirtualTerminalInputState::load());
+    if restored_mode != input_mode {
+        write_console_input_mode(restored_mode)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn enter_codex_tui_input_mode() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn restore_saved_virtual_terminal_input_bit() -> Result<()> {
     Ok(())
 }
