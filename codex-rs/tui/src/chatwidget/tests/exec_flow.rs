@@ -576,7 +576,7 @@ async fn unified_exec_unknown_end_with_active_exploring_cell_snapshot() {
 }
 
 #[tokio::test]
-async fn unified_exec_end_after_task_complete_is_suppressed() {
+async fn unified_exec_end_after_task_complete_renders_exec_history_cell() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();
 
@@ -591,12 +591,26 @@ async fn unified_exec_end_after_task_complete_is_suppressed() {
     chat.on_task_complete(
         /*last_agent_message*/ None, /*duration_ms*/ None, /*from_replay*/ false,
     );
-    end_exec(&mut chat, begin, "", "", /*exit_code*/ 0);
+    end_exec(
+        &mut chat,
+        begin,
+        "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\n",
+        "",
+        /*exit_code*/ 0,
+    );
 
     let cells = drain_insert_history(&mut rx);
-    assert!(
-        cells.is_empty(),
-        "expected unified exec end after task complete to be suppressed"
+    assert_eq!(cells.len(), 1, "expected a rendered exec history cell");
+    assert_chatwidget_snapshot!(
+        "unified_exec_end_after_task_complete_renders_exec_history_cell",
+        lines_to_single_string(&cells[0]),
+        @"• Ran echo unified exec startup
+  └ line 1
+    line 2
+    … +7 lines (ctrl + t to view transcript)
+    line 10
+    line 11
+"
     );
 }
 

@@ -151,7 +151,11 @@ impl ChatWidget {
                 self.flush_unified_exec_wait_streak();
             }
             self.track_unified_exec_process_end(id, process_id.as_deref());
-            if !self.bottom_pane.is_task_running() {
+            // SANDBOX PATCH: background-process wake turns still need the finished startup command
+            // rendered via the normal exec history cell after the originating turn has ended.
+            if !self.bottom_pane.is_task_running()
+                && *source != ExecCommandSource::UnifiedExecStartup
+            {
                 return;
             }
         }
