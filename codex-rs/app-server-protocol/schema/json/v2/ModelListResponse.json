@@ -40,6 +40,14 @@
             }
           ]
         },
+        "contextWindow": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "defaultReasoningEffort": {
           "$ref": "#/definitions/ReasoningEffort"
         },
@@ -75,6 +83,14 @@
         },
         "isDefault": {
           "type": "boolean"
+        },
+        "maxContextWindow": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "model": {
           "type": "string"

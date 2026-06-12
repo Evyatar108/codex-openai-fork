@@ -93,7 +93,7 @@ fn format_token_window(tokens: i64) -> String {
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     let len = digits.len();
     for (idx, ch) in digits.chars().enumerate() {
-        if idx > 0 && (len - idx) % 3 == 0 {
+        if idx > 0 && (len - idx).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(ch);

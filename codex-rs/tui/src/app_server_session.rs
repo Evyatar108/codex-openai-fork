@@ -1194,8 +1194,10 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
                 description: effort.description,
             })
             .collect(),
-        context_window: None,
-        max_context_window: None,
+        // SANDBOX PATCH: Knob B context-window tier. Preserve model/list tier
+        // windows so `ChatWidget` can decide whether to open the tier picker.
+        context_window: model.context_window,
+        max_context_window: model.max_context_window,
         supports_personality: model.supports_personality,
         additional_speed_tiers: model.additional_speed_tiers,
         service_tiers: model
@@ -1776,6 +1778,63 @@ mod tests {
             plan_type: None,
             rate_limit_reached_type: None,
         }
+    }
+
+    #[test]
+    fn model_preset_from_api_model_preserves_context_tier_windows() {
+        let model = ApiModel {
+            id: "gpt-5.5".to_string(),
+            model: "gpt-5.5".to_string(),
+            upgrade: None,
+            upgrade_info: None,
+            availability_nux: None,
+            display_name: "GPT 5.5".to_string(),
+            description: "GPT 5.5 description".to_string(),
+            hidden: false,
+            supported_reasoning_efforts: vec![codex_app_server_protocol::ReasoningEffortOption {
+                reasoning_effort: ReasoningEffort::High,
+                description: "high".to_string(),
+            }],
+            default_reasoning_effort: ReasoningEffort::High,
+            context_window: Some(400_000),
+            max_context_window: Some(1_050_000),
+            input_modalities: codex_protocol::openai_models::default_input_modalities(),
+            supports_personality: false,
+            additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            is_default: true,
+        };
+
+        let preset = model_preset_from_api_model(model);
+
+        assert_eq!(
+            preset,
+            ModelPreset {
+                id: "gpt-5.5".to_string(),
+                model: "gpt-5.5".to_string(),
+                display_name: "GPT 5.5".to_string(),
+                description: "GPT 5.5 description".to_string(),
+                default_reasoning_effort: ReasoningEffort::High,
+                supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "high".to_string(),
+                }],
+                context_window: Some(400_000),
+                max_context_window: Some(1_050_000),
+                supports_personality: false,
+                additional_speed_tiers: Vec::new(),
+                service_tiers: Vec::new(),
+                default_service_tier: None,
+                is_default: true,
+                upgrade: None,
+                show_in_picker: true,
+                availability_nux: None,
+                supported_in_api: true,
+                input_modalities: codex_protocol::openai_models::default_input_modalities(),
+            }
+        );
+        assert!(preset.supports_context_window_tier_selection());
     }
 
     #[test]

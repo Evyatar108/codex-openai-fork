@@ -41,6 +41,10 @@ fn model_from_preset(preset: ModelPreset) -> Model {
             preset.supported_reasoning_efforts,
         ),
         default_reasoning_effort: preset.default_reasoning_effort,
+        // SANDBOX PATCH: Knob B context-window tier. Preserve both tier windows
+        // across model/list so the TUI picker can expose two-tier models.
+        context_window: preset.context_window,
+        max_context_window: preset.max_context_window,
         input_modalities: preset.input_modalities,
         supports_personality: preset.supports_personality,
         additional_speed_tiers: preset.additional_speed_tiers,

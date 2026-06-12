@@ -2453,6 +2453,73 @@ async fn model_context_tier_selection_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn reasoning_accept_opens_context_tier_for_two_tier_model() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+
+    set_chatgpt_auth(&mut chat);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.context_window = Some(400_000);
+    preset.max_context_window = Some(1_050_000);
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset.clone()]));
+
+    chat.open_reasoning_popup(preset);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let (model, effort) = events
+        .iter()
+        .find_map(|event| match event {
+            AppEvent::OpenContextTierPopup { model, effort } => Some((model.clone(), *effort)),
+            _ => None,
+        })
+        .expect("expected context-tier popup event");
+    assert_eq!(model, "gpt-5.4");
+    assert_eq!(effort, Some(ReasoningEffortConfig::High));
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::PersistModelSelection { .. })),
+        "expected two-tier selection to delay model persistence; events: {events:?}"
+    );
+
+    chat.open_context_tier_popup(model, effort);
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("model_reasoning_accept_context_tier_popup", popup);
+}
+
+#[tokio::test]
+async fn reasoning_accept_skips_context_tier_for_single_tier_model() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+
+    set_chatgpt_auth(&mut chat);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.context_window = Some(400_000);
+    preset.max_context_window = Some(400_000);
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset.clone()]));
+
+    chat.open_reasoning_popup(preset);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::PersistModelSelection { model, effort }
+                if model == "gpt-5.4" && *effort == Some(ReasoningEffortConfig::High)
+        )),
+        "expected single-tier model to persist without context-tier popup; events: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::OpenContextTierPopup { .. })),
+        "did not expect context-tier popup event; events: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn single_context_tier_option_skips_selection() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
 

@@ -89,6 +89,13 @@ pub struct Model {
     pub hidden: bool,
     pub supported_reasoning_efforts: Vec<ReasoningEffortOption>,
     pub default_reasoning_effort: ReasoningEffort,
+    // SANDBOX PATCH: Knob B context-window tier. TUI model/list consumers need
+    // both the curated default and full ceiling to decide whether to show the
+    // default | long_context picker.
+    #[serde(default)]
+    pub context_window: Option<i64>,
+    #[serde(default)]
+    pub max_context_window: Option<i64>,
     #[serde(default = "default_input_modalities")]
     pub input_modalities: Vec<InputModality>,
     #[serde(default)]

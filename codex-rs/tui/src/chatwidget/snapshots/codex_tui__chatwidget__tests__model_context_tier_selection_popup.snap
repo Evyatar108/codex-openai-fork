@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Select Context Window for gpt-5.4
+
+› 1. Default (default) (current)  400,000 token context window
+  2. Long context                 1,000,000 token context window
+
+  Press enter to confirm or esc to go back
