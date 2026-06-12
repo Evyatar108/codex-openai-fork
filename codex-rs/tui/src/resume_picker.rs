@@ -109,6 +109,12 @@ pub enum SessionPickerAction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ThreadListLoadMode {
+    StateDbOnly,
+    ScanAndRepair,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionPickerLaunchContext {
     Startup,
     ExistingSession,
@@ -138,7 +144,7 @@ impl SessionPickerAction {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct PageLoadRequest {
     cursor: Option<PageCursor>,
     request_token: usize,
@@ -146,15 +152,18 @@ struct PageLoadRequest {
     cwd_filter: Option<PathBuf>,
     provider_filter: ProviderFilter,
     sort_key: ThreadSortKey,
+    load_mode: ThreadListLoadMode,
 }
 
+#[derive(Debug)]
 enum PickerLoadRequest {
     Page(PageLoadRequest),
+    ReconcileFirstPage(PageLoadRequest),
     Preview { thread_id: ThreadId },
     Transcript { thread_id: ThreadId },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ProviderFilter {
     Any,
     MatchDefault(String),
@@ -246,6 +255,10 @@ enum BackgroundEvent {
         search_token: Option<usize>,
         page: std::io::Result<PickerPage>,
     },
+    ReconcileFirstPage {
+        request_token: usize,
+        page: std::io::Result<PickerPage>,
+    },
     Preview {
         thread_id: ThreadId,
         preview: std::io::Result<Vec<TranscriptPreviewLine>>,
@@ -256,7 +269,7 @@ enum BackgroundEvent {
     },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum PageCursor {
     AppServer(String),
 }
@@ -574,11 +587,28 @@ fn spawn_app_server_page_loader(
                         request.provider_filter,
                         request.sort_key,
                         include_non_interactive,
+                        request.load_mode,
                     )
                     .await;
                     let _ = bg_tx.send(BackgroundEvent::Page {
                         request_token: request.request_token,
                         search_token: request.search_token,
+                        page,
+                    });
+                }
+                PickerLoadRequest::ReconcileFirstPage(request) => {
+                    let page = load_app_server_page(
+                        &mut app_server,
+                        /*cursor*/ None,
+                        request.cwd_filter.as_deref(),
+                        request.provider_filter,
+                        request.sort_key,
+                        include_non_interactive,
+                        request.load_mode,
+                    )
+                    .await;
+                    let _ = bg_tx.send(BackgroundEvent::ReconcileFirstPage {
+                        request_token: request.request_token,
                         page,
                     });
                 }
@@ -665,6 +695,8 @@ struct PickerState {
     action: SessionPickerAction,
     sort_key: ThreadSortKey,
     inline_error: Option<String>,
+    loaded_page_count: usize,
+    pending_first_page_reconcile: Option<usize>,
     expanded_thread_id: Option<ThreadId>,
     transcript_previews: HashMap<ThreadId, TranscriptPreviewState>,
     transcript_cells: HashMap<ThreadId, SessionTranscriptState>,
@@ -743,6 +775,7 @@ async fn load_app_server_page(
     provider_filter: ProviderFilter,
     sort_key: ThreadSortKey,
     include_non_interactive: bool,
+    load_mode: ThreadListLoadMode,
 ) -> std::io::Result<PickerPage> {
     let response = app_server
         .thread_list(thread_list_params(
@@ -751,6 +784,7 @@ async fn load_app_server_page(
             provider_filter,
             sort_key,
             include_non_interactive,
+            load_mode,
         ))
         .await
         .map_err(std::io::Error::other)?;
@@ -832,7 +866,7 @@ impl SearchState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Row {
     path: Option<PathBuf>,
     preview: String,
@@ -938,6 +972,8 @@ impl PickerState {
             action,
             sort_key: ThreadSortKey::UpdatedAt,
             inline_error: None,
+            loaded_page_count: 0,
+            pending_first_page_reconcile: None,
             expanded_thread_id: None,
             transcript_previews: HashMap::new(),
             transcript_cells: HashMap::new(),
@@ -1281,6 +1317,7 @@ impl PickerState {
             cwd_filter: self.active_cwd_filter(),
             provider_filter: self.provider_filter.clone(),
             sort_key: self.sort_key,
+            load_mode: ThreadListLoadMode::StateDbOnly,
         }));
     }
 
@@ -1300,10 +1337,27 @@ impl PickerState {
                 }
                 self.pagination.loading = LoadingState::Idle;
                 let page = page.map_err(color_eyre::Report::from)?;
+                self.loaded_page_count = self.loaded_page_count.saturating_add(1);
                 self.ingest_page(page);
+                if self.loaded_page_count == 1 {
+                    self.schedule_first_page_reconcile();
+                }
                 self.complete_pending_page_down();
                 let completed_token = pending.search_token.or(search_token);
                 self.continue_search_if_token_matches(completed_token);
+            }
+            BackgroundEvent::ReconcileFirstPage { request_token, page } => {
+                if self.pending_first_page_reconcile != Some(request_token) {
+                    return Ok(());
+                }
+                self.pending_first_page_reconcile = None;
+                if self.loaded_page_count > 1 {
+                    return Ok(());
+                }
+                match page {
+                    Ok(page) => self.replace_rows_with_reconciled_first_page(page),
+                    Err(err) => warn!(%err, "Failed to reconcile resume picker first page"),
+                }
             }
             BackgroundEvent::Preview { thread_id, preview } => {
                 self.transcript_previews.insert(
@@ -1349,6 +1403,8 @@ impl PickerState {
         self.pagination.reached_scan_cap = false;
         self.pagination.loading = LoadingState::Idle;
         self.frozen_footer_percent = None;
+        self.loaded_page_count = 0;
+        self.pending_first_page_reconcile = None;
     }
 
     fn ingest_page(&mut self, page: PickerPage) {
@@ -1376,6 +1432,22 @@ impl PickerState {
         }
 
         self.apply_filter();
+    }
+
+    fn replace_rows_with_reconciled_first_page(&mut self, page: PickerPage) {
+        let selected_key = self.selected_row_key();
+        self.all_rows.clear();
+        self.filtered_rows.clear();
+        self.seen_rows.clear();
+        self.selected = 0;
+        self.scroll_top = 0;
+        self.pending_page_down_target = None;
+        self.pagination.next_cursor = None;
+        self.pagination.num_scanned_files = 0;
+        self.pagination.reached_scan_cap = false;
+        self.loaded_page_count = 1;
+        self.ingest_page(page);
+        self.restore_selection(selected_key);
     }
 
     fn complete_pending_page_down(&mut self) {
@@ -1458,23 +1530,11 @@ impl PickerState {
     }
 
     fn clear_query_preserving_selection(&mut self) {
-        let selected_key = self
-            .filtered_rows
-            .get(self.selected)
-            .and_then(Row::seen_key);
+        let selected_key = self.selected_row_key();
         self.query.clear();
         self.search_state = SearchState::Idle;
         self.apply_filter();
-        if let Some(selected_key) = selected_key
-            && let Some(index) = self
-                .filtered_rows
-                .iter()
-                .position(|row| row.seen_key().as_ref() == Some(&selected_key))
-        {
-            self.selected = index;
-            self.ensure_selected_visible();
-            self.request_frame();
-        }
+        self.restore_selection(selected_key);
     }
 
     fn continue_search_if_needed(&mut self) {
@@ -1525,7 +1585,7 @@ impl PickerState {
         if minimum_rows == 0 {
             return;
         }
-        if self.pagination.loading.is_pending() || self.pagination.next_cursor.is_none() {
+        if self.page_load_in_flight() || self.pagination.next_cursor.is_none() {
             return;
         }
         let rendered_rows = if self.filtered_rows.is_empty() {
@@ -1550,7 +1610,7 @@ impl PickerState {
     }
 
     fn maybe_load_more_for_scroll(&mut self) {
-        if self.pagination.loading.is_pending() {
+        if self.page_load_in_flight() {
             return;
         }
         if self.pagination.next_cursor.is_none() {
@@ -1566,7 +1626,7 @@ impl PickerState {
     }
 
     fn load_more_if_needed(&mut self, trigger: LoadTrigger) {
-        if self.pagination.loading.is_pending() {
+        if self.page_load_in_flight() {
             return;
         }
         let Some(cursor) = self.pagination.next_cursor.clone() else {
@@ -1591,7 +1651,12 @@ impl PickerState {
             cwd_filter: self.active_cwd_filter(),
             provider_filter: self.provider_filter.clone(),
             sort_key: self.sort_key,
+            load_mode: ThreadListLoadMode::ScanAndRepair,
         }));
+    }
+
+    fn page_load_in_flight(&self) -> bool {
+        self.pagination.loading.is_pending() || self.pending_first_page_reconcile.is_some()
     }
 
     fn freeze_footer_percent(&mut self) {
@@ -1638,6 +1703,40 @@ impl PickerState {
             SessionFilterMode::Cwd => self.filter_cwd.clone(),
             SessionFilterMode::All => None,
         }
+    }
+
+    fn selected_row_key(&self) -> Option<SeenRowKey> {
+        self.filtered_rows.get(self.selected).and_then(Row::seen_key)
+    }
+
+    fn restore_selection(&mut self, selected_key: Option<SeenRowKey>) {
+        if let Some(selected_key) = selected_key
+            && let Some(index) = self
+                .filtered_rows
+                .iter()
+                .position(|row| row.seen_key().as_ref() == Some(&selected_key))
+        {
+            self.selected = index;
+            self.ensure_selected_visible();
+            self.request_frame();
+        }
+    }
+
+    fn schedule_first_page_reconcile(&mut self) {
+        if self.pending_first_page_reconcile.is_some() {
+            return;
+        }
+        let request_token = self.allocate_request_token();
+        self.pending_first_page_reconcile = Some(request_token);
+        (self.picker_loader)(PickerLoadRequest::ReconcileFirstPage(PageLoadRequest {
+            cursor: None,
+            request_token,
+            search_token: None,
+            cwd_filter: self.active_cwd_filter(),
+            provider_filter: self.provider_filter.clone(),
+            sort_key: self.sort_key,
+            load_mode: ThreadListLoadMode::ScanAndRepair,
+        }));
     }
 
     fn focus_previous_toolbar_control(&mut self) {
@@ -1814,6 +1913,7 @@ fn thread_list_params(
     provider_filter: ProviderFilter,
     sort_key: ThreadSortKey,
     include_non_interactive: bool,
+    load_mode: ThreadListLoadMode,
 ) -> ThreadListParams {
     ThreadListParams {
         cursor,
@@ -1827,7 +1927,7 @@ fn thread_list_params(
         source_kinds: Some(crate::resume_source_kinds(include_non_interactive)),
         archived: Some(false),
         cwd: cwd_filter.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().into_owned())),
-        use_state_db_only: false,
+        use_state_db_only: matches!(load_mode, ThreadListLoadMode::StateDbOnly),
         search_term: None,
     }
 }
@@ -3240,6 +3340,15 @@ mod tests {
         })
     }
 
+    fn recording_loader() -> (PickerLoader, Arc<Mutex<Vec<PickerLoadRequest>>>) {
+        let recorded_requests = Arc::new(Mutex::new(Vec::new()));
+        let request_sink = recorded_requests.clone();
+        let loader: PickerLoader = Arc::new(move |request| {
+            request_sink.lock().unwrap().push(request);
+        });
+        (loader, recorded_requests)
+    }
+
     fn make_row(path: &str, ts: &str, preview: &str) -> Row {
         let timestamp = parse_timestamp_str(ts).expect("timestamp should parse");
         Row {
@@ -3316,12 +3425,14 @@ mod tests {
             ProviderFilter::MatchDefault(String::from("openai")),
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ false,
+            ThreadListLoadMode::StateDbOnly,
         );
 
         assert_eq!(
             params.cwd,
             Some(ThreadListCwdFilter::One(String::from("/tmp/project")))
         );
+        assert!(params.use_state_db_only);
     }
 
     #[test]
@@ -3541,6 +3652,7 @@ mod tests {
             ProviderFilter::Any,
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ false,
+            ThreadListLoadMode::ScanAndRepair,
         );
 
         assert_eq!(params.cursor, Some(String::from("cursor-1")));
@@ -3563,6 +3675,7 @@ mod tests {
             ProviderFilter::Any,
             ThreadSortKey::UpdatedAt,
             /*include_non_interactive*/ true,
+            ThreadListLoadMode::ScanAndRepair,
         );
 
         assert_eq!(params.cursor, Some(String::from("cursor-1")));
@@ -3610,6 +3723,99 @@ mod tests {
         };
 
         assert!(state.row_matches_filter(&row));
+    }
+
+    #[test]
+    fn initial_picker_page_load_uses_state_db_only() {
+        let recorded_requests: Arc<Mutex<Vec<PageLoadRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let request_sink = recorded_requests.clone();
+        let loader = page_only_loader(move |req: PageLoadRequest| {
+            request_sink.lock().unwrap().push(req);
+        });
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+
+        state.start_initial_load();
+
+        let guard = recorded_requests.lock().unwrap();
+        assert_eq!(guard.len(), 1);
+        assert_eq!(guard[0].load_mode, ThreadListLoadMode::StateDbOnly);
+        assert_eq!(guard[0].cursor, None);
+    }
+
+    #[tokio::test]
+    async fn first_page_reconcile_surfaces_filesystem_only_session() {
+        let (loader, recorded_requests) = recording_loader();
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ true,
+            /*filter_cwd*/ None,
+            SessionPickerAction::Resume,
+        );
+        let reconciled_row = Row {
+            path: Some(PathBuf::from("/tmp/from-filesystem.jsonl")),
+            preview: String::from("filesystem-only session"),
+            thread_id: Some(ThreadId::new()),
+            thread_name: Some(String::from("Filesystem session")),
+            created_at: parse_timestamp_str("2026-05-02T12:00:00Z"),
+            updated_at: parse_timestamp_str("2026-05-02T12:30:00Z"),
+            cwd: Some(PathBuf::from("/tmp/project")),
+            git_branch: Some(String::from("main")),
+        };
+
+        state.start_initial_load();
+
+        let initial_request_token = {
+            let guard = recorded_requests.lock().unwrap();
+            assert_eq!(guard.len(), 1);
+            match &guard[0] {
+                PickerLoadRequest::Page(request) => {
+                    assert_eq!(request.load_mode, ThreadListLoadMode::StateDbOnly);
+                    request.request_token
+                }
+                request => panic!("expected initial page request, got {request:?}"),
+            }
+        };
+
+        state
+            .handle_background_event(BackgroundEvent::Page {
+                request_token: initial_request_token,
+                search_token: None,
+                page: Ok(page(vec![], None, 0, false)),
+            })
+            .await
+            .unwrap();
+
+        let reconcile_request_token = {
+            let guard = recorded_requests.lock().unwrap();
+            assert_eq!(guard.len(), 2);
+            match &guard[1] {
+                PickerLoadRequest::ReconcileFirstPage(request) => {
+                    assert_eq!(request.load_mode, ThreadListLoadMode::ScanAndRepair);
+                    request.request_token
+                }
+                request => panic!("expected reconcile request, got {request:?}"),
+            }
+        };
+
+        state
+            .handle_background_event(BackgroundEvent::ReconcileFirstPage {
+                request_token: reconcile_request_token,
+                page: Ok(page(vec![reconciled_row.clone()], None, 1, false)),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(state.filtered_rows, vec![reconciled_row.clone()]);
+        assert_eq!(state.all_rows, vec![reconciled_row]);
     }
 
     #[test]
