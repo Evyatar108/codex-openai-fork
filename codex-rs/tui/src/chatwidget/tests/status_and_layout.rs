@@ -2181,7 +2181,9 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
 
     assert_eq!(
         status_line_text(&chat),
-        Some(format!("gpt-5.4 xhigh fast · Context 0% used · {test_cwd}"))
+        Some(format!(
+            "gpt-5.4 xhigh fast · 272K context · Context 0% used · {test_cwd}"
+        ))
     );
 
     chat.set_model("gpt-5.3-codex");
@@ -2190,7 +2192,7 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
     assert_eq!(
         status_line_text(&chat),
         Some(format!(
-            "gpt-5.3-codex xhigh · Context 0% used · {test_cwd}"
+            "gpt-5.3-codex xhigh · 272K context · Context 0% used · {test_cwd}"
         ))
     );
 }
@@ -2217,7 +2219,7 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
 
     assert_eq!(
         status_line_text(&chat),
-        Some("gpt-5.3-codex high".to_string())
+        Some("gpt-5.3-codex high · 272K context".to_string())
     );
 
     let plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref())
@@ -2226,7 +2228,7 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
 
     assert_eq!(
         status_line_text(&chat),
-        Some("gpt-5.3-codex medium".to_string())
+        Some("gpt-5.3-codex medium · 272K context".to_string())
     );
 
     let default_mask = collaboration_modes::default_mask(chat.model_catalog.as_ref())
@@ -2235,7 +2237,28 @@ async fn status_line_model_with_reasoning_updates_on_mode_switch_without_manual_
 
     assert_eq!(
         status_line_text(&chat),
-        Some("gpt-5.3-codex high".to_string())
+        Some("gpt-5.3-codex high · 272K context".to_string())
+    );
+}
+
+#[tokio::test]
+async fn status_line_model_with_reasoning_uses_selected_full_tier_context_window() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    set_fast_mode_test_catalog(&mut chat);
+    chat.config.tui_status_line = Some(vec![
+        "model-with-reasoning".to_string(),
+        "context-remaining".to_string(),
+    ]);
+    chat.config.model_context_window = Some(1_050_000);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.set_service_tier(Some(ServiceTier::Fast.request_value().to_string()));
+    set_chatgpt_auth(&mut chat);
+    set_fast_mode_test_catalog(&mut chat);
+    chat.refresh_status_line();
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.4 high fast · 1.05M context · Context 100% left".to_string())
     );
 }
 
@@ -2348,6 +2371,7 @@ async fn status_line_model_with_reasoning_context_remaining_footer_snapshot() {
     assert!(get_available_model(&chat, "gpt-5.4").supports_fast_mode());
     chat.show_welcome_banner = false;
     chat.config.cwd = test_project_path().abs();
+    chat.config.model_context_window = Some(1_050_000);
     chat.config.tui_status_line = Some(vec![
         "model-with-reasoning".to_string(),
         "context-remaining".to_string(),

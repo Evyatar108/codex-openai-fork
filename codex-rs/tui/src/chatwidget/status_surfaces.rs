@@ -169,9 +169,24 @@ impl ChatWidget {
         }
 
         let mut segments = Vec::new();
+        let context_window_is_explicit = selections
+            .status_line_items
+            .contains(&StatusLineItem::ContextWindowSize);
+        let mut inserted_context_window = false;
         for item in &selections.status_line_items {
             if let Some(value) = self.status_line_value_for_item(*item) {
                 segments.push((*item, value));
+            }
+            // SANDBOX PATCH: surface the effective Knob B context-window tier next
+            // to the active model label so the footer mirrors Copilot's absolute
+            // context display without requiring a separate statusline config edit.
+            if !context_window_is_explicit
+                && !inserted_context_window
+                && matches!(item, StatusLineItem::ModelName | StatusLineItem::ModelWithReasoning)
+                && let Some(value) = self.status_line_context_segment()
+            {
+                segments.push((StatusLineItem::ContextWindowSize, value));
+                inserted_context_window = true;
             }
         }
 
@@ -761,6 +776,11 @@ impl ChatWidget {
             )),
             TerminalTitleItem::TaskProgress => self.terminal_title_task_progress(),
         }
+    }
+
+    fn status_line_context_segment(&self) -> Option<String> {
+        self.status_line_context_window_size()
+            .map(|window| format!("{} context", format_tokens_compact(window)))
     }
 
     fn model_with_reasoning_display_name(&self) -> String {
