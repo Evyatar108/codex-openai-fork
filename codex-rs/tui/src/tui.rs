@@ -100,11 +100,17 @@ mod tests {
     use super::ENABLE_VIRTUAL_TERMINAL_INPUT_BIT;
     #[cfg(windows)]
     use super::SavedVirtualTerminalInputState;
+    #[cfg(windows)]
+    use super::VirtualTerminalInputRestore;
+    #[cfg(windows)]
+    use super::apply_virtual_terminal_input_restore;
     use super::clear_for_viewport_change;
     #[cfg(windows)]
     use super::clear_virtual_terminal_input_mode;
     #[cfg(windows)]
     use super::restore_virtual_terminal_input_mode;
+    #[cfg(windows)]
+    use super::saved_virtual_terminal_input_state_for_codex_lifetime;
     use super::should_emit_notification;
     use crate::custom_terminal::Terminal as CustomTerminal;
     use crate::test_backend::VT100Backend;
@@ -243,12 +249,50 @@ mod tests {
             0,
         );
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn virtual_terminal_input_stays_cleared_until_final_exit_restore() {
+        let initial_mode = ENABLE_VIRTUAL_TERMINAL_INPUT_BIT
+            | ENABLE_WINDOW_INPUT
+            | ENABLE_MOUSE_INPUT
+            | ENABLE_EXTENDED_FLAGS;
+
+        let saved_state = saved_virtual_terminal_input_state_for_codex_lifetime(initial_mode, None);
+        assert_eq!(saved_state, SavedVirtualTerminalInputState::Enabled);
+
+        let mid_session_restore_mode = apply_virtual_terminal_input_restore(
+            initial_mode,
+            saved_state,
+            VirtualTerminalInputRestore::KeepCleared,
+        );
+        assert_eq!(
+            mid_session_restore_mode,
+            ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS,
+        );
+
+        let resumed_state = saved_virtual_terminal_input_state_for_codex_lifetime(
+            mid_session_restore_mode,
+            Some(saved_state),
+        );
+        assert_eq!(resumed_state, SavedVirtualTerminalInputState::Enabled);
+
+        assert_eq!(
+            apply_virtual_terminal_input_restore(
+                mid_session_restore_mode,
+                resumed_state,
+                VirtualTerminalInputRestore::RestoreSaved,
+            ),
+            initial_mode,
+        );
+    }
 }
 
 pub fn set_modes() -> Result<()> {
     ensure_virtual_terminal_processing()?;
-    // SANDBOX PATCH: normalize inherited Windows VT input so crossterm keeps seeing
-    // classic INPUT_RECORD key/focus events instead of leaking raw VT tails like [I/[6~.
+    // SANDBOX PATCH: keep inherited Windows VT input cleared for the full Codex TUI lifetime so
+    // crossterm keeps seeing classic INPUT_RECORD key/focus events instead of leaking raw VT
+    // tails like [I/[O after mid-session restore/reinit cycles.
     enter_codex_tui_input_mode()?;
 
     execute!(stdout(), EnableBracketedPaste)?;
@@ -320,9 +364,16 @@ enum KeyboardRestore {
     ResetAfterExit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VirtualTerminalInputRestore {
+    KeepCleared,
+    RestoreSaved,
+}
+
 fn restore_common(
     raw_mode_restore: RawModeRestore,
     keyboard_restore: KeyboardRestore,
+    virtual_terminal_input_restore: VirtualTerminalInputRestore,
 ) -> Result<()> {
     let mut first_error = ensure_virtual_terminal_processing().err();
 
@@ -340,7 +391,9 @@ fn restore_common(
     {
         first_error.get_or_insert(err);
     }
-    if let Err(err) = restore_saved_virtual_terminal_input_bit() {
+    // SANDBOX PATCH: mid-session restores keep VT input cleared; only final exit restores the
+    // inherited bit to the parent console.
+    if let Err(err) = restore_virtual_terminal_input(virtual_terminal_input_restore) {
         first_error.get_or_insert(err);
     }
     if let Err(err) = execute!(
@@ -359,7 +412,11 @@ fn restore_common(
 /// Restore the terminal to its original state.
 /// Inverse of `set_modes`.
 pub fn restore() -> Result<()> {
-    restore_common(RawModeRestore::Disable, KeyboardRestore::PopStack)
+    restore_common(
+        RawModeRestore::Disable,
+        KeyboardRestore::PopStack,
+        VirtualTerminalInputRestore::KeepCleared,
+    )
 }
 
 /// Restore the terminal after Codex is exiting.
@@ -367,8 +424,12 @@ pub fn restore() -> Result<()> {
 /// Uses a stronger keyboard reset than [`restore`] so the parent shell recovers even if a
 /// terminal missed the stack pop that normally pairs with [`set_modes`].
 pub fn restore_after_exit() -> Result<()> {
-    let mut first_error =
-        restore_common(RawModeRestore::Disable, KeyboardRestore::ResetAfterExit).err();
+    let mut first_error = restore_common(
+        RawModeRestore::Disable,
+        KeyboardRestore::ResetAfterExit,
+        VirtualTerminalInputRestore::RestoreSaved,
+    )
+    .err();
     if let Err(err) = terminal_stderr::finish() {
         first_error.get_or_insert(err);
     }
@@ -381,7 +442,11 @@ pub fn restore_after_exit() -> Result<()> {
 
 /// Restore the terminal to its original state, but keep raw mode enabled.
 pub fn restore_keep_raw() -> Result<()> {
-    restore_common(RawModeRestore::Keep, KeyboardRestore::PopStack)
+    restore_common(
+        RawModeRestore::Keep,
+        KeyboardRestore::PopStack,
+        VirtualTerminalInputRestore::KeepCleared,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1173,7 +1238,11 @@ const ENABLE_VIRTUAL_TERMINAL_INPUT_BIT: u32 =
     windows_sys::Win32::System::Console::ENABLE_VIRTUAL_TERMINAL_INPUT;
 
 #[cfg(windows)]
-static SAVED_VIRTUAL_TERMINAL_INPUT_STATE: AtomicU32 = AtomicU32::new(0);
+const UNINITIALIZED_VIRTUAL_TERMINAL_INPUT_STATE: u32 = 2;
+
+#[cfg(windows)]
+static SAVED_VIRTUAL_TERMINAL_INPUT_STATE: AtomicU32 =
+    AtomicU32::new(UNINITIALIZED_VIRTUAL_TERMINAL_INPUT_STATE);
 
 #[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1200,13 +1269,20 @@ impl SavedVirtualTerminalInputState {
         SAVED_VIRTUAL_TERMINAL_INPUT_STATE.store(value, Ordering::Relaxed);
     }
 
-    fn load() -> Self {
-        if SAVED_VIRTUAL_TERMINAL_INPUT_STATE.load(Ordering::Relaxed) == 0 {
-            Self::Disabled
-        } else {
-            Self::Enabled
+    fn from_stored_value(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Disabled),
+            1 => Some(Self::Enabled),
+            _ => None,
         }
     }
+}
+
+#[cfg(windows)]
+fn load_saved_virtual_terminal_input_state() -> Option<SavedVirtualTerminalInputState> {
+    SavedVirtualTerminalInputState::from_stored_value(
+        SAVED_VIRTUAL_TERMINAL_INPUT_STATE.load(Ordering::Relaxed),
+    )
 }
 
 #[cfg(windows)]
@@ -1254,6 +1330,14 @@ fn clear_virtual_terminal_input_mode(input_mode: u32) -> u32 {
 }
 
 #[cfg(windows)]
+fn saved_virtual_terminal_input_state_for_codex_lifetime(
+    input_mode: u32,
+    saved_state: Option<SavedVirtualTerminalInputState>,
+) -> SavedVirtualTerminalInputState {
+    saved_state.unwrap_or_else(|| SavedVirtualTerminalInputState::from_input_mode(input_mode))
+}
+
+#[cfg(windows)]
 fn restore_virtual_terminal_input_mode(
     input_mode: u32,
     saved_state: SavedVirtualTerminalInputState,
@@ -1265,10 +1349,29 @@ fn restore_virtual_terminal_input_mode(
 }
 
 #[cfg(windows)]
+fn apply_virtual_terminal_input_restore(
+    input_mode: u32,
+    saved_state: SavedVirtualTerminalInputState,
+    restore: VirtualTerminalInputRestore,
+) -> u32 {
+    match restore {
+        VirtualTerminalInputRestore::KeepCleared => clear_virtual_terminal_input_mode(input_mode),
+        VirtualTerminalInputRestore::RestoreSaved => {
+            restore_virtual_terminal_input_mode(input_mode, saved_state)
+        }
+    }
+}
+
+#[cfg(windows)]
 fn enter_codex_tui_input_mode() -> Result<()> {
     let input_mode = read_console_input_mode()?;
-    let saved_state = SavedVirtualTerminalInputState::from_input_mode(input_mode);
-    saved_state.store();
+    let saved_state = saved_virtual_terminal_input_state_for_codex_lifetime(
+        input_mode,
+        load_saved_virtual_terminal_input_state(),
+    );
+    if load_saved_virtual_terminal_input_state().is_none() {
+        saved_state.store();
+    }
 
     let normalized_mode = clear_virtual_terminal_input_mode(input_mode);
     if normalized_mode != input_mode {
@@ -1279,10 +1382,13 @@ fn enter_codex_tui_input_mode() -> Result<()> {
 }
 
 #[cfg(windows)]
-fn restore_saved_virtual_terminal_input_bit() -> Result<()> {
+fn restore_virtual_terminal_input(restore: VirtualTerminalInputRestore) -> Result<()> {
     let input_mode = read_console_input_mode()?;
-    let restored_mode =
-        restore_virtual_terminal_input_mode(input_mode, SavedVirtualTerminalInputState::load());
+    let saved_state = saved_virtual_terminal_input_state_for_codex_lifetime(
+        input_mode,
+        load_saved_virtual_terminal_input_state(),
+    );
+    let restored_mode = apply_virtual_terminal_input_restore(input_mode, saved_state, restore);
     if restored_mode != input_mode {
         write_console_input_mode(restored_mode)?;
     }
@@ -1296,6 +1402,6 @@ fn enter_codex_tui_input_mode() -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn restore_saved_virtual_terminal_input_bit() -> Result<()> {
+fn restore_virtual_terminal_input(_restore: VirtualTerminalInputRestore) -> Result<()> {
     Ok(())
 }
