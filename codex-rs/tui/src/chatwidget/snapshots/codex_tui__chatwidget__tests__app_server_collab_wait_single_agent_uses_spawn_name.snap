@@ -1,0 +1,9 @@
+---
+source: tui/src/chatwidget/tests.rs
+expression: combined
+---
+• Waiting for Galileo [default]
+
+
+• Finished waiting
+  └ Galileo [default]: Completed - Done

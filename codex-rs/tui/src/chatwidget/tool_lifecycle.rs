@@ -110,11 +110,38 @@ impl ChatWidget {
 
     pub(super) fn on_collab_agent_tool_call(&mut self, item: ThreadItem) {
         let ThreadItem::CollabAgentToolCall {
-            id, tool, status, ..
+            id,
+            tool,
+            status,
+            receiver_thread_ids,
+            spawned_agent_name,
+            spawned_agent_role,
+            ..
         } = &item
         else {
             return;
         };
+        if matches!(tool, CollabAgentTool::SpawnAgent)
+            && !matches!(status, CollabAgentToolCallStatus::InProgress)
+            && let Some(receiver_thread_id) = receiver_thread_ids.first()
+            && let Ok(thread_id) = ThreadId::from_string(receiver_thread_id)
+        {
+            let agent_name = spawned_agent_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string);
+            let agent_role = spawned_agent_role
+                .as_deref()
+                .map(str::trim)
+                .filter(|role| !role.is_empty())
+                .map(str::to_string);
+            if agent_name.is_some() || agent_role.is_some() {
+                // Cache the spawn-time display name so later wait/result cells do not fall back
+                // to a raw thread id before the app-server thread list has refreshed.
+                self.set_collab_agent_metadata(thread_id, agent_name, agent_role);
+            }
+        }
         if matches!(tool, CollabAgentTool::SpawnAgent)
             && let Some(spawn_request) = multi_agents::spawn_request_summary(&item)
         {
