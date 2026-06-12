@@ -243,7 +243,11 @@ impl App {
     pub(crate) fn close_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         let _ = tui.leave_alt_screen();
         let was_backtrack = self.backtrack.overlay_preview_active;
-        if !self.deferred_history_lines.is_empty() {
+        if self.terminal_resize_reflow_enabled() {
+            // SANDBOX PATCH: Retained transcript mode must not flush deferred committed history.
+            self.deferred_history_lines.clear();
+            tui.frame_requester().schedule_frame();
+        } else if !self.deferred_history_lines.is_empty() {
             let lines = std::mem::take(&mut self.deferred_history_lines);
             tui.insert_history_lines_with_wrap_policy(lines, self.history_line_wrap_policy());
         }
@@ -258,6 +262,11 @@ impl App {
     /// Re-render the full transcript into the terminal scrollback in one call.
     /// Useful when switching sessions to ensure prior history remains visible.
     pub(crate) fn render_transcript_once(&mut self, tui: &mut tui::Tui) {
+        if self.terminal_resize_reflow_enabled() {
+            // SANDBOX PATCH: Backtrack redraw now relies on the retained transcript viewport.
+            tui.frame_requester().schedule_frame();
+            return;
+        }
         if !self.transcript_cells.is_empty() {
             let width = self
                 .chat_widget

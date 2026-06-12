@@ -198,7 +198,10 @@ impl App {
                     tui.frame_requester().schedule_frame();
                 }
                 self.transcript_cells.push(cell.clone());
-                if self.initial_history_replay_buffer.as_ref().is_some() {
+                if self.terminal_resize_reflow_enabled() {
+                    // SANDBOX PATCH: Retained transcript rendering replaces main-view scrollback writes.
+                    tui.frame_requester().schedule_frame();
+                } else if self.initial_history_replay_buffer.as_ref().is_some() {
                     self.insert_history_cell_lines_with_initial_replay_buffer(
                         tui,
                         cell.as_ref(),
@@ -259,12 +262,8 @@ impl App {
                         t.insert_cell(consolidated.clone());
                         tui.frame_requester().schedule_frame();
                     }
-                    self.insert_history_cell_lines(
-                        tui,
-                        consolidated.as_ref(),
-                        self.chat_widget
-                            .history_wrap_width(tui.terminal.last_known_screen_size.width),
-                    );
+                    // SANDBOX PATCH: Proposed-plan consolidation must not duplicate history in scrollback.
+                    tui.frame_requester().schedule_frame();
 
                     self.maybe_finish_stream_reflow(tui)?;
                 }

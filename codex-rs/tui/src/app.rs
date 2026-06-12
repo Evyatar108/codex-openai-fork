@@ -1302,15 +1302,35 @@ See the Codex keymap documentation for supported actions and examples."
         tui: &mut tui::Tui,
         terminal_resize_reflow_enabled: bool,
     ) -> Result<Rect> {
-        let desired_height = self.chat_widget.desired_height(tui.terminal.size()?.width);
+        let terminal_size = tui.terminal.size()?;
+        let desired_height = if terminal_resize_reflow_enabled {
+            // SANDBOX PATCH: Feature-enabled resize rendering owns committed transcript history inline.
+            self.chat_widget.desired_height_with_committed_cells(
+                &self.transcript_cells,
+                terminal_size.width,
+                terminal_size.height,
+            )
+        } else {
+            self.chat_widget.desired_height(terminal_size.width)
+        };
         let mut rendered_area = Rect::default();
         if terminal_resize_reflow_enabled {
             tui.draw_with_resize_reflow(desired_height, |frame| {
                 let area = frame.area();
                 rendered_area = area;
-                self.chat_widget.render(area, frame.buffer);
-                if let Some((x, y)) = self.chat_widget.cursor_pos(area) {
-                    frame.set_cursor_style(self.chat_widget.cursor_style(area));
+                self.chat_widget.render_with_committed_cells(
+                    &self.transcript_cells,
+                    area,
+                    frame.buffer,
+                );
+                if let Some((x, y)) = self
+                    .chat_widget
+                    .cursor_pos_with_committed_cells(&self.transcript_cells, area)
+                {
+                    frame.set_cursor_style(
+                        self.chat_widget
+                            .cursor_style_with_committed_cells(&self.transcript_cells, area),
+                    );
                     frame.set_cursor_position((x, y));
                 }
             })?;

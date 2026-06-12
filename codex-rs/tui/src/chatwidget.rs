@@ -320,6 +320,7 @@ use crate::status_indicator_widget::StatusDetailsCapitalization;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod command_lifecycle;
+pub(crate) mod committed_transcript;
 mod connectors;
 mod constructor;
 use self::connectors::ConnectorsState;

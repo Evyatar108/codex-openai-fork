@@ -19,8 +19,9 @@ use std::io::Result;
 use std::sync::Arc;
 
 use crate::chatwidget::ActiveCellTranscriptKey;
+use crate::chatwidget::committed_transcript::CachedRenderable;
+use crate::chatwidget::committed_transcript::render_committed_cells;
 use crate::history_cell::HistoryCell;
-use crate::history_cell::UserHistoryCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
@@ -28,7 +29,6 @@ use crate::keymap::PagerKeymap;
 use crate::render::Insets;
 use crate::render::renderable::InsetRenderable;
 use crate::render::renderable::Renderable;
-use crate::style::user_message_style;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crossterm::event::KeyCode;
@@ -36,7 +36,6 @@ use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::buffer::Cell;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -357,55 +356,6 @@ impl PagerView {
     }
 }
 
-/// A renderable that caches its desired height.
-struct CachedRenderable {
-    renderable: Box<dyn Renderable>,
-    height: std::cell::Cell<Option<u16>>,
-    last_width: std::cell::Cell<Option<u16>>,
-}
-
-impl CachedRenderable {
-    fn new(renderable: impl Into<Box<dyn Renderable>>) -> Self {
-        Self {
-            renderable: renderable.into(),
-            height: std::cell::Cell::new(None),
-            last_width: std::cell::Cell::new(None),
-        }
-    }
-}
-
-impl Renderable for CachedRenderable {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        self.renderable.render(area, buf);
-    }
-    fn desired_height(&self, width: u16) -> u16 {
-        if self.last_width.get() != Some(width) {
-            let height = self.renderable.desired_height(width);
-            self.height.set(Some(height));
-            self.last_width.set(Some(width));
-        }
-        self.height.get().unwrap_or(0)
-    }
-}
-
-struct CellRenderable {
-    cell: Arc<dyn HistoryCell>,
-    style: Style,
-}
-
-impl Renderable for CellRenderable {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let p = Paragraph::new(Text::from(self.cell.transcript_lines(area.width)))
-            .style(self.style)
-            .wrap(Wrap { trim: false });
-        p.render(area, buf);
-    }
-
-    fn desired_height(&self, width: u16) -> u16 {
-        self.cell.desired_transcript_height(width)
-    }
-}
-
 pub(crate) struct TranscriptOverlay {
     /// Pager UI state and the renderables currently displayed.
     ///
@@ -459,38 +409,7 @@ impl TranscriptOverlay {
         cells: &[Arc<dyn HistoryCell>],
         highlight_cell: Option<usize>,
     ) -> Vec<Box<dyn Renderable>> {
-        cells
-            .iter()
-            .enumerate()
-            .flat_map(|(i, c)| {
-                let mut v: Vec<Box<dyn Renderable>> = Vec::new();
-                let mut cell_renderable = if c.as_any().is::<UserHistoryCell>() {
-                    Box::new(CachedRenderable::new(CellRenderable {
-                        cell: c.clone(),
-                        style: if highlight_cell == Some(i) {
-                            user_message_style().reversed()
-                        } else {
-                            user_message_style()
-                        },
-                    })) as Box<dyn Renderable>
-                } else {
-                    Box::new(CachedRenderable::new(CellRenderable {
-                        cell: c.clone(),
-                        style: Style::default(),
-                    })) as Box<dyn Renderable>
-                };
-                if !c.is_stream_continuation() && i > 0 {
-                    cell_renderable = Box::new(InsetRenderable::new(
-                        cell_renderable,
-                        Insets::tlbr(
-                            /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
-                        ),
-                    ));
-                }
-                v.push(cell_renderable);
-                v
-            })
-            .collect()
+        render_committed_cells(cells, highlight_cell)
     }
 
     /// Insert a committed history cell while keeping any cached live tail.

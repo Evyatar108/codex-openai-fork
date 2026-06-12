@@ -1,0 +1,15 @@
+---
+source: tui/src/app/tests.rs
+assertion_line: 4089
+expression: rendered
+---
+cell 5
+
+cell 6
+
+cell 7
+
+
+› Ask Codex to do anything
+
+  gpt-5.5 default · 272K context · C:\t…

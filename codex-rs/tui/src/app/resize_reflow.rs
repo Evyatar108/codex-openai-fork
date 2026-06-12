@@ -105,7 +105,7 @@ impl App {
         }
     }
 
-    pub(super) fn terminal_resize_reflow_enabled(&self) -> bool {
+    pub(crate) fn terminal_resize_reflow_enabled(&self) -> bool {
         self.config.features.enabled(Feature::TerminalResizeReflow)
     }
 
@@ -116,7 +116,12 @@ impl App {
     /// apply to the startup write. Starting this buffer while an overlay owns rendering would split
     /// transcript ownership, so overlay replay continues through the normal deferred-history path.
     pub(super) fn begin_initial_history_replay_buffer(&mut self) {
-        if self.terminal_resize_reflow_enabled() && self.overlay.is_none() {
+        if self.terminal_resize_reflow_enabled() {
+            // SANDBOX PATCH: Retained transcript mode no longer buffers committed history for scrollback.
+            self.initial_history_replay_buffer = None;
+            return;
+        }
+        if self.overlay.is_none() {
             self.initial_history_replay_buffer = Some(Default::default());
         }
     }
@@ -127,10 +132,12 @@ impl App {
     /// defer terminal writes until the replay is complete and reuse the resize-reflow tail renderer
     /// so only the rows the terminal would retain are formatted and inserted.
     pub(super) fn begin_thread_switch_history_replay_buffer(&mut self) {
-        if self.terminal_resize_reflow_enabled()
-            && self.resize_reflow_max_rows().is_some()
-            && self.overlay.is_none()
-        {
+        if self.terminal_resize_reflow_enabled() {
+            // SANDBOX PATCH: Thread switches repaint the retained transcript instead of replaying scrollback.
+            self.initial_history_replay_buffer = None;
+            return;
+        }
+        if self.resize_reflow_max_rows().is_some() && self.overlay.is_none() {
             self.initial_history_replay_buffer = Some(InitialHistoryReplayBuffer {
                 retained_lines: VecDeque::new(),
                 render_from_transcript_tail: true,
@@ -144,6 +151,12 @@ impl App {
     /// This mirrors terminal scrollback behavior and avoids making startup replay cheaper or more
     /// expensive than a later resize rebuild of the same transcript.
     pub(super) fn finish_initial_history_replay_buffer(&mut self, tui: &mut tui::Tui) {
+        if self.terminal_resize_reflow_enabled() {
+            // SANDBOX PATCH: Initial/thread-switch replay no longer writes retained history into scrollback.
+            self.initial_history_replay_buffer = None;
+            tui.frame_requester().schedule_frame();
+            return;
+        }
         let Some(buffer) = self.initial_history_replay_buffer.take() else {
             return;
         };
@@ -169,6 +182,11 @@ impl App {
         cell: &dyn HistoryCell,
         width: u16,
     ) {
+        if self.terminal_resize_reflow_enabled() {
+            // SANDBOX PATCH: Retained transcript mode does not enqueue committed history rows.
+            let _ = (tui, cell, width);
+            return;
+        }
         if self
             .initial_history_replay_buffer
             .as_ref()
@@ -254,13 +272,9 @@ impl App {
             self.transcript_reflow.clear();
             return Ok(());
         }
-
-        if self.transcript_reflow.take_stream_finish_reflow_needed() {
-            self.schedule_immediate_resize_reflow(tui);
-            self.maybe_run_resize_reflow(tui)?;
-        } else if self.transcript_reflow.pending_is_due(Instant::now()) {
-            tui.frame_requester().schedule_frame();
-        }
+        // SANDBOX PATCH: Stream finalization now repaints the retained transcript without scrollback replay.
+        self.transcript_reflow.clear();
+        tui.frame_requester().schedule_frame();
         Ok(())
     }
 
@@ -283,11 +297,9 @@ impl App {
             self.transcript_reflow.clear();
             return Ok(());
         }
-        self.schedule_immediate_resize_reflow(tui);
-        self.maybe_run_resize_reflow(tui)?;
-        if !self.transcript_reflow.has_pending_reflow() {
-            self.transcript_reflow.clear_stream_flags();
-        }
+        // SANDBOX PATCH: Required stream updates are visible through the retained transcript viewport.
+        self.transcript_reflow.clear();
+        tui.frame_requester().schedule_frame();
         Ok(())
     }
 
@@ -312,15 +324,9 @@ impl App {
         }
         if should_rebuild_transcript {
             if self.terminal_resize_reflow_enabled() {
-                if reflow_needed && self.should_mark_reflow_as_stream_time() {
-                    self.transcript_reflow.mark_resize_requested_during_stream();
-                }
-                let target_width = reflow_needed.then_some(size.width);
-                if self.schedule_resize_reflow(target_width) {
-                    frame_requester.schedule_frame();
-                } else {
-                    frame_requester.schedule_frame_in(TRANSCRIPT_REFLOW_DEBOUNCE);
-                }
+                // SANDBOX PATCH: The retained transcript viewport repaints directly on resize.
+                let _ = (reflow_needed, frame_requester);
+                self.transcript_reflow.clear();
             } else if !self.terminal_resize_reflow_enabled() && width.changed {
                 self.transcript_reflow.clear();
             }
@@ -358,7 +364,7 @@ impl App {
             tui.terminal.last_known_screen_size,
             &tui.frame_requester(),
         );
-        if should_rebuild_transcript && self.terminal_resize_reflow_enabled() {
+        if should_rebuild_transcript && !self.terminal_resize_reflow_enabled() {
             // Resize-sensitive history inserts queued before this frame may be wrapped for the old
             // viewport or targeted at rows no longer visible. Drop them and let resize reflow
             // rebuild from transcript cells.
@@ -379,46 +385,18 @@ impl App {
             self.transcript_reflow.clear();
             return Ok(());
         }
-        let Some(deadline) = self.transcript_reflow.pending_until() else {
-            return Ok(());
-        };
-        let now = Instant::now();
-        if now < deadline {
-            // Later resize events push the reflow deadline out, while the frame scheduler coalesces
-            // delayed draws to the earliest requested instant. If an early draw arrives before the
-            // latest quiet-period deadline, re-arm the draw so the pending reflow cannot get stuck
-            // until the next keypress.
-            tui.frame_requester().schedule_frame_in(deadline - now);
-            return Ok(());
-        }
-        if self.overlay.is_some() {
-            return Ok(());
-        }
-
+        // SANDBOX PATCH: Resize now repaints the retained transcript directly instead of replaying scrollback.
         self.transcript_reflow.clear_pending_reflow();
-
-        // Track that a reflow happened during an active stream or while trailing
-        // unconsolidated AgentMessageCells are still pending consolidation so
-        // ConsolidateAgentMessage can schedule a follow-up reflow.
-        let reflow_ran_during_stream =
-            !self.transcript_cells.is_empty() && self.should_mark_reflow_as_stream_time();
-
-        let width = self.reflow_transcript_now(tui)?;
-        self.transcript_reflow.mark_reflowed_width(width);
-
-        if reflow_ran_during_stream {
-            self.transcript_reflow.mark_ran_during_stream();
-        }
-        // Some terminals settle their final reported width after the repaint that handled the
-        // last resize event. Request one cheap follow-up draw so `handle_draw_pre_render` can
-        // sample that width and schedule a final reflow if needed.
-        tui.frame_requester()
-            .schedule_frame_in(TRANSCRIPT_REFLOW_DEBOUNCE);
-
+        self.transcript_reflow.clear_stream_flags();
+        let _ = tui;
         Ok(())
     }
 
     pub(super) fn reflow_transcript_now(&mut self, tui: &mut tui::Tui) -> Result<u16> {
+        if self.terminal_resize_reflow_enabled() {
+            // SANDBOX PATCH: Retained transcript mode keeps committed history inside the viewport.
+            return Ok(tui.terminal.size()?.width);
+        }
         let terminal_width = tui.terminal.size()?.width;
         let width = self.chat_widget.history_wrap_width(terminal_width);
         if self.transcript_cells.is_empty() {

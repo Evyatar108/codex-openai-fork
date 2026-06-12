@@ -1,5 +1,6 @@
 //! Render composition for the main chat widget surface.
 
+use super::committed_transcript::RetainedTranscriptViewportRenderable;
 use super::*;
 
 impl ChatWidget {
@@ -37,6 +38,127 @@ impl ChatWidget {
             )),
         );
         RenderableItem::Owned(Box::new(flex))
+    }
+
+    // SANDBOX PATCH: Feature-enabled main chat rendering now owns committed transcript cells inline.
+    pub(crate) fn render_with_committed_cells(
+        &self,
+        committed_cells: &[Arc<dyn HistoryCell>],
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        self.as_retained_renderable(committed_cells)
+            .render(area, buf);
+        self.last_rendered_width.set(Some(area.width as usize));
+    }
+
+    pub(crate) fn desired_height_with_committed_cells(
+        &self,
+        committed_cells: &[Arc<dyn HistoryCell>],
+        width: u16,
+        max_height: u16,
+    ) -> u16 {
+        let active_cell_right_reserve = self.ambient_pet_wrap_reserved_cols();
+        let retained_transcript = RetainedTranscriptViewportRenderable::new(
+            committed_cells,
+            self.transcript.active_cell.as_deref(),
+            active_cell_right_reserve,
+            self.history_render_mode(),
+        );
+        let transcript_budget = max_height.saturating_sub(
+            self.active_hook_renderable(active_cell_right_reserve)
+                .desired_height(width)
+                .saturating_add(
+                    BottomPaneComposerReserveRenderable {
+                        bottom_pane: &self.bottom_pane,
+                        right_reserve: active_cell_right_reserve,
+                    }
+                    .inset(Insets::tlbr(
+                        /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
+                    ))
+                    .desired_height(width),
+                ),
+        );
+        retained_transcript
+            .visible_height(width, transcript_budget)
+            .saturating_add(
+                self.active_hook_renderable(active_cell_right_reserve)
+                    .desired_height(width),
+            )
+            .saturating_add(
+                BottomPaneComposerReserveRenderable {
+                    bottom_pane: &self.bottom_pane,
+                    right_reserve: active_cell_right_reserve,
+                }
+                .inset(Insets::tlbr(
+                    /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
+                ))
+                .desired_height(width),
+            )
+            .min(max_height)
+    }
+
+    pub(crate) fn cursor_pos_with_committed_cells(
+        &self,
+        committed_cells: &[Arc<dyn HistoryCell>],
+        area: Rect,
+    ) -> Option<(u16, u16)> {
+        self.as_retained_renderable(committed_cells)
+            .cursor_pos(area)
+    }
+
+    pub(crate) fn cursor_style_with_committed_cells(
+        &self,
+        committed_cells: &[Arc<dyn HistoryCell>],
+        area: Rect,
+    ) -> crossterm::cursor::SetCursorStyle {
+        self.as_retained_renderable(committed_cells)
+            .cursor_style(area)
+    }
+
+    fn as_retained_renderable<'a>(
+        &'a self,
+        committed_cells: &'a [Arc<dyn HistoryCell>],
+    ) -> RenderableItem<'a> {
+        let active_cell_right_reserve = self.ambient_pet_wrap_reserved_cols();
+        let mut flex = FlexRenderable::new();
+        flex.push(
+            /*flex*/ 1,
+            RenderableItem::Owned(Box::new(RetainedTranscriptViewportRenderable::new(
+                committed_cells,
+                self.transcript.active_cell.as_deref(),
+                active_cell_right_reserve,
+                self.history_render_mode(),
+            ))),
+        );
+        flex.push(
+            /*flex*/ 0,
+            self.active_hook_renderable(active_cell_right_reserve),
+        );
+        flex.push(
+            /*flex*/ 0,
+            RenderableItem::Owned(Box::new(BottomPaneComposerReserveRenderable {
+                bottom_pane: &self.bottom_pane,
+                right_reserve: active_cell_right_reserve,
+            }))
+            .inset(Insets::tlbr(
+                /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
+            )),
+        );
+        RenderableItem::Owned(Box::new(flex))
+    }
+
+    fn active_hook_renderable(&self, active_cell_right_reserve: u16) -> RenderableItem<'_> {
+        match &self.active_hook_cell {
+            Some(cell) if cell.should_render() => {
+                RenderableItem::Owned(Box::new(TranscriptAreaRenderable {
+                    child: cell,
+                    top: 1,
+                    right: active_cell_right_reserve,
+                }))
+            }
+            _ => RenderableItem::Owned(Box::new(())),
+        }
     }
 }
 
