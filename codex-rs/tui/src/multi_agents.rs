@@ -50,6 +50,7 @@ pub(crate) struct AgentMetadata {
 #[derive(Clone, Copy)]
 struct AgentLabel<'a> {
     thread_id: Option<ThreadId>,
+    display_name: Option<&'a str>,
     nickname: Option<&'a str>,
     role: Option<&'a str>,
 }
@@ -197,6 +198,8 @@ pub(crate) fn tool_call_history_cell(
         tool,
         status,
         receiver_thread_ids,
+        spawned_agent_name,
+        spawned_agent_role,
         prompt,
         agents_states,
         ..
@@ -219,6 +222,8 @@ pub(crate) fn tool_call_history_cell(
             let spawn_request = cached_spawn_request.or(fallback_spawn_request.as_ref());
             Some(spawn_end(
                 first_receiver,
+                spawned_agent_name.as_deref(),
+                spawned_agent_role.as_deref(),
                 prompt,
                 spawn_request,
                 &mut agent_metadata,
@@ -268,16 +273,26 @@ pub(crate) fn tool_call_history_cell(
 
 fn spawn_end(
     new_thread_id: Option<ThreadId>,
+    spawned_agent_name: Option<&str>,
+    spawned_agent_role: Option<&str>,
     prompt: &str,
     spawn_request: Option<&SpawnRequestSummary>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
     let title = match new_thread_id {
-        Some(thread_id) => title_with_agent(
-            "Spawned",
-            agent_label(thread_id, &agent_metadata(thread_id)),
-            spawn_request,
-        ),
+        Some(thread_id) => {
+            let metadata = agent_metadata(thread_id);
+            title_with_agent(
+                "Spawned",
+                agent_label_with_display_name(
+                    thread_id,
+                    spawned_agent_name,
+                    spawned_agent_role,
+                    &metadata,
+                ),
+                spawn_request,
+            )
+        }
         None => title_text("Agent spawn failed"),
     };
 
@@ -428,8 +443,26 @@ fn parse_thread_id(thread_id: &str) -> Option<ThreadId> {
 fn agent_label(thread_id: ThreadId, metadata: &AgentMetadata) -> AgentLabel<'_> {
     AgentLabel {
         thread_id: Some(thread_id),
+        display_name: None,
         nickname: metadata.agent_nickname.as_deref(),
         role: metadata.agent_role.as_deref(),
+    }
+}
+
+fn agent_label_with_display_name<'a>(
+    thread_id: ThreadId,
+    display_name: Option<&'a str>,
+    role: Option<&'a str>,
+    metadata: &'a AgentMetadata,
+) -> AgentLabel<'a> {
+    AgentLabel {
+        thread_id: Some(thread_id),
+        display_name: display_name.map(str::trim).filter(|name| !name.is_empty()),
+        nickname: metadata.agent_nickname.as_deref(),
+        role: role
+            .map(str::trim)
+            .filter(|role| !role.is_empty())
+            .or(metadata.agent_role.as_deref()),
     }
 }
 
@@ -439,13 +472,19 @@ fn agent_label_line(agent: AgentLabel<'_>) -> Line<'static> {
 
 fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
+    let display_name = agent
+        .display_name
+        .map(str::trim)
+        .filter(|display_name| !display_name.is_empty());
     let nickname = agent
         .nickname
         .map(str::trim)
         .filter(|nickname| !nickname.is_empty());
     let role = agent.role.map(str::trim).filter(|role| !role.is_empty());
 
-    if let Some(nickname) = nickname {
+    if let Some(display_name) = display_name {
+        spans.push(Span::from(display_name.to_string()).cyan().bold());
+    } else if let Some(nickname) = nickname {
         spans.push(Span::from(nickname.to_string()).cyan().bold());
     } else if let Some(thread_id) = agent.thread_id {
         spans.push(Span::from(thread_id.to_string()).cyan());
@@ -628,6 +667,8 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                spawned_agent_name: Some("root/scout".to_string()),
+                spawned_agent_role: Some("explorer".to_string()),
                 prompt: Some("Compute 11! and reply with just the integer result.".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
@@ -648,6 +689,8 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                spawned_agent_name: None,
+                spawned_agent_role: None,
                 prompt: Some("Please continue and return the answer only.".to_string()),
                 model: None,
                 reasoning_effort: None,
@@ -668,6 +711,8 @@ mod tests {
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                spawned_agent_name: None,
+                spawned_agent_role: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -685,6 +730,8 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string(), bob_id.to_string()],
+                spawned_agent_name: None,
+                spawned_agent_role: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -711,6 +758,8 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                spawned_agent_name: None,
+                spawned_agent_role: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -783,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn title_styles_nickname_and_role() {
+    fn title_styles_display_name_and_role() {
         let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
             .expect("valid sender thread id");
         let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
@@ -795,6 +844,8 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                spawned_agent_name: Some("root/scout".to_string()),
+                spawned_agent_role: Some("explorer".to_string()),
                 prompt: Some(String::new()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
@@ -810,7 +861,7 @@ mod tests {
 
         let lines = cell.display_lines(/*width*/ 200);
         let title = &lines[0];
-        assert_eq!(title.spans[2].content.as_ref(), "Robie");
+        assert_eq!(title.spans[2].content.as_ref(), "root/scout");
         assert_eq!(title.spans[2].style.fg, Some(Color::Cyan));
         assert!(title.spans[2].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(title.spans[4].content.as_ref(), "[explorer]");
@@ -834,6 +885,8 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                spawned_agent_name: None,
+                spawned_agent_role: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,

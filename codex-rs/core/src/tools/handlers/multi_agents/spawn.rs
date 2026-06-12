@@ -156,7 +156,7 @@ async fn handle_spawn_agent(
         }
         None => None,
     };
-    let (_new_agent_path, new_agent_nickname, new_agent_role) =
+    let (new_agent_path, new_agent_nickname, new_agent_role) =
         match (&agent_snapshot, new_agent_metadata) {
             (Some(snapshot), _) => (
                 snapshot.session_source.get_agent_path().map(String::from),
@@ -170,6 +170,7 @@ async fn handle_spawn_agent(
             ),
             (None, None) => (None, None, None),
         };
+    let new_agent_name = new_agent_path.clone().or_else(|| new_agent_nickname.clone());
     let effective_model = agent_snapshot
         .as_ref()
         .map(|snapshot| snapshot.model.clone())
@@ -187,6 +188,7 @@ async fn handle_spawn_agent(
                 completed_at_ms: now_unix_timestamp_ms(),
                 sender_thread_id: session.conversation_id,
                 new_thread_id,
+                new_agent_name,
                 new_agent_nickname,
                 new_agent_role,
                 prompt,

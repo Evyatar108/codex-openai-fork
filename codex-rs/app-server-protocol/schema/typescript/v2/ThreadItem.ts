@@ -84,6 +84,14 @@ senderThreadId: string,
  */
 receiverThreadIds: Array<string>,
 /**
+ * Human-readable name for the spawned agent, when available.
+ */
+spawnedAgentName?: string,
+/**
+ * Agent role shown alongside the spawned agent name, when available.
+ */
+spawnedAgentRole?: string,
+/**
  * Prompt text sent as part of the collab tool call, when available.
  */
 prompt: string | null,

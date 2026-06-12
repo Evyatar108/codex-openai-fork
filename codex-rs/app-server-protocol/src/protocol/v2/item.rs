@@ -321,6 +321,14 @@ pub enum ThreadItem {
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
         /// this corresponds to the newly spawned agent.
         receiver_thread_ids: Vec<String>,
+        /// Human-readable name for the spawned agent, when available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        spawned_agent_name: Option<String>,
+        /// Agent role shown alongside the spawned agent name, when available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        spawned_agent_role: Option<String>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
         /// Model requested for the spawned agent, when applicable.

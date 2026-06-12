@@ -3757,6 +3757,10 @@ pub struct CollabAgentSpawnEndEvent {
     pub sender_thread_id: ThreadId,
     /// Thread ID of the newly spawned agent, if it was created.
     pub new_thread_id: Option<ThreadId>,
+    /// Human-readable agent name for transcript rendering. V2 uses the task name/path and v1
+    /// falls back to the spawn-time nickname when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_agent_name: Option<String>,
     /// Optional nickname assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_nickname: Option<String>,
