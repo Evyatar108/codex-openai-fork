@@ -247,17 +247,12 @@ impl Renderable for RetainedTranscriptViewportRenderable<'_> {
         }
     }
 
-    fn desired_height(&self, width: u16) -> u16 {
-        let content_width = self.content_width(width);
-        let mut total_height = self.active_total_height(content_width);
-        for (index, cell) in self.committed_cells.iter().enumerate() {
-            total_height = total_height.saturating_add(committed_cell_total_height(
-                index,
-                cell.as_ref(),
-                content_width,
-            ));
+    fn desired_height(&self, _width: u16) -> u16 {
+        if self.active_cell.is_none() && self.committed_cells.is_empty() {
+            0
+        } else {
+            u16::MAX
         }
-        total_height
     }
 }
 
@@ -314,5 +309,68 @@ impl Renderable for CommittedCellRenderable {
         self.cell
             .desired_transcript_height(width)
             .saturating_add(u16::from(self.separator_before))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    #[derive(Debug)]
+    struct MeasuringHistoryCell {
+        desired_transcript_height_calls: Arc<AtomicUsize>,
+    }
+
+    impl HistoryCell for MeasuringHistoryCell {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            vec!["not measured".into()]
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            self.display_lines(/*width*/ 80)
+        }
+
+        fn desired_transcript_height(&self, _width: u16) -> u16 {
+            self.desired_transcript_height_calls
+                .fetch_add(1, Ordering::SeqCst);
+            1
+        }
+    }
+
+    #[test]
+    fn retained_desired_height_claims_available_space_without_measuring_committed_cells() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let committed_cells: Vec<Arc<dyn HistoryCell>> = (0..1_000)
+            .map(|_| {
+                Arc::new(MeasuringHistoryCell {
+                    desired_transcript_height_calls: Arc::clone(&counter),
+                }) as Arc<dyn HistoryCell>
+            })
+            .collect();
+        let renderable = RetainedTranscriptViewportRenderable::new(
+            &committed_cells,
+            None,
+            /*right_reserve*/ 0,
+            HistoryRenderMode::Rich,
+        );
+
+        assert_eq!(renderable.desired_height(/*width*/ 80), u16::MAX);
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn retained_desired_height_is_zero_when_empty() {
+        let committed_cells = Vec::new();
+        let renderable = RetainedTranscriptViewportRenderable::new(
+            &committed_cells,
+            None,
+            /*right_reserve*/ 0,
+            HistoryRenderMode::Rich,
+        );
+
+        assert_eq!(renderable.desired_height(/*width*/ 80), 0);
     }
 }

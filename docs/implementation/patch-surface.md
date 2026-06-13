@@ -20,17 +20,24 @@ comments may reference earlier entries that predate this reconstructed file.
 
 - **Surface:** `codex-rs/features/src/lib.rs`, `codex-rs/tui/src/app.rs`,
   `codex-rs/tui/src/app/event_dispatch.rs`, `codex-rs/tui/src/app/resize_reflow.rs`,
-  `codex-rs/tui/src/app/thread_routing.rs`, `codex-rs/tui/src/app_backtrack.rs`
+  `codex-rs/tui/src/app/thread_routing.rs`, `codex-rs/tui/src/app_backtrack.rs`,
+  `codex-rs/tui/src/chatwidget/committed_transcript.rs`
 - **Status:** active
 - **Reason:** commit `8548182d` made the retained committed-transcript viewport ride on the
   default-enabled `terminal_resize_reflow` flag, which regressed `/resume` by trickling history
-  paint and removed native terminal scroll-up by default.
+  paint and removed native terminal scroll-up by default. Commit `6f0137db` moved the viewport
+  behind its own feature and batched replay frames, but retained-mode typing still hit an
+  O(history) flex desired-height scan over every committed cell.
 - **Patch:** split the retained viewport behind its own default-off experimental feature
   (`retained_transcript_viewport`), restore the legacy terminal-scrollback path as the default,
   batch retained replay to a single frame, and keep stream-finalization reflow on the default path
-  limited to real resize-repair cases.
+  limited to real resize-repair cases. The retained main-viewport renderable reports O(1)
+  fill-available intent from `desired_height`, leaving the existing bounded `visible_height` prepass
+  and visible-tail renderer to decide which committed rows are drawn.
 - **Safety:** default behavior returns to the upstream/native scrollback model, while the retained
   viewport remains opt-in and still preserves its resize-friendly rendering when explicitly enabled.
+  The typing-lag fix is contained to the fork-owned retained renderable and does not alter generic
+  flex allocation or native history-cell height measurement.
 
 ## §17 Fork runtime flags migrated to experimental features
 
