@@ -193,6 +193,8 @@ mod tests {
     //! tests were deleted in the F-2 port; this module re-homes the equivalent
     //! coverage against `CopilotModelProvider::api_auth`.
     use std::fs;
+    use std::path::Path;
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use codex_copilot::CopilotAuth;
@@ -203,7 +205,6 @@ mod tests {
     use pretty_assertions::assert_eq;
     use reqwest::header::AUTHORIZATION;
     use reqwest::header::HeaderMap;
-    use tempfile::TempDir;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -213,8 +214,39 @@ mod tests {
     use super::CopilotModelProvider;
     use crate::provider::ModelProvider;
 
-    fn test_copilot_auth(server: &MockServer) -> (TempDir, Arc<CopilotAuth>) {
-        let temp = tempfile::tempdir().expect("temp dir");
+    struct TestTempDir {
+        path: PathBuf,
+    }
+
+    impl TestTempDir {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "codex-copilot-auth-test-{}-{}",
+                std::process::id(),
+                nonce
+            ));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn test_copilot_auth(server: &MockServer) -> (TestTempDir, Arc<CopilotAuth>) {
+        let temp = TestTempDir::new();
         let app_dir = temp.path().join("copilot-home");
         fs::create_dir_all(&app_dir).expect("create app dir");
         fs::write(app_dir.join("github_token"), "github-token\n").expect("write github token");

@@ -91,6 +91,26 @@ fn context_tier_long_context_widens_to_full() {
 }
 
 #[test]
+fn context_tier_long_context_uses_prompt_budget_for_compaction() {
+    let mut model = model_info_from_slug("gpt-5.5");
+    model.context_window = Some(400_000);
+    model.max_context_window = Some(922_000);
+    let config = ModelsManagerConfig {
+        model_context_tier: Some(ContextWindowTier::LongContext),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model, &config);
+
+    assert_eq!(updated.context_window, Some(922_000));
+    assert_eq!(updated.max_context_window, Some(922_000));
+    assert_eq!(updated.auto_compact_token_limit(), Some(829_800));
+    let near_prompt_cap_tokens = 900_000;
+    assert!(near_prompt_cap_tokens >= updated.auto_compact_token_limit().unwrap());
+    assert!(near_prompt_cap_tokens < updated.resolved_context_window().unwrap());
+}
+
+#[test]
 fn context_tier_default_keeps_default_window() {
     let mut model = model_info_from_slug("gpt-5.5");
     model.context_window = Some(400_000);

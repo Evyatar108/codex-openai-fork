@@ -67,3 +67,21 @@ comments may reference earlier entries that predate this reconstructed file.
 - **Verification:** feature registry/config tests cover default-off paste semantics, legacy alias
   mapping, and canonical precedence; model-provider tests cover the Anthropic gate; TUI tests cover
   persisted-Claude fallback and the feature-backed styling helper branches.
+
+## §18 Copilot prompt budget context tiers
+
+- **Surface:** `codex-rs/model-provider/src/copilot_models_endpoint.rs`,
+  `codex-rs/models-manager/src/model_info.rs`
+- **Status:** active
+- **Reason:** Copilot `/models` reports gpt-5.5 long-context as a total window
+  (`max_context_window_tokens=1_050_000`) plus a prompt/input cap
+  (`billing.token_prices.long_context.context_max` / `max_prompt_tokens=922_000`) and output
+  reserve (`max_output_tokens=128_000`). Budgeting input against the total lets normal turns and
+  auto-compaction requests exceed the server-enforced prompt cap.
+- **Patch:** parse `max_prompt_tokens`, `max_output_tokens`, and
+  `billing.token_prices.{default,long_context}.context_max`; use those prompt/input caps for the
+  default and long context tier windows that feed config tier selection and compaction budgeting.
+  Fall back to the legacy total window only when Copilot does not provide prompt-specific limits.
+- **Safety:** default-tier curated caps remain in place for older responses, single-tier models still
+  collapse to one window, and non-Copilot budget consumers continue to read the same `ModelInfo`
+  fields.

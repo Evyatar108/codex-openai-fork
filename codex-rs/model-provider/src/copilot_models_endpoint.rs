@@ -76,6 +76,11 @@ struct CopilotModelEntry {
     supported_endpoints: Vec<String>,
     #[serde(default)]
     capabilities: Option<CopilotCapabilities>,
+    // SANDBOX PATCH: gpt-5.5 1M input budget. Copilot reports per-tier prompt
+    // budgets under billing.token_prices.*.context_max; those are the values
+    // the client must use for input budgeting, not the total context window.
+    #[serde(default)]
+    billing: Option<CopilotBilling>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +97,36 @@ struct CopilotCapabilities {
 struct CopilotLimits {
     #[serde(default)]
     max_context_window_tokens: Option<i64>,
+    #[serde(default)]
+    max_prompt_tokens: Option<i64>,
+    #[serde(default)]
+    max_output_tokens: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CopilotBilling {
+    #[serde(default)]
+    token_prices: Option<CopilotTokenPrices>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CopilotTokenPrices {
+    #[serde(default, rename = "default")]
+    default_tier: Option<CopilotTokenPrice>,
+    #[serde(default)]
+    long_context: Option<CopilotTokenPrice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CopilotTokenPrice {
+    #[serde(default)]
+    context_max: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CopilotPromptContextWindows {
+    default_tier: Option<i64>,
+    long_context: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,11 +283,12 @@ fn wire_route_for(entry: &CopilotModelEntry, anthropic_enabled: bool) -> ModelWi
     }
 }
 
-// SANDBOX PATCH: Knob B context-window tier. The Copilot `/models` response does
-// NOT expose a per-tier context field (confirmed by a live capture — see the
-// spike findings). The "default" tier is a client-curated cap; the "full" tier
-// is the live `max_context_window_tokens`. These per-family defaults match the
-// VS Code Copilot CLI's curated defaults. See docs/implementation/patch-surface.md §14.
+// SANDBOX PATCH: Knob B context-window tier. Older Copilot `/models` responses
+// exposed only a total context ceiling, so Codex falls back to client-curated
+// default-tier caps. Newer responses expose prompt/input budgets via
+// `billing.token_prices.*.context_max` and/or `max_prompt_tokens`; those prompt
+// budgets must drive context tier selection and compaction. See patch-surface
+// §14/§18.
 const GPT_DEFAULT_CONTEXT_TIER_TOKENS: i64 = 400_000;
 const ANTHROPIC_DEFAULT_CONTEXT_TIER_TOKENS: i64 = 264_000;
 
@@ -291,6 +327,40 @@ fn knob_b_tier_windows(
     }
 }
 
+fn prompt_context_windows(entry: &CopilotModelEntry) -> CopilotPromptContextWindows {
+    let token_prices = entry
+        .billing
+        .as_ref()
+        .and_then(|billing| billing.token_prices.as_ref());
+    let billing_default = token_prices
+        .and_then(|prices| prices.default_tier.as_ref())
+        .and_then(|tier| tier.context_max);
+    let billing_long_context = token_prices
+        .and_then(|prices| prices.long_context.as_ref())
+        .and_then(|tier| tier.context_max);
+    let limits = entry
+        .capabilities
+        .as_ref()
+        .and_then(|capabilities| capabilities.limits.as_ref());
+    let max_prompt_tokens = limits.and_then(|limits| limits.max_prompt_tokens);
+    let derived_prompt_tokens = limits.and_then(|limits| {
+        limits
+            .max_context_window_tokens
+            .zip(limits.max_output_tokens)
+            .and_then(|(total, output)| total.checked_sub(output))
+    });
+    let legacy_total_window = limits.and_then(|limits| limits.max_context_window_tokens);
+
+    CopilotPromptContextWindows {
+        default_tier: billing_default,
+        long_context: billing_long_context
+            .or(max_prompt_tokens)
+            .or(derived_prompt_tokens)
+            .or(legacy_total_window)
+            .or(billing_default),
+    }
+}
+
 fn translate_entry(
     entry: CopilotModelEntry,
     bundled: &[ModelInfo],
@@ -298,13 +368,10 @@ fn translate_entry(
 ) -> ModelInfo {
     // SANDBOX PATCH: D-001 compute the wire-route before `entry` is consumed below.
     let wire_route = wire_route_for(&entry, anthropic_enabled);
-    // SANDBOX PATCH: Knob B — capture the live full window + vendor before `entry`
-    // fields are moved, so we can overlay the tier windows below.
-    let live_max_context_window = entry
-        .capabilities
-        .as_ref()
-        .and_then(|c| c.limits.as_ref())
-        .and_then(|l| l.max_context_window_tokens);
+    // SANDBOX PATCH: Knob B/gpt-5.5 1M — capture the live prompt/input windows
+    // + vendor before `entry` fields are moved, so we can overlay the tier
+    // windows below.
+    let live_prompt_windows = prompt_context_windows(&entry);
     let vendor = entry.vendor.clone();
     if let Some(known) = bundled.iter().find(|info| info.slug == entry.id) {
         let mut info = known.clone();
@@ -315,15 +382,15 @@ fn translate_entry(
         info.used_fallback_model_metadata = false;
         // SANDBOX PATCH: D-001 tag the bundled-clone row to its wire route.
         info.wire_route = wire_route;
-        // SANDBOX PATCH: Knob B — overlay the live full window onto the (often
-        // stale) bundled ceiling and apply the per-family curated default tier.
-        // This is what recovers a model's long-context tier when the bundle was
-        // cut before the full window shipped (e.g. gpt-5.5 bundle 272k vs live
-        // 1.05M). For families without a curated default we preserve the bundled
-        // default window, clamped to the full ceiling. See patch-surface §14.
-        let full = live_max_context_window.or(info.max_context_window);
-        let chosen_default =
-            curated_default_context_tier(vendor.as_deref(), &info.slug).or(info.context_window);
+        // SANDBOX PATCH: Knob B/gpt-5.5 1M — overlay the live prompt/input
+        // window onto the (often stale) bundled ceiling and apply the live or
+        // per-family curated default tier. This recovers long-context budgeting
+        // without treating Copilot's total context window as usable input.
+        let full = live_prompt_windows.long_context.or(info.max_context_window);
+        let chosen_default = live_prompt_windows
+            .default_tier
+            .or_else(|| curated_default_context_tier(vendor.as_deref(), &info.slug))
+            .or(info.context_window);
         let (context_window, max_context_window) = knob_b_tier_windows(full, chosen_default);
         info.context_window = context_window;
         info.max_context_window = max_context_window;
@@ -339,7 +406,6 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
         .capabilities
         .as_ref()
         .and_then(|c| c.supports.as_ref());
-    let limits = entry.capabilities.as_ref().and_then(|c| c.limits.as_ref());
 
     let supported_reasoning_levels = supports
         .map(|s| {
@@ -359,12 +425,16 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
         })
         .unwrap_or_default();
 
-    let full_context_window = limits.and_then(|l| l.max_context_window_tokens);
-    // SANDBOX PATCH: Knob B — apply the per-family curated default tier. Full
-    // tier = the live `max_context_window_tokens`; default tier = curated cap
-    // clamped to full (so single-tier families collapse to one window). See
-    // docs/implementation/patch-surface.md §14.
-    let curated_default = curated_default_context_tier(entry.vendor.as_deref(), &entry.id);
+    let prompt_windows = prompt_context_windows(&entry);
+    let full_context_window = prompt_windows.long_context;
+    // SANDBOX PATCH: Knob B/gpt-5.5 1M — apply the live or per-family curated
+    // default tier. Full tier = the live prompt/input budget (from
+    // billing.token_prices.long_context.context_max, max_prompt_tokens, or
+    // legacy total fallback); default tier = live default prompt cap when
+    // present, otherwise the curated cap clamped to full.
+    let curated_default = prompt_windows
+        .default_tier
+        .or_else(|| curated_default_context_tier(entry.vendor.as_deref(), &entry.id));
     let (context_window, max_context_window) =
         knob_b_tier_windows(full_context_window, curated_default);
     let display_name = entry.name.unwrap_or_else(|| entry.id.clone());
@@ -686,6 +756,85 @@ mod knob_b_tier_tests {
     }
 
     #[test]
+    fn synthesized_gpt_long_context_uses_billing_prompt_budget() {
+        let info = synthesize_from_capabilities(
+            entry(json!({
+                "id": "gpt-5.5",
+                "vendor": "OpenAI",
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/responses"],
+                "capabilities": {
+                    "type": "chat",
+                    "limits": {
+                        "max_context_window_tokens": 1_050_000,
+                        "max_prompt_tokens": 922_000,
+                        "max_output_tokens": 128_000
+                    }
+                },
+                "billing": {
+                    "token_prices": {
+                        "default": { "context_max": 400_000 },
+                        "long_context": { "context_max": 922_000 }
+                    }
+                }
+            })),
+            /*anthropic_enabled*/ false,
+        );
+
+        assert_eq!(info.context_window, Some(400_000));
+        assert_eq!(info.max_context_window, Some(922_000));
+        assert!(info.supports_context_window_tier_selection());
+    }
+
+    #[test]
+    fn prompt_budget_uses_max_prompt_tokens_without_billing() {
+        let info = synthesize_from_capabilities(
+            entry(json!({
+                "id": "gpt-5.5",
+                "vendor": "OpenAI",
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/responses"],
+                "capabilities": {
+                    "type": "chat",
+                    "limits": {
+                        "max_context_window_tokens": 1_050_000,
+                        "max_prompt_tokens": 922_000
+                    }
+                }
+            })),
+            /*anthropic_enabled*/ false,
+        );
+
+        assert_eq!(info.context_window, Some(400_000));
+        assert_eq!(info.max_context_window, Some(922_000));
+        assert!(info.supports_context_window_tier_selection());
+    }
+
+    #[test]
+    fn prompt_budget_can_derive_from_total_minus_output_tokens() {
+        let info = synthesize_from_capabilities(
+            entry(json!({
+                "id": "gpt-5.5",
+                "vendor": "OpenAI",
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/responses"],
+                "capabilities": {
+                    "type": "chat",
+                    "limits": {
+                        "max_context_window_tokens": 1_050_000,
+                        "max_output_tokens": 128_000
+                    }
+                }
+            })),
+            /*anthropic_enabled*/ false,
+        );
+
+        assert_eq!(info.context_window, Some(400_000));
+        assert_eq!(info.max_context_window, Some(922_000));
+        assert!(info.supports_context_window_tier_selection());
+    }
+
+    #[test]
     fn synthesized_gpt_single_tier_when_full_not_above_default() {
         // gpt-5.3-codex / gpt-5.4-mini live at 400k == default -> single-tier.
         let codex = synth("gpt-5.3-codex", "OpenAI", 400_000);
@@ -732,10 +881,11 @@ mod knob_b_tier_tests {
     }
 
     #[test]
-    fn bundled_overlay_recovers_full_tier_from_stale_bundle() {
+    fn bundled_overlay_recovers_prompt_tier_from_stale_bundle() {
         // Simulate a stale bundled gpt-5.5 (both windows at 272k) and a live
-        // /models row reporting the real 1.05M full window. The overlay must
-        // recover the long-context tier (default 400k / full 1.05M).
+        // /models row reporting the 1.05M total window plus the 922k prompt
+        // budget. The overlay must recover the long-context input tier
+        // (default 400k / prompt 922k) without treating the total as input.
         let mut stale = synth("gpt-5.5", "OpenAI", 272_000);
         stale.context_window = Some(272_000);
         stale.max_context_window = Some(272_000);
@@ -747,13 +897,26 @@ mod knob_b_tier_tests {
                 "vendor": "OpenAI",
                 "model_picker_enabled": true,
                 "supported_endpoints": ["/responses"],
-                "capabilities": { "type": "chat", "limits": { "max_context_window_tokens": 1_050_000 } }
+                "capabilities": {
+                    "type": "chat",
+                    "limits": {
+                        "max_context_window_tokens": 1_050_000,
+                        "max_prompt_tokens": 922_000,
+                        "max_output_tokens": 128_000
+                    }
+                },
+                "billing": {
+                    "token_prices": {
+                        "default": { "context_max": 400_000 },
+                        "long_context": { "context_max": 922_000 }
+                    }
+                }
             })),
             &bundled,
             /*anthropic_enabled*/ false,
         );
         assert_eq!(info.context_window, Some(400_000));
-        assert_eq!(info.max_context_window, Some(1_050_000));
+        assert_eq!(info.max_context_window, Some(922_000));
         assert!(info.supports_context_window_tier_selection());
     }
 }
