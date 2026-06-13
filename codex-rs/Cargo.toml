@@ -126,7 +126,7 @@ resolver = "2"
 
 [workspace.package]
 # SANDBOX PATCH: copilot-fork version suffix; bumped on each upstream rebase.
-version = "0.135.0-copilot-api.5"
+version = "0.135.0-copilot-api.6"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
