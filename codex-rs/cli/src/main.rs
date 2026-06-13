@@ -796,8 +796,7 @@ struct FeatureToggles {
 
     // SANDBOX PATCH: friendlier opt-in for the Claude-via-Copilot (Anthropic)
     // transport. Folds into `-c features.anthropic_models=true` so it outranks
-    // config.toml and flows to every subcommand. Default off; the gate also
-    // honors the legacy `CODEX_ENABLE_ANTHROPIC` env var as a fallback.
+    // config.toml and flows to every subcommand. Default off.
     /// Enable Anthropic (Claude-via-Copilot) models. Equivalent to
     /// `-c features.anthropic_models=true`. Default off.
     #[arg(long = "enable-anthropic", global = true)]

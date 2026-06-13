@@ -35,6 +35,9 @@ impl ChatWidget {
         let mut config = config;
         config.model = model.clone();
         let prevent_idle_sleep = config.features.enabled(Feature::PreventIdleSleep);
+        crate::style::install_user_message_styling(
+            config.features.enabled(Feature::UserMessageStyling),
+        );
         let mut rng = rand::rng();
         let placeholder = PLACEHOLDERS[rng.random_range(0..PLACEHOLDERS.len())].to_string();
         let side_placeholder =

@@ -1,6 +1,6 @@
 mod amazon_bedrock;
 // SANDBOX PATCH: process-global resolution of the Anthropic-models opt-in gate
-// (`--enable-anthropic` flag / `features.anthropic_models` config / env fallback).
+// (`--enable-anthropic` flag / `features.anthropic_models` config).
 mod anthropic_gate;
 mod auth;
 mod bearer_auth_provider;

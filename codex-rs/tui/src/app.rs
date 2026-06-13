@@ -779,7 +779,17 @@ impl App {
             return Ok(exit_info);
         }
         if let Some(updated_model) = config.model.clone() {
-            model = updated_model;
+            let resolved_model = crate::app_server_session::bootstrap_default_model(
+                Some(&updated_model),
+                &available_models,
+            )
+            .unwrap_or_else(|| model.clone());
+            if resolved_model == updated_model {
+                model = updated_model;
+            } else {
+                model = resolved_model;
+                config.model = Some(model.clone());
+            }
         }
         let model_catalog = Arc::new(ModelCatalog::new(available_models.clone()));
         let feedback_audience = bootstrap.feedback_audience;

@@ -1,0 +1,11 @@
+---
+source: tui/src/style.rs
+assertion_line: 302
+expression: rendered
+---
+user disabled dark: fg=None bg=Some(Indexed(234)) add=NONE sub=NONE
+user enabled dark: fg=Some(Rgb(255, 255, 255)) bg=Some(Rgb(55, 55, 55)) add=NONE sub=NONE
+user disabled light: fg=None bg=Some(Indexed(255)) add=NONE sub=NONE
+user enabled light: fg=Some(Rgb(0, 0, 0)) bg=Some(Rgb(240, 240, 240)) add=NONE sub=NONE
+plan disabled dark: fg=None bg=Some(Indexed(234)) add=NONE sub=NONE
+plan enabled dark: fg=Some(Rgb(255, 255, 255)) bg=Some(Rgb(55, 55, 55)) add=NONE sub=NONE

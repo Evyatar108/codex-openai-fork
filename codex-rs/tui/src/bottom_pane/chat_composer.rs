@@ -107,8 +107,10 @@
 //!   burst detection for actual paste streams.
 //!
 //! The burst detector can also be disabled (`disable_paste_burst`), which bypasses the state
-//! machine and treats the key stream as normal typing. When toggling from enabled → disabled, the
-//! composer flushes/clears any in-flight burst state so it cannot leak into subsequent input.
+//! machine and treats the key stream as normal typing. The main TUI resolves that value from the
+//! default-off `features.legacy_paste_burst_heuristic` gate; enabling the feature opts back into
+//! this legacy detector. When toggling from enabled → disabled, the composer flushes/clears any
+//! in-flight burst state so it cannot leak into subsequent input.
 //!
 //! For the detailed burst state machine, see `codex-rs/tui/src/bottom_pane/paste_burst.rs`.
 //!

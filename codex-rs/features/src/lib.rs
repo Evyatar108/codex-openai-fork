@@ -132,8 +132,14 @@ pub enum Feature {
     MultiAgentV2,
     // SANDBOX PATCH: opt-in gate for the Claude-via-Copilot (Anthropic) transport.
     /// Enable Anthropic (Claude-via-Copilot) models. Default off; also settable via
-    /// the `--enable-anthropic` flag or the `CODEX_ENABLE_ANTHROPIC` env var.
+    /// the `--enable-anthropic` flag.
     AnthropicModels,
+    // SANDBOX PATCH: opt-in gate for the legacy paste-burst heuristic.
+    /// Enable legacy non-bracketed paste-burst detection. Default off.
+    LegacyPasteBurstHeuristic,
+    // SANDBOX PATCH: opt-in gate for Claude-style user-message styling.
+    /// Render user messages and proposed plans with Claude-style styling. Default off.
+    UserMessageStyling,
     // SANDBOX PATCH: opt-in gate for honoring managed/admin-config hooks.
     /// Honor managed/admin-config hooks (MDM/system/legacy-managed-config and
     /// managed requirements). Default off in the fork; also settable via the
@@ -970,12 +976,37 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     // SANDBOX PATCH: opt-in gate for the Claude-via-Copilot (Anthropic) transport.
-    // Default off; the runtime gate also honors the legacy `CODEX_ENABLE_ANTHROPIC`
-    // env var and the `--enable-anthropic` flag (see codex-model-provider gate).
+    // Default off; `--enable-anthropic` folds into this canonical feature key.
     FeatureSpec {
         id: Feature::AnthropicModels,
         key: "anthropic_models",
         stage: Stage::Stable,
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: opt-in gate for the legacy non-bracketed paste-burst
+    // heuristic. Default off so ordinary key streams are not buffered unless
+    // users explicitly opt back into the legacy detector.
+    FeatureSpec {
+        id: Feature::LegacyPasteBurstHeuristic,
+        key: "legacy_paste_burst_heuristic",
+        stage: Stage::Experimental {
+            name: "Legacy paste-burst heuristic",
+            menu_description: "Re-enable legacy buffering for terminals that send pasted text as rapid key events.",
+            announcement: "Legacy paste-burst detection can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: opt-in gate for Claude-style user-message/proposed-plan
+    // styling. Default off to preserve upstream rendering unless explicitly
+    // enabled.
+    FeatureSpec {
+        id: Feature::UserMessageStyling,
+        key: "user_message_styling",
+        stage: Stage::Experimental {
+            name: "User-message styling",
+            menu_description: "Render user messages and proposed plans with Claude-style high-contrast backgrounds.",
+            announcement: "User-message styling can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
         default_enabled: false,
     },
     // SANDBOX PATCH: opt-in gate for honoring managed/admin-config hooks. Default

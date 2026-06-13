@@ -9241,6 +9241,85 @@ async fn feature_requirements_normalize_effective_feature_values() -> std::io::R
 }
 
 #[tokio::test]
+async fn legacy_paste_burst_feature_defaults_to_disabled_heuristic() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    assert!(!config.features.enabled(Feature::LegacyPasteBurstHeuristic));
+    assert!(config.disable_paste_burst);
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_paste_burst_feature_enables_heuristic() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[features]
+legacy_paste_burst_heuristic = true
+"#,
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    assert!(config.features.enabled(Feature::LegacyPasteBurstHeuristic));
+    assert!(!config.disable_paste_burst);
+    Ok(())
+}
+
+#[tokio::test]
+async fn disable_paste_burst_alias_maps_to_legacy_paste_burst_feature() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"disable_paste_burst = false
+"#,
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    assert!(config.features.enabled(Feature::LegacyPasteBurstHeuristic));
+    assert!(!config.disable_paste_burst);
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_paste_burst_feature_wins_over_legacy_alias() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"disable_paste_burst = false
+
+[features]
+legacy_paste_burst_heuristic = false
+"#,
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    assert!(!config.features.enabled(Feature::LegacyPasteBurstHeuristic));
+    assert!(config.disable_paste_burst);
+    Ok(())
+}
+
+#[tokio::test]
 async fn feature_requirements_auto_review_disables_guardian_approval() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
 

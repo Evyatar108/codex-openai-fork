@@ -28,8 +28,13 @@ impl GatedModelsManager {
         })
     }
 
+    fn keep_model_slug(&self, model: &str) -> bool {
+        self.anthropic_enabled || !is_anthropic_model_slug(model)
+    }
+
     fn keep_model(&self, model: &ModelInfo) -> bool {
-        self.anthropic_enabled || model.wire_route != ModelWireRoute::ChatCompletions
+        self.keep_model_slug(&model.slug)
+            && (self.anthropic_enabled || model.wire_route != ModelWireRoute::ChatCompletions)
     }
 
     fn filter_model_infos(&self, models: Vec<ModelInfo>) -> Vec<ModelInfo> {
@@ -91,12 +96,14 @@ impl ModelsManager for GatedModelsManager {
         refresh_strategy: RefreshStrategy,
     ) -> String {
         if let Some(model) = model.as_ref() {
-            let info = self
-                .inner
-                .get_model_info(model, &ModelsManagerConfig::default())
-                .await;
-            if self.keep_model(&info) {
-                return model.clone();
+            if self.keep_model_slug(model) {
+                let info = self
+                    .inner
+                    .get_model_info(model, &ModelsManagerConfig::default())
+                    .await;
+                if self.keep_model(&info) {
+                    return model.clone();
+                }
             }
         }
 
@@ -104,9 +111,11 @@ impl ModelsManager for GatedModelsManager {
     }
 
     async fn get_model_info(&self, model: &str, config: &ModelsManagerConfig) -> ModelInfo {
-        let info = self.inner.get_model_info(model, config).await;
-        if self.keep_model(&info) {
-            return info;
+        if self.keep_model_slug(model) {
+            let info = self.inner.get_model_info(model, config).await;
+            if self.keep_model(&info) {
+                return info;
+            }
         }
         let fallback =
             Self::default_model_from_presets(self.list_models(RefreshStrategy::Offline).await);
@@ -116,6 +125,11 @@ impl ModelsManager for GatedModelsManager {
     async fn refresh_if_new_etag(&self, etag: String) {
         self.inner.refresh_if_new_etag(etag).await;
     }
+}
+
+fn is_anthropic_model_slug(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.starts_with("claude") || model.contains("anthropic")
 }
 
 // The decorator gates every remote-model read method, each of which backs a
@@ -266,6 +280,31 @@ mod tests {
             .await;
 
         assert_eq!(selected, "gpt-5.5");
+    }
+
+    #[tokio::test]
+    async fn off_replaces_unavailable_anthropic_slug_with_filtered_default() {
+        let manager = manager(/*anthropic_enabled*/ false);
+
+        let selected = manager
+            .get_default_model(
+                &Some("claude-not-in-catalog".to_string()),
+                RefreshStrategy::Offline,
+            )
+            .await;
+
+        assert_eq!(selected, "gpt-5.5");
+    }
+
+    #[tokio::test]
+    async fn off_preserves_custom_non_anthropic_slug() {
+        let manager = manager(/*anthropic_enabled*/ false);
+
+        let selected = manager
+            .get_default_model(&Some("custom-model".to_string()), RefreshStrategy::Offline)
+            .await;
+
+        assert_eq!(selected, "custom-model");
     }
 
     #[tokio::test]

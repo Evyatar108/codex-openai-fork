@@ -488,6 +488,9 @@
             "js_repl_tools_only": {
               "type": "boolean"
             },
+            "legacy_paste_burst_heuristic": {
+              "type": "boolean"
+            },
             "managed_hooks": {
               "type": "boolean"
             },
@@ -563,6 +566,9 @@
             "responses_websockets_v2": {
               "type": "boolean"
             },
+            "retained_transcript_viewport": {
+              "type": "boolean"
+            },
             "runtime_metrics": {
               "type": "boolean"
             },
@@ -627,6 +633,9 @@
               "type": "boolean"
             },
             "use_linux_sandbox_bwrap": {
+              "type": "boolean"
+            },
+            "user_message_styling": {
               "type": "boolean"
             },
             "web_search": {
@@ -4463,7 +4472,7 @@
       "type": "string"
     },
     "disable_paste_burst": {
-      "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts.",
+      "description": "Deprecated compatibility alias for `features.legacy_paste_burst_heuristic`. When true, disables burst-paste detection for typed input entirely. Prefer `[features] legacy_paste_burst_heuristic = true` to opt into the legacy detector.",
       "type": "boolean"
     },
     "experimental_compact_prompt_file": {
@@ -4623,6 +4632,9 @@
         "js_repl_tools_only": {
           "type": "boolean"
         },
+        "legacy_paste_burst_heuristic": {
+          "type": "boolean"
+        },
         "managed_hooks": {
           "type": "boolean"
         },
@@ -4698,6 +4710,9 @@
         "responses_websockets_v2": {
           "type": "boolean"
         },
+        "retained_transcript_viewport": {
+          "type": "boolean"
+        },
         "runtime_metrics": {
           "type": "boolean"
         },
@@ -4762,6 +4777,9 @@
           "type": "boolean"
         },
         "use_linux_sandbox_bwrap": {
+          "type": "boolean"
+        },
+        "user_message_styling": {
           "type": "boolean"
         },
         "web_search": {

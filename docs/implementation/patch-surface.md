@@ -31,3 +31,32 @@ comments may reference earlier entries that predate this reconstructed file.
   limited to real resize-repair cases.
 - **Safety:** default behavior returns to the upstream/native scrollback model, while the retained
   viewport remains opt-in and still preserves its resize-friendly rendering when explicitly enabled.
+
+## §17 Fork runtime flags migrated to experimental features
+
+- **Surface:** `codex-rs/features/src/lib.rs`, `codex-rs/core/src/config/mod.rs`,
+  `codex-rs/config/src/config_toml.rs`, `codex-rs/model-provider/src/anthropic_gate.rs`,
+  `codex-rs/model-provider/src/copilot/gated_models_manager.rs`,
+  `codex-rs/tui/src/app_server_session.rs`, `codex-rs/tui/src/app.rs`,
+  `codex-rs/tui/src/chatwidget/constructor.rs`, `codex-rs/tui/src/style.rs`,
+  `codex-rs/tui/src/bottom_pane/chat_composer.rs`
+- **Status:** active
+- **Reason:** fork-local runtime behavior should not be controlled by ad-hoc launcher/env/top-level
+  booleans. `Feature::AnthropicModels` must be the single Anthropic authority so a stale
+  `CODEX_ENABLE_ANTHROPIC` value or persisted Claude model cannot keep Claude visible when the
+  feature is off.
+- **Patch:** keep `features.anthropic_models` default-off and install its final resolved value into
+  the model-provider gate; keep `--enable-anthropic` only as a CLI alias to the canonical feature;
+  replace unavailable persisted Claude defaults with the gate-filtered catalog default in the
+  Copilot model manager and during TUI bootstrap; add default-off experimental features
+  `legacy_paste_burst_heuristic` and
+  `user_message_styling`; map the old `disable_paste_burst` config key into
+  `legacy_paste_burst_heuristic` only when the canonical feature key is absent; install
+  `user_message_styling` once from resolved TUI config instead of reading a process env var.
+- **Safety:** canonical feature entries win over compatibility aliases. Custom non-catalog model
+  strings remain untouched unless they are Claude/Anthropic slugs absent from the gate-filtered model
+  list. The standalone public composer keeps its existing non-config-backed paste behavior because it
+  has no feature source to re-enable the detector.
+- **Verification:** feature registry/config tests cover default-off paste semantics, legacy alias
+  mapping, and canonical precedence; model-provider tests cover the Anthropic gate; TUI tests cover
+  persisted-Claude fallback and the feature-backed styling helper branches.

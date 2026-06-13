@@ -1,4 +1,5 @@
-use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use crate::color::blend;
 use crate::color::is_light;
@@ -27,7 +28,7 @@ pub fn proposed_plan_style() -> Style {
 /// Subtle background style for popups, pickers, and overlay surfaces.
 ///
 /// Always uses the upstream blend-against-terminal-bg behavior, regardless of
-/// the `CODEX_TUI_USER_MESSAGE_STYLE` env var. Popups should retain only the
+/// the user-message styling feature. Popups should retain only the
 /// faint visual-hierarchy tint upstream uses; the bold `rgb(55,55,55)` /
 /// `rgb(240,240,240)` Claude-Code-style background is intended for the user
 /// message body only (history cells + composer textarea).
@@ -52,14 +53,20 @@ pub(crate) fn accent_style() -> Style {
     accent_style_for(default_bg())
 }
 
+// SANDBOX PATCH: process-global TUI styling gate installed once from the
+// resolved `features.user_message_styling` value during ChatWidget construction.
+static USER_MESSAGE_STYLING: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn install_user_message_styling(enabled: bool) {
+    USER_MESSAGE_STYLING.store(enabled, Ordering::Relaxed);
+}
+
 pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
-    // SANDBOX PATCH: gate the Claude-Code-style background on the launcher's
-    // `style_user_messages` config, propagated via `CODEX_TUI_USER_MESSAGE_STYLE`.
-    // Default ON so existing users keep the styling that v0.125.0-copilot-api.9
-    // introduced. Set `style_user_messages = false` in `~/.codex-copilot/config.toml`
-    // to fall back to upstream behavior (terminal-bg-blend, suppressed entirely
-    // on Windows where OSC-11 probing returns None).
-    if user_message_styling_enabled() {
+    user_message_style_for_gate(terminal_bg, user_message_styling_enabled())
+}
+
+fn user_message_style_for_gate(terminal_bg: Option<(u8, u8, u8)>, enabled: bool) -> Style {
+    if enabled {
         Style::default()
             .bg(user_message_bg_color(terminal_bg))
             .fg(user_message_fg_color(terminal_bg))
@@ -73,16 +80,11 @@ pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
 
 pub fn proposed_plan_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     // Mirror user_message_style_for so the two surfaces toggle together.
-    if user_message_styling_enabled() {
-        Style::default()
-            .bg(user_message_bg_color(terminal_bg))
-            .fg(user_message_fg_color(terminal_bg))
-    } else {
-        match terminal_bg {
-            Some(bg) => Style::default().bg(upstream_user_message_bg(bg)),
-            None => Style::default(),
-        }
-    }
+    proposed_plan_style_for_gate(terminal_bg, user_message_styling_enabled())
+}
+
+fn proposed_plan_style_for_gate(terminal_bg: Option<(u8, u8, u8)>, enabled: bool) -> Style {
+    user_message_style_for_gate(terminal_bg, enabled)
 }
 
 /// Returns the shared accent style for the provided terminal background.
@@ -122,19 +124,8 @@ pub fn user_message_bg(terminal_bg: (u8, u8, u8)) -> Color {
     }
 }
 
-/// Reads `CODEX_TUI_USER_MESSAGE_STYLE` once per process and caches the result.
-///
-/// Accepted values (case-insensitive): `on`, `1`, `true`, `yes` → enabled;
-/// `off`, `0`, `false`, `no` → disabled. Anything else (or unset) → enabled.
 fn user_message_styling_enabled() -> bool {
-    static CACHE: OnceLock<bool> = OnceLock::new();
-    *CACHE.get_or_init(|| match std::env::var("CODEX_TUI_USER_MESSAGE_STYLE") {
-        Ok(value) => !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "off" | "0" | "false" | "no"
-        ),
-        Err(_) => true,
-    })
+    USER_MESSAGE_STYLING.load(Ordering::Relaxed)
 }
 
 // Match Claude Code: rgb(240,240,240) light / rgb(55,55,55) dark.
@@ -236,5 +227,78 @@ mod tests {
             ),
             expected
         );
+    }
+
+    #[test]
+    fn user_message_style_defaults_to_upstream_blend_when_feature_disabled() {
+        let terminal_bg = Some((0, 0, 0));
+        let expected = Style::default().bg(upstream_user_message_bg((0, 0, 0)));
+
+        assert_eq!(
+            user_message_style_for_gate(terminal_bg, /*enabled*/ false),
+            expected
+        );
+        assert_eq!(
+            proposed_plan_style_for_gate(terminal_bg, /*enabled*/ false),
+            expected
+        );
+    }
+
+    #[test]
+    fn user_message_style_uses_claude_style_when_feature_enabled() {
+        let expected = Style::default()
+            .bg(rgb_color((55, 55, 55)))
+            .fg(rgb_color((255, 255, 255)));
+
+        assert_eq!(
+            user_message_style_for_gate(Some((0, 0, 0)), /*enabled*/ true),
+            expected
+        );
+        assert_eq!(
+            proposed_plan_style_for_gate(Some((0, 0, 0)), /*enabled*/ true),
+            expected
+        );
+    }
+
+    #[test]
+    fn user_message_styling_feature_snapshot() {
+        let cases = [
+            (
+                "user disabled dark",
+                user_message_style_for_gate(Some((0, 0, 0)), /*enabled*/ false),
+            ),
+            (
+                "user enabled dark",
+                user_message_style_for_gate(Some((0, 0, 0)), /*enabled*/ true),
+            ),
+            (
+                "user disabled light",
+                user_message_style_for_gate(Some((255, 255, 255)), /*enabled*/ false),
+            ),
+            (
+                "user enabled light",
+                user_message_style_for_gate(Some((255, 255, 255)), /*enabled*/ true),
+            ),
+            (
+                "plan disabled dark",
+                proposed_plan_style_for_gate(Some((0, 0, 0)), /*enabled*/ false),
+            ),
+            (
+                "plan enabled dark",
+                proposed_plan_style_for_gate(Some((0, 0, 0)), /*enabled*/ true),
+            ),
+        ];
+        let rendered = cases
+            .into_iter()
+            .map(|(label, style)| {
+                format!(
+                    "{label}: fg={:?} bg={:?} add={:?} sub={:?}",
+                    style.fg, style.bg, style.add_modifier, style.sub_modifier
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        insta::assert_snapshot!(rendered);
     }
 }

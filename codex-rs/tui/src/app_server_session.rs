@@ -256,16 +256,7 @@ impl AppServerSession {
             .into_iter()
             .map(model_preset_from_api_model)
             .collect::<Vec<_>>();
-        let default_model = config
-            .model
-            .clone()
-            .or_else(|| {
-                available_models
-                    .iter()
-                    .find(|model| model.is_default)
-                    .map(|model| model.model.clone())
-            })
-            .or_else(|| available_models.first().map(|model| model.model.clone()))
+        let default_model = bootstrap_default_model(config.model.as_deref(), &available_models)
             .wrap_err("model/list returned no models for TUI bootstrap")?;
         self.default_model = Some(default_model.clone());
         self.available_models = available_models.clone();
@@ -1222,6 +1213,38 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
     }
 }
 
+// SANDBOX PATCH: if Anthropic is disabled, model/list is already gate-filtered
+// and persisted Claude config values are absent. Do not let such a stale
+// config.model override the safe catalog default; preserve non-Claude custom
+// model strings so custom providers keep working.
+pub(crate) fn bootstrap_default_model(
+    configured_model: Option<&str>,
+    available_models: &[ModelPreset],
+) -> Option<String> {
+    if let Some(model) = configured_model
+        && !is_unavailable_anthropic_model(model, available_models)
+    {
+        return Some(model.to_string());
+    }
+    available_models
+        .iter()
+        .find(|model| model.is_default)
+        .or_else(|| available_models.first())
+        .map(|model| model.model.clone())
+}
+
+fn is_unavailable_anthropic_model(model: &str, available_models: &[ModelPreset]) -> bool {
+    is_anthropic_model_slug(model)
+        && !available_models
+            .iter()
+            .any(|available| available.model == model)
+}
+
+fn is_anthropic_model_slug(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.starts_with("claude") || model.contains("anthropic")
+}
+
 fn approvals_reviewer_override_from_config(
     config: &Config,
 ) -> Option<codex_app_server_protocol::ApprovalsReviewer> {
@@ -1746,6 +1769,7 @@ mod tests {
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
     use codex_protocol::models::ManagedFileSystemPermissions;
     use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::openai_models::ReasoningEffortPreset;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
     use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -1778,6 +1802,62 @@ mod tests {
             plan_type: None,
             rate_limit_reached_type: None,
         }
+    }
+
+    fn model_preset(slug: &str, is_default: bool) -> ModelPreset {
+        ModelPreset {
+            id: slug.to_string(),
+            model: slug.to_string(),
+            display_name: slug.to_string(),
+            description: String::new(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: Vec::<ReasoningEffortPreset>::new(),
+            supports_personality: false,
+            additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            is_default,
+            upgrade: None,
+            show_in_picker: true,
+            availability_nux: None,
+            supported_in_api: true,
+            input_modalities: codex_protocol::openai_models::default_input_modalities(),
+            context_window: None,
+            max_context_window: None,
+        }
+    }
+
+    #[test]
+    fn bootstrap_default_model_replaces_unavailable_claude_config_model() {
+        let available_models = vec![model_preset("gpt-5.5", /*is_default*/ true)];
+
+        assert_eq!(
+            bootstrap_default_model(Some("claude-sonnet-4.6"), &available_models),
+            Some("gpt-5.5".to_string())
+        );
+    }
+
+    #[test]
+    fn bootstrap_default_model_preserves_available_claude_config_model() {
+        let available_models = vec![
+            model_preset("gpt-5.5", /*is_default*/ true),
+            model_preset("claude-sonnet-4.6", /*is_default*/ false),
+        ];
+
+        assert_eq!(
+            bootstrap_default_model(Some("claude-sonnet-4.6"), &available_models),
+            Some("claude-sonnet-4.6".to_string())
+        );
+    }
+
+    #[test]
+    fn bootstrap_default_model_preserves_custom_non_catalog_model() {
+        let available_models = vec![model_preset("gpt-5.5", /*is_default*/ true)];
+
+        assert_eq!(
+            bootstrap_default_model(Some("custom-model"), &available_models),
+            Some("custom-model".to_string())
+        );
     }
 
     #[test]

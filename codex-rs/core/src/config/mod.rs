@@ -2573,22 +2573,20 @@ impl Config {
             },
             feature_overrides,
         );
-        // SANDBOX PATCH: resolve the Anthropic-models opt-in gate. The
-        // `--enable-anthropic` flag and `features.anthropic_models` config key
-        // collapse into a single explicit tri-state (the flag is injected as a
-        // `-c features.anthropic_models=true` override that outranks config.toml);
-        // `install_anthropic_gate` installs the process-global gate read by the
-        // transport/model-list call sites and returns the effective value, folding
-        // in the `CODEX_ENABLE_ANTHROPIC` env back-compat fallback. Reflect the
-        // effective value in the resolved feature set so `features list` and the
-        // config lock agree with runtime (env-only opt-in is never downgraded).
-        let anthropic_models_explicit = cfg
+        // SANDBOX PATCH: one-release compatibility adapter for the old
+        // top-level `disable_paste_burst` knob. Canonical
+        // `features.legacy_paste_burst_heuristic` entries win when both are set.
+        let legacy_paste_burst_key = Feature::LegacyPasteBurstHeuristic.key();
+        let legacy_paste_burst_explicit = cfg
             .features
             .as_ref()
-            .and_then(|features| features.entries().get(Feature::AnthropicModels.key()).copied());
-        let anthropic_models_enabled =
-            codex_model_provider::install_anthropic_gate(anthropic_models_explicit);
-        configured_features.set_enabled(Feature::AnthropicModels, anthropic_models_enabled);
+            .is_some_and(|features| features.entries().contains_key(legacy_paste_burst_key));
+        if let Some(disable_paste_burst) = cfg.disable_paste_burst
+            && !legacy_paste_burst_explicit
+        {
+            configured_features
+                .set_enabled(Feature::LegacyPasteBurstHeuristic, !disable_paste_burst);
+        }
         // SANDBOX PATCH: resolve the managed-hooks opt-in gate. The fork skips
         // managed/admin-config hooks by default; re-enable via the
         // `--enable-managed-hooks` flag (folded into `-c features.managed_hooks=true`),
@@ -2608,7 +2606,12 @@ impl Config {
             feature_requirements,
             &mut startup_warnings,
         )?;
+        // SANDBOX PATCH: install the final resolved Anthropic feature bit as the
+        // model-provider runtime gate. Unlike managed hooks, Anthropic no longer
+        // has an env fallback; `Feature::AnthropicModels` is the sole authority.
+        codex_model_provider::install_anthropic_gate(features.enabled(Feature::AnthropicModels));
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
+        let disable_paste_burst = !features.enabled(Feature::LegacyPasteBurstHeuristic);
         let windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg);
         let windows_sandbox_private_desktop = resolve_windows_sandbox_private_desktop(&cfg);
         let resolved_cwd = AbsolutePathBuf::try_from(normalize_for_native_workdir({
@@ -3573,7 +3576,7 @@ impl Config {
             active_project,
             notices,
             check_for_update_on_startup,
-            disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
+            disable_paste_burst,
             analytics_enabled: cfg.analytics.as_ref().and_then(|a| a.enabled),
             feedback_enabled: cfg
                 .feedback

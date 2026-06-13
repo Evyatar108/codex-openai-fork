@@ -467,9 +467,10 @@ pub struct ConfigToml {
     /// Defaults to `true`.
     pub check_for_update_on_startup: Option<bool>,
 
+    /// Deprecated compatibility alias for `features.legacy_paste_burst_heuristic`.
     /// When true, disables burst-paste detection for typed input entirely.
-    /// All characters are inserted as they are received, and no buffering
-    /// or placeholder replacement will occur for fast keypress bursts.
+    /// Prefer `[features] legacy_paste_burst_heuristic = true` to opt into the
+    /// legacy detector.
     pub disable_paste_burst: Option<bool>,
 
     /// When `false`, disables analytics across Codex product surfaces in this machine.

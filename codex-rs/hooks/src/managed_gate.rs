@@ -14,8 +14,8 @@
 //   3. the `CODEX_ENABLE_MANAGED_HOOKS` environment variable (back-compat),
 //   4. the built-in default (`false`).
 //
-// This mirrors the `--enable-anthropic` / `features.anthropic_models` /
-// `CODEX_ENABLE_ANTHROPIC` gate (see `codex-model-provider::anthropic_gate`).
+// This mirrors the `--enable-anthropic` / `features.anthropic_models` gate
+// (see `codex-model-provider::anthropic_gate`).
 // The CLI flag is realized at the argument-parsing boundary by injecting a
 // `-c features.managed_hooks=true` override (see `codex-cli`), which outranks
 // `config.toml`. So by the time config is resolved, the flag and the config key
