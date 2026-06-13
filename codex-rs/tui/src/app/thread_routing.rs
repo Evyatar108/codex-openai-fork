@@ -1070,8 +1070,9 @@ impl App {
         self.chat_widget
             .set_initial_user_message_submit_suppressed(/*suppressed*/ true);
         self.chat_widget.handle_thread_session(session);
-        let should_buffer_initial_replay =
-            self.terminal_resize_reflow_enabled() && !turns.is_empty();
+        let should_buffer_initial_replay = !turns.is_empty()
+            && (self.terminal_resize_reflow_enabled()
+                || self.retained_transcript_viewport_enabled());
         if should_buffer_initial_replay {
             self.app_event_tx
                 .send(AppEvent::BeginInitialHistoryReplayBuffer);
@@ -1260,7 +1261,8 @@ impl App {
         snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
     ) {
-        let should_buffer_replay = self.terminal_resize_reflow_enabled()
+        let should_buffer_replay = (self.terminal_resize_reflow_enabled()
+            || self.retained_transcript_viewport_enabled())
             && (!snapshot.turns.is_empty() || !snapshot.events.is_empty());
         if should_buffer_replay {
             self.app_event_tx

@@ -94,6 +94,8 @@ pub enum Feature {
     ShellZshFork,
     /// Reflow transcript scrollback when the terminal is resized.
     TerminalResizeReflow,
+    /// Render committed transcript history inside the TUI viewport instead of native terminal scrollback.
+    RetainedTranscriptViewport,
     /// Stream structured progress while apply_patch input is being generated.
     ApplyPatchStreamingEvents,
     /// Allow exec tools to request additional permissions while staying sandboxed.
@@ -798,6 +800,16 @@ pub const FEATURES: &[FeatureSpec] = &[
             announcement: "",
         },
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::RetainedTranscriptViewport,
+        key: "retained_transcript_viewport",
+        stage: Stage::Experimental {
+            name: "Retained transcript viewport",
+            menu_description: "Render committed transcript history inside the TUI viewport instead of native terminal scrollback.",
+            announcement: "",
+        },
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::WebSearchRequest,

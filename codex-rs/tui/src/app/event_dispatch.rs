@@ -198,9 +198,11 @@ impl App {
                     tui.frame_requester().schedule_frame();
                 }
                 self.transcript_cells.push(cell.clone());
-                if self.terminal_resize_reflow_enabled() {
+                if self.retained_transcript_viewport_enabled() {
                     // SANDBOX PATCH: Retained transcript rendering replaces main-view scrollback writes.
-                    tui.frame_requester().schedule_frame();
+                    if !self.suppress_retained_transcript_replay_frames {
+                        tui.frame_requester().schedule_frame();
+                    }
                 } else if self.initial_history_replay_buffer.as_ref().is_some() {
                     self.insert_history_cell_lines_with_initial_replay_buffer(
                         tui,

@@ -3844,6 +3844,7 @@ async fn make_test_app() -> App {
         has_emitted_history_lines: false,
         transcript_reflow: TranscriptReflowState::default(),
         initial_history_replay_buffer: None,
+        suppress_retained_transcript_replay_frames: false,
         enhanced_keys_supported: false,
         keymap: crate::keymap::RuntimeKeymap::defaults(),
         commit_anim_running: Arc::new(AtomicBool::new(false)),
@@ -3907,6 +3908,7 @@ async fn make_test_app_with_channels() -> (
             has_emitted_history_lines: false,
             transcript_reflow: TranscriptReflowState::default(),
             initial_history_replay_buffer: None,
+            suppress_retained_transcript_replay_frames: false,
             enhanced_keys_supported: false,
             keymap: crate::keymap::RuntimeKeymap::defaults(),
             commit_anim_running: Arc::new(AtomicBool::new(false)),
@@ -3970,6 +3972,13 @@ fn enable_terminal_resize_reflow(app: &mut App) {
     app.config
         .features
         .set_enabled(Feature::TerminalResizeReflow, /*enabled*/ true)
+        .expect("feature should be configurable");
+}
+
+fn enable_retained_transcript_viewport(app: &mut App) {
+    app.config
+        .features
+        .set_enabled(Feature::RetainedTranscriptViewport, /*enabled*/ true)
         .expect("feature should be configurable");
 }
 
@@ -4082,6 +4091,7 @@ async fn uncapped_resize_reflow_renders_all_cells_under_row_limit() {
 async fn retained_transcript_main_view_renders_visible_tail_snapshot() {
     let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
     enable_terminal_resize_reflow(&mut app);
+    enable_retained_transcript_viewport(&mut app);
     app.transcript_cells = (0..8)
         .map(|index| plain_line_cell(format!("cell {index}")))
         .collect();
@@ -4106,28 +4116,87 @@ async fn retained_transcript_main_view_renders_visible_tail_snapshot() {
 async fn initial_replay_buffer_is_disabled_under_retained_transcript() {
     let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
     enable_terminal_resize_reflow(&mut app);
+    enable_retained_transcript_viewport(&mut app);
     app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(3);
 
     app.begin_initial_history_replay_buffer();
 
     assert!(app.initial_history_replay_buffer.is_none());
+    assert!(app.suppress_retained_transcript_replay_frames);
 }
 
 #[tokio::test]
 async fn thread_switch_replay_buffer_is_disabled_under_retained_transcript() {
     let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
     enable_terminal_resize_reflow(&mut app);
+    enable_retained_transcript_viewport(&mut app);
     app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(3);
 
     app.begin_thread_switch_history_replay_buffer();
 
     assert!(app.initial_history_replay_buffer.is_none());
+    assert!(app.suppress_retained_transcript_replay_frames);
+}
+
+#[tokio::test]
+async fn initial_replay_buffer_is_enabled_without_retained_transcript() {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    enable_terminal_resize_reflow(&mut app);
+    app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(3);
+
+    app.begin_initial_history_replay_buffer();
+
+    assert!(app.initial_history_replay_buffer.is_some());
+    assert!(!app.suppress_retained_transcript_replay_frames);
+}
+
+#[tokio::test]
+async fn enqueue_primary_thread_session_batches_replay_when_retained_viewport_is_enabled()
+-> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.config
+        .features
+        .set_enabled(Feature::TerminalResizeReflow, /*enabled*/ false)
+        .expect("feature should be configurable");
+    enable_retained_transcript_viewport(&mut app);
+
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/project")),
+        vec![test_turn(
+            "turn-1",
+            TurnStatus::Completed,
+            vec![ThreadItem::UserMessage {
+                id: "user-1".to_string(),
+                content: vec![AppServerUserInput::Text {
+                    text: "replayed prompt".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            }],
+        )],
+    )
+    .await?;
+
+    let mut saw_begin = false;
+    let mut saw_end = false;
+    while let Ok(event) = app_event_rx.try_recv() {
+        match event {
+            AppEvent::BeginInitialHistoryReplayBuffer => saw_begin = true,
+            AppEvent::EndInitialHistoryReplayBuffer => saw_end = true,
+            _ => {}
+        }
+    }
+
+    assert!(saw_begin);
+    assert!(saw_end);
+    Ok(())
 }
 
 #[tokio::test]
 async fn height_shrink_repaints_without_pending_resize_reflow() {
     let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
     enable_terminal_resize_reflow(&mut app);
+    enable_retained_transcript_viewport(&mut app);
     let frame_requester = crate::tui::FrameRequester::test_dummy();
 
     assert!(!app.handle_draw_size_change(
@@ -4392,10 +4461,10 @@ fn buffer_to_string(buffer: &Buffer) -> String {
             row.trim_end().to_string()
         })
         .collect();
-    while rows.first().is_some_and(|row| row.is_empty()) {
+    while rows.first().is_some_and(std::string::String::is_empty) {
         rows.remove(0);
     }
-    while rows.last().is_some_and(|row| row.is_empty()) {
+    while rows.last().is_some_and(std::string::String::is_empty) {
         rows.pop();
     }
     rows.join("\n")

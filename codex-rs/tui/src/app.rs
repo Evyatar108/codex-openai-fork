@@ -502,6 +502,8 @@ pub(crate) struct App {
     has_emitted_history_lines: bool,
     transcript_reflow: TranscriptReflowState,
     initial_history_replay_buffer: Option<InitialHistoryReplayBuffer>,
+    // SANDBOX PATCH: Suppress per-cell frame requests while retained transcript replay batches.
+    suppress_retained_transcript_replay_frames: bool,
 
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) keymap: RuntimeKeymap,
@@ -988,6 +990,7 @@ See the Codex keymap documentation for supported actions and examples."
             has_emitted_history_lines: false,
             transcript_reflow: TranscriptReflowState::default(),
             initial_history_replay_buffer: None,
+            suppress_retained_transcript_replay_frames: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
             terminal_title_invalid_items_warned: terminal_title_invalid_items_warned.clone(),
@@ -1248,8 +1251,7 @@ See the Codex keymap documentation for supported actions and examples."
                     }
                     // Allow widgets to process any pending timers before rendering.
                     self.chat_widget.pre_draw_tick();
-                    let rendered_area =
-                        self.render_chat_widget_frame(tui, terminal_resize_reflow_enabled)?;
+                    let rendered_area = self.render_chat_widget_frame(tui)?;
                     if self.chat_widget.ambient_pet_image_enabled() {
                         let terminal_size = tui.terminal.size()?;
                         let ambient_pet_area = Rect::new(
@@ -1293,18 +1295,15 @@ See the Codex keymap documentation for supported actions and examples."
             self.handle_draw_pre_render(tui)?;
         }
         self.chat_widget.pre_draw_tick();
-        self.render_chat_widget_frame(tui, terminal_resize_reflow_enabled)?;
+        self.render_chat_widget_frame(tui)?;
         Ok(())
     }
 
-    fn render_chat_widget_frame(
-        &mut self,
-        tui: &mut tui::Tui,
-        terminal_resize_reflow_enabled: bool,
-    ) -> Result<Rect> {
+    fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui) -> Result<Rect> {
         let terminal_size = tui.terminal.size()?;
-        let desired_height = if terminal_resize_reflow_enabled {
-            // SANDBOX PATCH: Feature-enabled resize rendering owns committed transcript history inline.
+        let retained_transcript_viewport_enabled = self.retained_transcript_viewport_enabled();
+        let desired_height = if retained_transcript_viewport_enabled {
+            // SANDBOX PATCH: Retained transcript viewport owns committed transcript history inline.
             self.chat_widget.desired_height_with_committed_cells(
                 &self.transcript_cells,
                 terminal_size.width,
@@ -1314,7 +1313,7 @@ See the Codex keymap documentation for supported actions and examples."
             self.chat_widget.desired_height(terminal_size.width)
         };
         let mut rendered_area = Rect::default();
-        if terminal_resize_reflow_enabled {
+        if retained_transcript_viewport_enabled {
             tui.draw_with_resize_reflow(desired_height, |frame| {
                 let area = frame.area();
                 rendered_area = area;
