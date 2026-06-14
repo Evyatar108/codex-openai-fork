@@ -21,6 +21,7 @@ use crossterm::cursor::SetCursorStyle;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableFocusChange;
 use crossterm::event::EnableBracketedPaste;
+#[cfg(not(windows))]
 use crossterm::event::EnableFocusChange;
 use crossterm::event::KeyEvent;
 use crossterm::terminal::EnterAlternateScreen;
@@ -53,6 +54,7 @@ use crate::tui::job_control::SuspendContext;
 use codex_config::types::NotificationCondition;
 use codex_config::types::NotificationMethod;
 
+pub(crate) mod console_mode_trace;
 mod event_stream;
 mod frame_rate_limiter;
 mod frame_requester;
@@ -252,6 +254,21 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn codex_tui_input_mode_clears_cooked_and_vt_bits() {
+        let initial_mode = ENABLE_VIRTUAL_TERMINAL_INPUT_BIT
+            | super::WINDOWS_RAW_MODE_DISALLOWED_INPUT_BITS
+            | ENABLE_WINDOW_INPUT
+            | ENABLE_MOUSE_INPUT
+            | ENABLE_EXTENDED_FLAGS;
+
+        assert_eq!(
+            super::codex_tui_input_mode(initial_mode),
+            ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS,
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn virtual_terminal_input_stays_cleared_until_final_exit_restore() {
         let initial_mode = ENABLE_VIRTUAL_TERMINAL_INPUT_BIT
             | ENABLE_WINDOW_INPUT
@@ -290,9 +307,8 @@ mod tests {
 
 pub fn set_modes() -> Result<()> {
     ensure_virtual_terminal_processing()?;
-    // SANDBOX PATCH: keep inherited Windows VT input cleared for the full Codex TUI lifetime so
-    // crossterm keeps seeing classic INPUT_RECORD key/focus events instead of leaking raw VT
-    // tails like [I/[O after mid-session restore/reinit cycles.
+    // SANDBOX PATCH: keep the full Windows TUI input mode asserted for the Codex lifetime:
+    // cooked/raw-disallowed bits and inherited VT input stay cleared during active event reads.
     enter_codex_tui_input_mode()?;
 
     execute!(stdout(), EnableBracketedPaste)?;
@@ -306,6 +322,9 @@ pub fn set_modes() -> Result<()> {
     // gracefully if unsupported.
     keyboard_modes::enable_keyboard_enhancement();
 
+    #[cfg(windows)]
+    let _ = execute!(stdout(), DisableFocusChange);
+    #[cfg(not(windows))]
     let _ = execute!(stdout(), EnableFocusChange);
     Ok(())
 }
@@ -744,6 +763,10 @@ impl Tui {
     // Resume crossterm EventStream to resume stdin polling.
     // Inverse of `pause_events`.
     pub fn resume_events(&mut self) {
+        #[cfg(windows)]
+        if let Err(err) = reassert_input_mode() {
+            tracing::warn!(error = %err, "failed to reassert Windows console input mode on resume");
+        }
         self.event_broker.resume_events();
     }
 
@@ -757,6 +780,7 @@ impl Tui {
         F: FnOnce() -> Fut,
         Fut: Future<Output = R>,
     {
+        console_mode_trace::record_terminal_marker("with_restored.before_restore");
         // Pause crossterm events to avoid stdin conflicts with external program `f`.
         self.pause_events();
 
@@ -781,6 +805,7 @@ impl Tui {
         if let Err(err) = set_modes() {
             tracing::warn!("failed to re-enable terminal modes after external program: {err}");
         }
+        console_mode_trace::record_terminal_marker("with_restored.after_set_modes");
         // After the external program `f` finishes, reset terminal state and flush any buffered keypresses.
         flush_terminal_input_buffer();
 
@@ -844,6 +869,7 @@ impl Tui {
         if !self.alt_screen_enabled {
             return Ok(());
         }
+        console_mode_trace::record_terminal_marker("enter_alt_screen");
         let _ = execute!(self.terminal.backend_mut(), EnterAlternateScreen);
         // Enable "alternate scroll" so terminals may translate wheel to arrows
         let _ = execute!(self.terminal.backend_mut(), EnableAlternateScroll);
@@ -866,6 +892,7 @@ impl Tui {
         if !self.alt_screen_enabled {
             return Ok(());
         }
+        console_mode_trace::record_terminal_marker("leave_alt_screen");
         // Disable alternate scroll when leaving alt-screen
         let _ = execute!(self.terminal.backend_mut(), DisableAlternateScroll);
         let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
@@ -1238,6 +1265,16 @@ const ENABLE_VIRTUAL_TERMINAL_INPUT_BIT: u32 =
     windows_sys::Win32::System::Console::ENABLE_VIRTUAL_TERMINAL_INPUT;
 
 #[cfg(windows)]
+const WINDOWS_RAW_MODE_DISALLOWED_INPUT_BITS: u32 =
+    windows_sys::Win32::System::Console::ENABLE_LINE_INPUT
+        | windows_sys::Win32::System::Console::ENABLE_ECHO_INPUT
+        | windows_sys::Win32::System::Console::ENABLE_PROCESSED_INPUT;
+
+#[cfg(windows)]
+const CODEX_TUI_UNEXPECTED_INPUT_BITS: u32 =
+    WINDOWS_RAW_MODE_DISALLOWED_INPUT_BITS | ENABLE_VIRTUAL_TERMINAL_INPUT_BIT;
+
+#[cfg(windows)]
 const UNINITIALIZED_VIRTUAL_TERMINAL_INPUT_STATE: u32 = 2;
 
 #[cfg(windows)]
@@ -1330,6 +1367,16 @@ fn clear_virtual_terminal_input_mode(input_mode: u32) -> u32 {
 }
 
 #[cfg(windows)]
+fn codex_tui_input_mode(input_mode: u32) -> u32 {
+    input_mode & !CODEX_TUI_UNEXPECTED_INPUT_BITS
+}
+
+#[cfg(windows)]
+fn unexpected_codex_tui_input_bits(input_mode: u32) -> u32 {
+    input_mode & CODEX_TUI_UNEXPECTED_INPUT_BITS
+}
+
+#[cfg(windows)]
 fn saved_virtual_terminal_input_state_for_codex_lifetime(
     input_mode: u32,
     saved_state: Option<SavedVirtualTerminalInputState>,
@@ -1373,12 +1420,28 @@ fn enter_codex_tui_input_mode() -> Result<()> {
         saved_state.store();
     }
 
-    let normalized_mode = clear_virtual_terminal_input_mode(input_mode);
+    let normalized_mode = codex_tui_input_mode(input_mode);
     if normalized_mode != input_mode {
         write_console_input_mode(normalized_mode)?;
     }
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn reassert_input_mode_from_snapshot(input_mode: u32) -> Result<()> {
+    let expected_mode = codex_tui_input_mode(input_mode);
+    if expected_mode != input_mode {
+        write_console_input_mode(expected_mode)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reassert_input_mode() -> Result<()> {
+    let input_mode = read_console_input_mode()?;
+    reassert_input_mode_from_snapshot(input_mode)
 }
 
 #[cfg(windows)]

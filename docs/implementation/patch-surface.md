@@ -3,18 +3,23 @@
 This registry is being rebuilt incrementally in the patched checkout. Some in-tree `patch-surface §N`
 comments may reference earlier entries that predate this reconstructed file.
 
-## §15 Windows TUI VT-input lifetime
+## §15 Windows TUI input-mode lifetime
 
-- **Surface:** `codex-rs/tui/src/tui.rs`
+- **Surface:** `codex-rs/tui/src/tui.rs`, `codex-rs/tui/src/tui/event_stream.rs`
 - **Status:** active
-- **Reason:** Windows consoles inherited with `ENABLE_VIRTUAL_TERMINAL_INPUT` let crossterm's
-  console-record path lose the `ESC` leader for VT focus reports after a mid-session restore,
-  which leaks tails like `[I` and `[O` into Codex input.
-- **Patch:** clear the inherited VT-input bit when Codex TUI enters, keep it cleared across
-  mid-session `restore_common()` / `set_modes()` cycles, and restore the original inherited bit
-  only from final TUI teardown (`restore_after_exit()`).
+- **Reason:** Windows consoles inherited or corrupted with `ENABLE_VIRTUAL_TERMINAL_INPUT` can
+  leak VT focus tails like `[I` and `[O`, and mid-session corruption of crossterm raw-mode bits can
+  return cooked input semantics while Codex keeps polling the same event stream.
+- **Patch:** assert the full Codex TUI input mode when the TUI enters and in the Windows
+  Codex-owned crossterm reader immediately before each event read: clear `ENABLE_LINE_INPUT`,
+  `ENABLE_ECHO_INPUT`,
+  `ENABLE_PROCESSED_INPUT`, and `ENABLE_VIRTUAL_TERMINAL_INPUT`, preserving unrelated console
+  flags. Mid-session restore paths keep VT input cleared, final TUI teardown restores the inherited
+  VT-input bit, and Windows setup sends focus-reporting disable instead of enabling xterm focus
+  reporting.
 - **Safety:** Windows-only; it preserves the parent console mode on exit while preventing focus
-  report leakage during the active Codex session.
+  report leakage and self-healing cooked-mode drift during the active Codex session. POSIX setup,
+  restore, and event polling are unchanged.
 
 ## §16 Retained transcript viewport gate
 
@@ -85,3 +90,25 @@ comments may reference earlier entries that predate this reconstructed file.
 - **Safety:** default-tier curated caps remain in place for older responses, single-tier models still
   collapse to one window, and non-Copilot budget consumers continue to read the same `ModelInfo`
   fields.
+
+## §19 Windows console-mode corruption tracer
+
+- **Surface:** `codex-rs/tui/src/tui/console_mode_trace.rs`,
+  `codex-rs/tui/src/tui/event_stream.rs`, `codex-rs/tui/src/app.rs`,
+  `codex-rs/tui/src/app/thread_routing.rs`,
+  `docs/implementation/console-mode-trace-runbook.md`
+- **Status:** active
+- **Reason:** the live Windows input-mode corruption appears to be caused by an out-of-band runtime
+  actor, so source inspection alone cannot identify the writer. The self-heal in §15 repairs the
+  mode before input is consumed; an opt-in tracer is needed to capture the corrupted mode and nearby
+  structural action marker before that repair happens.
+- **Patch:** add a Windows-only, default-off `CODEX_CONSOLE_MODE_TRACE=1` tracer with a cached env
+  gate. On the Windows production crossterm reader it snapshots `GetConsoleMode`, records a
+  `console-mode-delta` JSONL row before reasserting the expected input mode, and appends to
+  `console-mode-trace.jsonl` next to the active rollout directory (or a pid-named sessions fallback
+  if no rollout path is known yet). Records contain named mode flags, unexpected bits, structural
+  last-input/action/terminal markers, timestamps, and hashed ids only.
+- **Safety:** when unset the tracer does not allocate, lock, open files, or perform extra console
+  syscalls beyond the §15 guard snapshot. The marker path records no command text, prompts, paste
+  content, tool output, absolute paths, or raw ids; privacy/off-path tests cover disabled no-write and
+  command-notification redaction.

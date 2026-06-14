@@ -1222,6 +1222,11 @@ See the Codex keymap documentation for supported actions and examples."
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
+        if tui::console_mode_trace::enabled() {
+            let rollout_path = self.chat_widget.rollout_path();
+            tui::console_mode_trace::set_rollout_path(rollout_path.as_deref());
+            tui::console_mode_trace::record_tui_event(&event);
+        }
         let terminal_resize_reflow_enabled = self.terminal_resize_reflow_enabled();
         if terminal_resize_reflow_enabled && matches!(event, TuiEvent::Draw | TuiEvent::Resize) {
             self.handle_draw_pre_render(tui)?;

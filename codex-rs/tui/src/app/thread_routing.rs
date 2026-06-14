@@ -1389,6 +1389,7 @@ impl App {
         );
         match event {
             ThreadBufferedEvent::Notification(notification) => {
+                crate::tui::console_mode_trace::record_server_notification(&notification);
                 self.cache_collab_receiver_threads_for_notification(&notification);
                 self.chat_widget
                     .handle_server_notification(notification, /*replay_kind*/ None);

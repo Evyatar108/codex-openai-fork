@@ -24,9 +24,15 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+#[cfg(windows)]
+use std::thread;
+#[cfg(windows)]
+use std::time::Duration;
 
 use crossterm::event::Event;
 use tokio::sync::broadcast;
+#[cfg(windows)]
+use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::BroadcastStream;
@@ -115,17 +121,153 @@ impl<S: EventSource + Default> EventBroker<S> {
 }
 
 /// Real crossterm-backed event source.
+#[cfg(not(windows))]
 pub struct CrosstermEventSource(pub crossterm::event::EventStream);
 
+#[cfg(windows)]
+pub struct CrosstermEventSource {
+    rx: mpsc::UnboundedReceiver<EventResult>,
+    shutdown: Arc<AtomicBool>,
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(not(windows))]
 impl Default for CrosstermEventSource {
     fn default() -> Self {
         Self(crossterm::event::EventStream::new())
     }
 }
 
+#[cfg(windows)]
+impl Default for CrosstermEventSource {
+    fn default() -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let thread_shutdown = shutdown.clone();
+        let join_handle = thread::spawn(move || read_windows_events(thread_shutdown, tx));
+        Self {
+            rx,
+            shutdown,
+            join_handle: Some(join_handle),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CrosstermEventSource {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
+
+#[cfg(not(windows))]
 impl EventSource for CrosstermEventSource {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<EventResult>> {
         Pin::new(&mut self.get_mut().0).poll_next(cx)
+    }
+}
+
+#[cfg(windows)]
+impl EventSource for CrosstermEventSource {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<EventResult>> {
+        self.get_mut().rx.poll_recv(cx)
+    }
+}
+
+#[cfg(windows)]
+static INPUT_MODE_READ_FAILED_WARNED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+static INPUT_MODE_REASSERT_FAILED_WARNED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+fn read_windows_events(shutdown: Arc<AtomicBool>, tx: mpsc::UnboundedSender<EventResult>) {
+    while !shutdown.load(Ordering::Relaxed) {
+        match wait_for_windows_console_input(&shutdown) {
+            Ok(true) => {
+                if shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                prepare_windows_input_mode_before_read();
+                match crossterm::event::poll(Duration::from_millis(0)) {
+                    Ok(true) => {
+                        if shutdown.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if tx.send(crossterm::event::read()).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        let _ = tx.send(Err(err));
+                        break;
+                    }
+                }
+            }
+            Ok(false) => break,
+            Err(err) => {
+                let _ = tx.send(Err(err));
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_windows_console_input(shutdown: &AtomicBool) -> std::io::Result<bool> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::GetStdHandle;
+    use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    const WAIT_OBJECT_0: u32 = 0;
+    const WAIT_TIMEOUT: u32 = 258;
+    const WAIT_FAILED: u32 = u32::MAX;
+
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle == INVALID_HANDLE_VALUE || handle == 0 {
+        return Err(std::io::Error::other("failed to get stdin handle"));
+    }
+
+    while !shutdown.load(Ordering::Relaxed) {
+        match unsafe {
+            WaitForSingleObject(handle, /*dwMilliseconds*/ 50)
+        } {
+            WAIT_OBJECT_0 => return Ok(true),
+            WAIT_TIMEOUT => {}
+            WAIT_FAILED => return Err(std::io::Error::last_os_error()),
+            result => {
+                return Err(std::io::Error::other(format!(
+                    "unexpected WaitForSingleObject result {result}"
+                )));
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+#[cfg(windows)]
+fn prepare_windows_input_mode_before_read() {
+    let input_mode = match super::read_console_input_mode() {
+        Ok(input_mode) => input_mode,
+        Err(err) => {
+            if !INPUT_MODE_READ_FAILED_WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(error = %err, "failed to read Windows console input mode before event read");
+            }
+            return;
+        }
+    };
+    let expected_mode = super::codex_tui_input_mode(input_mode);
+    super::console_mode_trace::record_console_mode_delta_before_reassert(input_mode, expected_mode);
+    if let Err(err) = super::reassert_input_mode_from_snapshot(input_mode)
+        && !INPUT_MODE_REASSERT_FAILED_WARNED.swap(true, Ordering::Relaxed)
+    {
+        tracing::warn!(error = %err, "failed to reassert Windows console input mode before event read");
     }
 }
 
@@ -235,6 +377,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
 
     /// Map a crossterm event to a [`TuiEvent`], skipping events we don't use (mouse events, etc.).
     fn map_crossterm_event(&mut self, event: Event) -> Option<TuiEvent> {
+        super::console_mode_trace::record_crossterm_event(&event);
         match event {
             Event::Key(key_event) => {
                 #[cfg(unix)]
