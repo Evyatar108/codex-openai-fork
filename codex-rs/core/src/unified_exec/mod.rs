@@ -18,6 +18,7 @@
 //!
 //! This keeps policy logic and user interaction centralized while the PTY/process
 //! concerns remain isolated here. The implementation is split between:
+//! - `background_output_artifact.rs`: opt-in background wake spill artifacts.
 //! - `process.rs`: PTY process lifecycle + output buffering.
 //! - `process_state.rs`: shared exit/failure state for local and remote processes.
 //! - `process_manager.rs`: orchestration (approvals, sandboxing, reuse) and request handling.
@@ -43,13 +44,19 @@ use crate::session::turn_context::TurnContext;
 use crate::shell::ShellType;
 use crate::tools::network_approval::DeferredNetworkApproval;
 
+// SANDBOX PATCH: background completion wake spill artifacts are isolated in a
+// small helper module so the unified-exec process manager only wires the sink.
 mod async_watcher;
+mod background_output_artifact;
 mod errors;
 mod head_tail_buffer;
 mod process;
 mod process_manager;
 mod process_state;
 
+// SANDBOX PATCH: expose the artifact sink type to the unified-exec runtime
+// request while keeping the implementation isolated in its helper module.
+pub(crate) use background_output_artifact::BackgroundOutputArtifact;
 pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
     process_manager::set_deterministic_process_ids_for_tests(enabled);
 }
@@ -123,6 +130,9 @@ pub(crate) struct BackgroundCompletionEvent {
     /// Bounded, possibly-truncated aggregated process output, carried inline in the wake
     /// notification so the woken agent can act without a follow-up retrieval call.
     pub output: String,
+    // SANDBOX PATCH: optional session-scoped recovery artifact for truncated
+    // background completion wake output.
+    pub output_artifact_path: Option<String>,
 }
 
 #[derive(Default)]

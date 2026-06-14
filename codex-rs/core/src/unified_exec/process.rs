@@ -25,6 +25,7 @@ use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_pty::ExecCommandSession;
 use codex_utils_pty::SpawnedPty;
 
+use super::BackgroundOutputArtifact;
 use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
 use super::UnifiedExecError;
 use super::head_tail_buffer::HeadTailBuffer;
@@ -85,6 +86,9 @@ pub(crate) struct UnifiedExecProcess {
     state_rx: watch::Receiver<ProcessState>,
     output_task: Option<JoinHandle<()>>,
     sandbox_type: SandboxType,
+    // SANDBOX PATCH: producer-path spill artifact associated with this spawned
+    // process instance only, so sandbox retries cannot mix output.
+    output_artifact: Option<Arc<BackgroundOutputArtifact>>,
     _spawn_lifecycle: Option<SpawnLifecycleHandle>,
 }
 
@@ -103,6 +107,7 @@ impl UnifiedExecProcess {
         process_handle: ProcessHandle,
         sandbox_type: SandboxType,
         spawn_lifecycle: Option<SpawnLifecycleHandle>,
+        output_artifact: Option<Arc<BackgroundOutputArtifact>>,
     ) -> Self {
         let output_buffer = Arc::new(Mutex::new(HeadTailBuffer::default()));
         let output_notify = Arc::new(Notify::new());
@@ -128,6 +133,7 @@ impl UnifiedExecProcess {
             state_rx,
             output_task: None,
             sandbox_type,
+            output_artifact,
             _spawn_lifecycle: spawn_lifecycle,
         }
     }
@@ -169,6 +175,10 @@ impl UnifiedExecProcess {
 
     pub(super) fn output_receiver(&self) -> tokio::sync::broadcast::Receiver<Vec<u8>> {
         self.output_tx.subscribe()
+    }
+
+    pub(super) fn output_artifact(&self) -> Option<Arc<BackgroundOutputArtifact>> {
+        self.output_artifact.clone()
     }
 
     pub(super) fn cancellation_token(&self) -> CancellationToken {
@@ -291,6 +301,9 @@ impl UnifiedExecProcess {
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
         spawn_lifecycle: SpawnLifecycleHandle,
+        // SANDBOX PATCH: optional background wake spill sink lives at the output
+        // producer so it does not depend on lossy broadcast subscribers.
+        output_artifact: Option<Arc<BackgroundOutputArtifact>>,
     ) -> Result<Self, UnifiedExecError> {
         let SpawnedPty {
             session: process_handle,
@@ -303,6 +316,7 @@ impl UnifiedExecProcess {
             ProcessHandle::Local(Box::new(process_handle)),
             sandbox_type,
             Some(spawn_lifecycle),
+            output_artifact.clone(),
         );
         managed.output_task = Some(Self::spawn_local_output_task(
             output_rx,
@@ -311,6 +325,7 @@ impl UnifiedExecProcess {
             Arc::clone(&managed.output_closed),
             Arc::clone(&managed.output_closed_notify),
             managed.output_tx.clone(),
+            output_artifact,
         ));
 
         match exit_rx.try_recv() {
@@ -350,15 +365,24 @@ impl UnifiedExecProcess {
     pub(super) async fn from_exec_server_started(
         started: StartedExecProcess,
         sandbox_type: SandboxType,
+        // SANDBOX PATCH: optional background wake spill sink lives at the output
+        // producer so it does not depend on lossy broadcast subscribers.
+        output_artifact: Option<Arc<BackgroundOutputArtifact>>,
     ) -> Result<Self, UnifiedExecError> {
         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
-        let mut managed = Self::new(process_handle, sandbox_type, /*spawn_lifecycle*/ None);
+        let mut managed = Self::new(
+            process_handle,
+            sandbox_type,
+            /*spawn_lifecycle*/ None,
+            output_artifact.clone(),
+        );
         let output_handles = managed.output_handles();
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,
             output_handles,
             managed.output_tx.clone(),
             managed.state_tx.clone(),
+            output_artifact,
         ));
 
         let mut state_rx = managed.state_rx.clone();
@@ -387,6 +411,7 @@ impl UnifiedExecProcess {
         output_handles: OutputHandles,
         output_tx: broadcast::Sender<Vec<u8>>,
         state_tx: watch::Sender<ProcessState>,
+        output_artifact: Option<Arc<BackgroundOutputArtifact>>,
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -416,6 +441,11 @@ impl UnifiedExecProcess {
 
                         for chunk in chunks {
                             let bytes = chunk.chunk.into_inner();
+                            // SANDBOX PATCH: write at the producer path before
+                            // broadcast delivery can lag/drop a watcher subscriber.
+                            if let Some(output_artifact) = output_artifact.as_ref() {
+                                output_artifact.write_chunk(&bytes).await;
+                            }
                             let mut guard = output_buffer.lock().await;
                             guard.push_chunk(bytes.clone());
                             drop(guard);
@@ -468,6 +498,11 @@ impl UnifiedExecProcess {
                     break;
                 }
             }
+            // SANDBOX PATCH: artifact paths are surfaced only after the producer
+            // has observed all output, lag, and write-failure states.
+            if let Some(output_artifact) = output_artifact.as_ref() {
+                output_artifact.mark_producer_finished();
+            }
         })
     }
 
@@ -478,24 +513,44 @@ impl UnifiedExecProcess {
         output_closed: Arc<AtomicBool>,
         output_closed_notify: Arc<Notify>,
         output_tx: broadcast::Sender<Vec<u8>>,
+        output_artifact: Option<Arc<BackgroundOutputArtifact>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 match receiver.recv().await {
                     Ok(chunk) => {
+                        // SANDBOX PATCH: write at the producer path before
+                        // broadcast delivery can lag/drop a watcher subscriber.
+                        if let Some(output_artifact) = output_artifact.as_ref() {
+                            output_artifact.write_chunk(&chunk).await;
+                        }
                         let mut guard = buffer.lock().await;
                         guard.push_chunk(chunk.clone());
                         drop(guard);
                         let _ = output_tx.send(chunk);
                         output_notify.notify_waiters();
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // SANDBOX PATCH: if the producer itself misses PTY chunks,
+                        // the spill is incomplete and must not be advertised.
+                        if let Some(output_artifact) = output_artifact.as_ref() {
+                            output_artifact
+                                .mark_incomplete("local PTY output receiver lagged")
+                                .await;
+                        }
+                        continue;
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         output_closed.store(true, Ordering::Release);
                         output_closed_notify.notify_waiters();
                         break;
                     }
                 };
+            }
+            // SANDBOX PATCH: artifact paths are surfaced only after the producer
+            // has observed all output, lag, and write-failure states.
+            if let Some(output_artifact) = output_artifact.as_ref() {
+                output_artifact.mark_producer_finished();
             }
         })
     }

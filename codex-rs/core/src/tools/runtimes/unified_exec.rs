@@ -33,6 +33,7 @@ use crate::tools::sandboxing::ToolError;
 use crate::tools::sandboxing::ToolRuntime;
 use crate::tools::sandboxing::managed_network_for_sandbox_permissions;
 use crate::tools::sandboxing::with_cached_approval;
+use crate::unified_exec::BackgroundOutputArtifact;
 use crate::unified_exec::NoopSpawnLifecycle;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcess;
@@ -284,6 +285,15 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
         } else {
             command
         };
+        // SANDBOX PATCH: create one spill artifact per concrete process spawn
+        // attempt. If sandbox orchestration retries, the final process carries
+        // only its own artifact.
+        let output_artifact = BackgroundOutputArtifact::new_if_enabled(
+            ctx.session.as_ref(),
+            ctx.turn.as_ref(),
+            &ctx.call_id,
+            req.process_id,
+        );
 
         if let UnifiedExecShellMode::ZshFork(zsh_fork_config) = &self.shell_mode {
             let command =
@@ -318,6 +328,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
                             req.tty,
                             prepared.spawn_lifecycle,
                             req.environment.as_ref(),
+                            output_artifact.clone(),
                         )
                         .await
                         .map_err(|err| match err {
@@ -352,6 +363,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
                 req.tty,
                 Box::new(NoopSpawnLifecycle),
                 req.environment.as_ref(),
+                output_artifact,
             )
             .await
             .map_err(|err| match err {

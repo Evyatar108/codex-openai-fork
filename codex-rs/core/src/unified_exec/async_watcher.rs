@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use tokio::time::Sleep;
 
 use super::BackgroundCompletionEvent;
+use super::BackgroundOutputArtifact;
 use super::UnifiedExecContext;
 use super::process::UnifiedExecProcess;
 use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
@@ -123,6 +124,8 @@ pub(crate) fn spawn_exit_watcher(
     cwd: AbsolutePathBuf,
     process_id: i32,
     transcript: Arc<Mutex<HeadTailBuffer>>,
+    // SANDBOX PATCH: optional streaming-time artifact surfaced only for truncated wakes.
+    output_artifact: Option<Arc<BackgroundOutputArtifact>>,
     notified: Arc<AtomicBool>,
     started_at: Instant,
 ) {
@@ -168,18 +171,41 @@ pub(crate) fn spawn_exit_watcher(
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
             {
-                let output = {
+                let (output, output_was_truncated) = {
                     let guard = transcript.lock().await;
-                    build_background_completion_output(
-                        &guard.to_bytes(),
-                        guard.omitted_bytes(),
+                    let retained = guard.to_bytes();
+                    let omitted = guard.omitted_bytes();
+                    let output_was_truncated = background_completion_output_was_truncated(
+                        &retained,
+                        omitted,
                         BACKGROUND_COMPLETION_OUTPUT_MAX_BYTES,
-                    )
+                    );
+                    let output = build_background_completion_output(
+                        &retained,
+                        omitted,
+                        BACKGROUND_COMPLETION_OUTPUT_MAX_BYTES,
+                    );
+                    (output, output_was_truncated)
+                };
+                // SANDBOX PATCH: expose a recovery artifact only when the inline wake
+                // preview actually omitted output and the streaming spill succeeded.
+                let output_artifact_path = if output_was_truncated {
+                    if let Some(artifact) = output_artifact.as_ref() {
+                        artifact.producer_finished().await;
+                        artifact
+                            .artifact_path()
+                            .map(|path| path.to_string_lossy().into_owned())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
                 };
                 let message = background_completion_message(BackgroundCompletionEvent {
                     process_id,
                     exit_code,
                     output,
+                    output_artifact_path,
                 });
                 session_ref
                     .input_queue
@@ -198,8 +224,20 @@ pub(crate) fn background_completion_message(event: BackgroundCompletionEvent) ->
         "Background shell command completed (exit code {exit_code})"
     ));
     let output = escape_xml_text(&event.output);
+    // SANDBOX PATCH: keep the legacy inline <output> preview and append the
+    // optional recovery reference immediately after it.
+    let output_artifact_path = event
+        .output_artifact_path
+        .as_deref()
+        .map(|path| {
+            format!(
+                "<output_artifact_path>{}</output_artifact_path>",
+                escape_xml_text(path)
+            )
+        })
+        .unwrap_or_default();
     let text = format!(
-        "<task_notification><task_id>{task_id}</task_id><status>completed</status><exit_code>{exit_code}</exit_code><summary>{summary}</summary><output>{output}</output></task_notification>"
+        "<task_notification><task_id>{task_id}</task_id><status>completed</status><exit_code>{exit_code}</exit_code><summary>{summary}</summary><output>{output}</output>{output_artifact_path}</task_notification>"
     );
     ResponseInputItem::Message {
         role: "user".to_string(),
@@ -259,6 +297,16 @@ fn build_background_completion_output(
         head = &text[..head_end],
         tail = &text[tail_start..],
     )
+}
+
+// SANDBOX PATCH: mirrors build_background_completion_output's truncation
+// branches without changing the existing inline preview function.
+fn background_completion_output_was_truncated(
+    retained: &[u8],
+    buffer_omitted: usize,
+    max_bytes: usize,
+) -> bool {
+    buffer_omitted > 0 || String::from_utf8_lossy(retained).len() > max_bytes
 }
 
 async fn process_chunk(

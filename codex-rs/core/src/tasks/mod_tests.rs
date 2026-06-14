@@ -32,6 +32,22 @@ fn notification(task_id: i32, exit_code: i32) -> ResponseInputItem {
     }
 }
 
+fn notification_with_artifact(
+    task_id: i32,
+    exit_code: i32,
+    output_artifact_path: &str,
+) -> ResponseInputItem {
+    ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: format!(
+                "<task_notification><task_id>{task_id}</task_id><status>completed</status><exit_code>{exit_code}</exit_code><summary>Background shell command completed (exit code {exit_code})</summary><output>preview</output><output_artifact_path>{output_artifact_path}</output_artifact_path></task_notification>"
+            ),
+        }],
+        phase: None,
+    }
+}
+
 fn message(text: &str) -> ResponseInputItem {
     ResponseInputItem::Message {
         role: "user".to_string(),
@@ -153,6 +169,28 @@ fn coalesce_background_notifications_merges_consecutive_run() {
     assert!(coalesced.contains("<task><task_id>202</task_id><exit_code>7</exit_code></task>"));
     assert!(coalesced.contains("<task><task_id>303</task_id><exit_code>-1</exit_code></task>"));
     assert_eq!(text(&output[1]), "ordinary queued input");
+}
+
+// SANDBOX PATCH: coalesced background notifications retain per-task recovery
+// artifact references without double-escaping.
+#[test]
+fn coalesce_background_notifications_preserves_recovery_artifact_paths() {
+    let output = super::coalesce_background_notifications(vec![
+        notification_with_artifact(101, 0, "C:\\tmp\\one&amp;two.log"),
+        notification(202, 7),
+        notification_with_artifact(303, -1, "C:\\tmp\\three.log"),
+    ]);
+
+    assert_eq!(output.len(), 1);
+    let coalesced = text(&output[0]);
+    assert!(coalesced.contains("<summary>3 background shell commands completed</summary>"));
+    assert!(coalesced.contains(
+        "<task><task_id>101</task_id><exit_code>0</exit_code><output_artifact_path>C:\\tmp\\one&amp;two.log</output_artifact_path></task>"
+    ));
+    assert!(coalesced.contains("<task><task_id>202</task_id><exit_code>7</exit_code></task>"));
+    assert!(coalesced.contains(
+        "<task><task_id>303</task_id><exit_code>-1</exit_code><output_artifact_path>C:\\tmp\\three.log</output_artifact_path></task>"
+    ));
 }
 
 #[test]

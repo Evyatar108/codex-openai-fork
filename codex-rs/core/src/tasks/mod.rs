@@ -148,7 +148,16 @@ pub(crate) fn coalesce_background_notifications(
     output
 }
 
-fn background_notification_task(item: &ResponseInputItem) -> Option<(String, String)> {
+// SANDBOX PATCH: background notification coalescing preserves optional recovery
+// artifact references instead of reducing each task to only id + exit code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BackgroundNotificationTask {
+    task_id: String,
+    exit_code: String,
+    output_artifact_path: Option<String>,
+}
+
+fn background_notification_task(item: &ResponseInputItem) -> Option<BackgroundNotificationTask> {
     let ResponseInputItem::Message { role, content, .. } = item else {
         return None;
     };
@@ -165,22 +174,29 @@ fn background_notification_task(item: &ResponseInputItem) -> Option<(String, Str
         return None;
     }
 
-    Some((
-        xml_tag_value(text, "task_id")?.to_string(),
-        xml_tag_value(text, "exit_code")?.to_string(),
-    ))
+    Some(BackgroundNotificationTask {
+        task_id: xml_tag_value(text, "task_id")?.to_string(),
+        exit_code: xml_tag_value(text, "exit_code")?.to_string(),
+        output_artifact_path: xml_tag_value(text, "output_artifact_path").map(str::to_string),
+    })
 }
 
 fn coalesced_background_notification_message(
-    notifications: &[(String, String)],
+    notifications: &[BackgroundNotificationTask],
 ) -> ResponseInputItem {
     let mut tasks = String::new();
-    for (task_id, exit_code) in notifications {
+    for notification in notifications {
         tasks.push_str("<task><task_id>");
-        tasks.push_str(task_id);
+        tasks.push_str(&notification.task_id);
         tasks.push_str("</task_id><exit_code>");
-        tasks.push_str(exit_code);
-        tasks.push_str("</exit_code></task>");
+        tasks.push_str(&notification.exit_code);
+        tasks.push_str("</exit_code>");
+        if let Some(output_artifact_path) = &notification.output_artifact_path {
+            tasks.push_str("<output_artifact_path>");
+            tasks.push_str(output_artifact_path);
+            tasks.push_str("</output_artifact_path>");
+        }
+        tasks.push_str("</task>");
     }
 
     let summary = escape_xml_text(&format!(

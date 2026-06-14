@@ -77,6 +77,17 @@ async fn spawn_background_process_inner(
     let process_id = manager.allocate_process_id().await;
     let command = vec!["bash".to_string(), "-lc".to_string(), cmd.to_string()];
     let request = test_exec_request(turn, command.clone(), turn.cwd.clone());
+    let context = UnifiedExecContext::new(
+        Arc::clone(session),
+        Arc::clone(turn),
+        "await-call".to_string(),
+    );
+    let output_artifact = BackgroundOutputArtifact::new_if_enabled(
+        session.as_ref(),
+        turn.as_ref(),
+        &context.call_id,
+        process_id,
+    );
     let process = Arc::new(
         manager
             .open_session_with_exec_env(
@@ -85,14 +96,9 @@ async fn spawn_background_process_inner(
                 /*tty*/ false,
                 Box::new(NoopSpawnLifecycle),
                 turn.environment.as_ref().expect("turn environment"),
+                output_artifact.clone(),
             )
             .await?,
-    );
-
-    let context = UnifiedExecContext::new(
-        Arc::clone(session),
-        Arc::clone(turn),
-        "await-call".to_string(),
     );
     let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
     start_streaming_output(&process, &context, Arc::clone(&transcript));
@@ -111,6 +117,7 @@ async fn spawn_background_process_inner(
         session: Arc::downgrade(session),
         last_used: started_at,
     };
+    let transcript_for_watcher = Arc::clone(&entry.transcript);
     manager
         .process_store
         .lock()
@@ -127,7 +134,8 @@ async fn spawn_background_process_inner(
             command,
             turn.cwd.clone(),
             process_id,
-            transcript,
+            transcript_for_watcher,
+            output_artifact,
             notified,
             started_at,
         );
@@ -156,6 +164,14 @@ fn input_text(item: &ResponseInputItem) -> &str {
         panic!("expected single input text content item");
     };
     text
+}
+
+fn xml_tag_value<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&close)? + start;
+    Some(&text[start..end])
 }
 
 #[test]
@@ -466,6 +482,43 @@ async fn background_process_exit_enqueues_notification_for_next_turn() -> anyhow
         text.contains("<output>notify-done</output>"),
         "wake notification should carry the aggregated process output inline"
     );
+    assert!(
+        !text.contains("<output_artifact_path>"),
+        "short wake output should not carry a recovery artifact"
+    );
+
+    Ok(())
+}
+
+// SANDBOX PATCH: end-to-end regression for streaming-time spill artifacts on
+// truncated background completion notifications.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn truncated_background_notification_includes_spilled_artifact() -> anyhow::Result<()> {
+    let (session, turn) = test_session_and_turn_with_background_notifications().await;
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+
+    let process_id = spawn_background_process_with_exit_watcher(
+        &session,
+        &turn,
+        "for i in {1..20000}; do printf A; done; exit 4",
+    )
+    .await?;
+
+    let queued_items = wait_for_queued_next_turn_items(&session).await;
+
+    assert_eq!(queued_items.len(), 1);
+    let text = input_text(&queued_items[0]);
+    assert!(text.contains(&format!("<task_id>{process_id}</task_id>")));
+    assert!(text.contains("[... output truncated, "));
+    assert!(
+        text.contains("</output><output_artifact_path>"),
+        "artifact tag should immediately follow the inline output preview"
+    );
+    let artifact_path = xml_tag_value(text, "output_artifact_path").expect("artifact path");
+    let artifact_bytes = tokio::fs::read(artifact_path).await?;
+
+    assert_eq!(artifact_bytes.len(), 20_000);
+    assert!(artifact_bytes.iter().all(|byte| *byte == b'A'));
 
     Ok(())
 }

@@ -27,6 +27,7 @@ use crate::tools::runtimes::unified_exec::UnifiedExecRequest as UnifiedExecToolR
 use crate::tools::runtimes::unified_exec::UnifiedExecRuntime;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
+use crate::unified_exec::BackgroundOutputArtifact;
 use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
 use crate::unified_exec::MAX_YIELD_TIME_MS;
@@ -377,9 +378,14 @@ impl UnifiedExecProcessManager {
             .open_session_with_sandbox(&request, cwd.clone(), context)
             .await;
 
-        let (process, mut deferred_network_approval) = match process {
+        let (process, mut deferred_network_approval, output_artifact) = match process {
             Ok((process, deferred_network_approval)) => {
-                (Arc::new(process), deferred_network_approval)
+                let output_artifact = process.output_artifact();
+                (
+                    Arc::new(process),
+                    deferred_network_approval,
+                    output_artifact,
+                )
             }
             Err(err) => {
                 self.release_process_id(request.process_id).await;
@@ -426,6 +432,7 @@ impl UnifiedExecProcessManager {
                 request.tty,
                 deferred_network_approval.clone(),
                 Arc::clone(&transcript),
+                output_artifact.clone(),
             )
             .await;
         }
@@ -824,6 +831,8 @@ impl UnifiedExecProcessManager {
         tty: bool,
         network_approval: Option<DeferredNetworkApproval>,
         transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
+        // SANDBOX PATCH: optional background wake output spill artifact.
+        output_artifact: Option<Arc<BackgroundOutputArtifact>>,
     ) {
         let notified = Arc::new(AtomicBool::new(false));
         let entry = ProcessEntry {
@@ -838,6 +847,10 @@ impl UnifiedExecProcessManager {
             session: Arc::downgrade(&context.session),
             last_used: started_at,
         };
+        // SANDBOX PATCH: route the watcher through the ProcessEntry-owned
+        // transcript Arc so the stored process state is the shared transcript
+        // surface used for background completion.
+        let transcript_for_watcher = Arc::clone(&entry.transcript);
         let pruned_entry = {
             let mut store = self.process_store.lock().await;
             let pruned_entry = Self::prune_processes_if_needed(&mut store);
@@ -859,7 +872,8 @@ impl UnifiedExecProcessManager {
             command.to_vec(),
             cwd,
             process_id,
-            transcript,
+            transcript_for_watcher,
+            output_artifact,
             Arc::clone(&notified),
             started_at,
         );
@@ -872,6 +886,8 @@ impl UnifiedExecProcessManager {
         tty: bool,
         mut spawn_lifecycle: SpawnLifecycleHandle,
         environment: &codex_exec_server::Environment,
+        // SANDBOX PATCH: optional producer-path background wake output spill artifact.
+        output_artifact: Option<Arc<BackgroundOutputArtifact>>,
     ) -> Result<UnifiedExecProcess, UnifiedExecError> {
         let inherited_fds = spawn_lifecycle.inherited_fds();
 
@@ -949,6 +965,7 @@ impl UnifiedExecProcessManager {
                 spawned.map_err(|err| UnifiedExecError::create_process(err.to_string()))?,
                 request.sandbox,
                 spawn_lifecycle,
+                output_artifact,
             )
             .await;
         }
@@ -965,7 +982,12 @@ impl UnifiedExecProcessManager {
                 .await
                 .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
             spawn_lifecycle.after_spawn();
-            return UnifiedExecProcess::from_exec_server_started(started, request.sandbox).await;
+            return UnifiedExecProcess::from_exec_server_started(
+                started,
+                request.sandbox,
+                output_artifact,
+            )
+            .await;
         }
 
         let (program, args) = request
@@ -997,7 +1019,8 @@ impl UnifiedExecProcessManager {
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
         spawn_lifecycle.after_spawn();
-        UnifiedExecProcess::from_spawned(spawned, request.sandbox, spawn_lifecycle).await
+        UnifiedExecProcess::from_spawned(spawned, request.sandbox, spawn_lifecycle, output_artifact)
+            .await
     }
 
     pub(super) async fn open_session_with_sandbox(

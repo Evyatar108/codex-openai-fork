@@ -1,7 +1,23 @@
+use super::background_completion_message;
+use super::background_completion_output_was_truncated;
 use super::build_background_completion_output;
 use super::split_valid_utf8_prefix_with_max;
 
+use crate::unified_exec::BackgroundCompletionEvent;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseInputItem;
 use pretty_assertions::assert_eq;
+
+fn input_text(item: &ResponseInputItem) -> &str {
+    let ResponseInputItem::Message { role, content, .. } = item else {
+        panic!("expected message item");
+    };
+    assert_eq!(role, "user");
+    let [ContentItem::InputText { text }] = content.as_slice() else {
+        panic!("expected single input text");
+    };
+    text
+}
 
 #[test]
 fn split_valid_utf8_prefix_respects_max_bytes_for_ascii() {
@@ -93,4 +109,51 @@ fn background_completion_output_respects_utf8_boundaries() {
         head.chars().all(|c| c == 'é'),
         "head not whole chars: {head:?}"
     );
+}
+
+// SANDBOX PATCH: artifact recovery references are surfaced only when the
+// background completion preview truncates.
+#[test]
+fn background_completion_truncation_detection_matches_preview_rules() {
+    assert!(!background_completion_output_was_truncated(
+        b"short", /*buffer_omitted*/ 0, 1024
+    ));
+    assert!(background_completion_output_was_truncated(
+        b"tail", /*buffer_omitted*/ 1, 1024
+    ));
+    assert!(background_completion_output_was_truncated(
+        b"longer than cap",
+        /*buffer_omitted*/ 0,
+        5
+    ));
+}
+
+// SANDBOX PATCH: preserve the existing inline <output> preview and append the
+// recovery reference immediately after it.
+#[test]
+fn background_completion_message_appends_artifact_path_after_output() {
+    let item = background_completion_message(BackgroundCompletionEvent {
+        process_id: 123,
+        exit_code: 7,
+        output: "preview <tail>".to_string(),
+        output_artifact_path: Some("C:\\tmp\\artifact&1.log".to_string()),
+    });
+    let text = input_text(&item);
+
+    assert!(text.contains(
+        "<output>preview &lt;tail&gt;</output><output_artifact_path>C:\\tmp\\artifact&amp;1.log</output_artifact_path>"
+    ));
+}
+
+// SANDBOX PATCH: untruncated or unavailable artifacts keep the old XML shape.
+#[test]
+fn background_completion_message_omits_artifact_path_when_absent() {
+    let item = background_completion_message(BackgroundCompletionEvent {
+        process_id: 123,
+        exit_code: 0,
+        output: "short output".to_string(),
+        output_artifact_path: None,
+    });
+
+    assert!(!input_text(&item).contains("<output_artifact_path>"));
 }

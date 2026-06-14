@@ -207,6 +207,24 @@ fn network_proxy_is_experimental_and_disabled_by_default() {
     assert_eq!(Feature::NetworkProxy.default_enabled(), false);
 }
 
+// SANDBOX PATCH: background wake notifications and spill artifacts remain
+// default-off but are visible through /experimental.
+#[test]
+fn background_process_notification_is_experimental_and_disabled_by_default() {
+    assert_eq!(
+        feature_for_key("background_process_notification"),
+        Some(Feature::BackgroundProcessNotification)
+    );
+    assert!(matches!(
+        Feature::BackgroundProcessNotification.stage(),
+        Stage::Experimental { .. }
+    ));
+    assert_eq!(
+        Feature::BackgroundProcessNotification.default_enabled(),
+        false
+    );
+}
+
 #[test]
 fn fork_visibility_features_are_experimental_and_disabled_by_default() {
     let expected = [

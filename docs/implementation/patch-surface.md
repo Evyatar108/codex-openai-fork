@@ -164,3 +164,26 @@ comments may reference earlier entries that predate this reconstructed file.
   process-spawn path bypasses the Windows Job Object wrapper. Replant by keeping the detector
   ordering tests, default-shell selector tests, shell-spec Bash/PowerShell assertions, and the
   `detected_shell_routes_through_existing_bash_exec_args` regression together with this seam.
+
+## §22 Background wake output spill artifacts
+
+- **Surface:** `codex-rs/features/src/lib.rs`, `codex-rs/core/src/unified_exec/mod.rs`,
+  `codex-rs/core/src/unified_exec/background_output_artifact.rs`,
+  `codex-rs/core/src/unified_exec/async_watcher.rs`,
+  `codex-rs/core/src/unified_exec/process_manager.rs`, `codex-rs/core/src/tasks/mod.rs`
+- **Status:** active
+- **Reason:** background unified-exec completion notifications keep a 16 KiB inline head/tail output
+  preview, but once `HeadTailBuffer` omits middle bytes the discarded output cannot be recovered at
+  process exit. Long background commands need an opt-in recovery path without changing default wake
+  payloads.
+- **Patch:** keep `features.background_process_notification` default-off and expose it in
+  `/experimental`; when enabled, tee streaming background process bytes into a lazily-created
+  session-scoped artifact under `sessions/<conversation>/background-output/`. If the inline wake
+  preview truncates and the artifact write succeeded, append an escaped
+  `<output_artifact_path>` sibling immediately after `<output>`; coalesced background notifications
+  preserve the same optional path inside each `<task>`.
+- **Safety:** feature-off behavior writes no artifact and preserves the old wake XML shape. The
+  existing inline preview builder stays unchanged, artifact failures are logged and suppress the
+  recovery tag, and coalescing re-emits already-escaped XML values without double-escaping. Replant
+  with the helper tests, async watcher XML/truncation tests, process-manager end-to-end spill test,
+  and task coalescer mixed-artifact regression.

@@ -764,7 +764,13 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::BackgroundProcessNotification,
         key: "background_process_notification",
-        stage: Stage::UnderDevelopment,
+        // SANDBOX PATCH: expose the default-off background wake notification
+        // path (including large-output spill artifacts) through /experimental.
+        stage: Stage::Experimental {
+            name: "Background process notifications",
+            menu_description: "Wake Codex when background unified exec commands finish, with recovery artifacts for truncated output.",
+            announcement: "Background process completion notifications can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
         default_enabled: false,
     },
     FeatureSpec {
