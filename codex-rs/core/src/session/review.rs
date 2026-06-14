@@ -104,6 +104,8 @@ pub(super) async fn spawn_review_thread(
         thread_source: parent_turn_context.thread_source,
         environments: parent_turn_context.environments.clone(),
         available_models,
+        // SANDBOX PATCH: review turns inherit the parent session shell hint for shell tool specs.
+        user_shell_type: parent_turn_context.user_shell_type,
         unified_exec_shell_mode,
         goal_tools_supported,
         features: review_features,

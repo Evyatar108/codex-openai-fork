@@ -148,6 +148,9 @@ pub enum Feature {
     /// managed requirements). Default off in the fork; also settable via the
     /// `--enable-managed-hooks` flag or the `CODEX_ENABLE_MANAGED_HOOKS` env var.
     ManagedHooks,
+    // SANDBOX PATCH: opt-in Windows Git Bash default-shell detector.
+    /// Detect Git Bash as the Windows default session shell. Default off.
+    WindowsGitBashShell,
     /// Enable CSV-backed agent job tools.
     SpawnCsv,
     /// Enable apps.
@@ -1039,6 +1042,18 @@ pub const FEATURES: &[FeatureSpec] = &[
             name: "Allow managed (admin) hooks",
             menu_description: "OFF by default; enabling honors enterprise/admin managed-config-pushed hooks and managed requirements.",
             announcement: "Managed/admin hooks can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: default-off Git Bash detector for Windows session shells.
+    // Explicit default_shell overrides and the zsh fork feature stay higher priority.
+    FeatureSpec {
+        id: Feature::WindowsGitBashShell,
+        key: "windows_git_bash_shell",
+        stage: Stage::Experimental {
+            name: "Windows Git Bash shell",
+            menu_description: "Use Git Bash as the default Windows session shell when it is detected.",
+            announcement: "Windows Git Bash shell detection can now be enabled from /experimental. Restart Codex after enabling it.",
         },
         default_enabled: false,
     },

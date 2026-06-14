@@ -838,26 +838,39 @@ impl Session {
             );
 
             let use_zsh_fork_shell = config.features.enabled(Feature::ShellZshFork);
-            let mut default_shell = if let Some(user_shell_override) =
-                session_configuration.user_shell_override.clone()
-            {
-                user_shell_override
-            } else if use_zsh_fork_shell {
-                let zsh_path = config.zsh_path.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "zsh fork feature enabled, but no packaged zsh fork is available for this install"
-                    )
-                })?;
-                let zsh_path = zsh_path.to_path_buf();
-                shell::get_shell(shell::ShellType::Zsh, Some(&zsh_path)).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "zsh fork feature enabled, but packaged zsh fork `{}` is not usable",
-                        zsh_path.display()
-                    )
-                })?
-            } else {
-                shell::default_user_shell()
+            // SANDBOX PATCH: detect Git Bash only as a Windows feature-gated
+            // session shell. The returned Shell is still consumed by the normal
+            // Shell::derive_exec_args / exec path, preserving Windows Job Object
+            // child-tree cleanup.
+            let detected_windows_git_bash_shell = {
+                #[cfg(windows)]
+                {
+                    if config.features.enabled(Feature::WindowsGitBashShell) {
+                        crate::windows_git_bash::detect()
+                    } else {
+                        None
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    None
+                }
             };
+            let selected_default_shell = super::default_shell::select_default_shell(
+                session_configuration.user_shell_override.clone(),
+                use_zsh_fork_shell,
+                config.zsh_path.as_ref(),
+                cfg!(windows) && config.features.enabled(Feature::WindowsGitBashShell),
+                detected_windows_git_bash_shell,
+                shell::default_user_shell,
+            )?;
+            if let Some(message) = selected_default_shell.startup_warning {
+                post_session_configured_events.push(Event {
+                    id: INITIAL_SUBMIT_ID.to_owned(),
+                    msg: EventMsg::Warning(WarningEvent { message }),
+                });
+            }
+            let mut default_shell = selected_default_shell.shell;
             // Create the mutable state for the Session.
             let shell_snapshot_tx = if config.features.enabled(Feature::ShellSnapshot) {
                 if let Some(snapshot) = session_configuration.inherited_shell_snapshot.clone() {

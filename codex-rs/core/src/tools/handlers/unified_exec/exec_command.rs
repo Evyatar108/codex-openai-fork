@@ -38,12 +38,15 @@ use super::ExecCommandArgs;
 use super::ExecCommandEnvironmentArgs;
 use super::get_command;
 use super::post_unified_exec_tool_use_payload;
+use codex_tools::ToolUserShellType;
 
 #[derive(Clone, Copy)]
 pub(crate) struct ExecCommandHandlerOptions {
     pub(crate) allow_login_shell: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
     pub(crate) include_environment_id: bool,
+    // SANDBOX PATCH: active shell hint for model-facing exec_command descriptions.
+    pub(crate) user_shell_type: ToolUserShellType,
 }
 
 pub struct ExecCommandHandler {
@@ -57,6 +60,7 @@ impl Default for ExecCommandHandler {
                 allow_login_shell: false,
                 exec_permission_approvals_enabled: false,
                 include_environment_id: false,
+                user_shell_type: super::super::shell_spec::default_tool_user_shell_type(),
             },
         }
     }
@@ -81,6 +85,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                 exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
             },
             self.options.include_environment_id,
+            self.options.user_shell_type,
         )
     }
 

@@ -6,13 +6,23 @@ use core_test_support::test_path_buf;
 use pretty_assertions::assert_eq;
 use std::path::PathBuf;
 
-fn fake_shell_name() -> String {
-    let shell = crate::shell::Shell {
-        shell_type: ShellType::Bash,
-        shell_path: PathBuf::from("/bin/bash"),
+fn fake_shell(shell_type: ShellType, shell_path: &str) -> crate::shell::Shell {
+    // SANDBOX PATCH: test helper for resolved-shell environment_context coverage.
+    crate::shell::Shell {
+        shell_type,
+        shell_path: PathBuf::from(shell_path),
         shell_snapshot: crate::shell::empty_shell_snapshot_receiver(),
-    };
-    shell.name().to_string()
+    }
+}
+
+fn fake_shell_name() -> String {
+    fake_shell(ShellType::Bash, "/bin/bash").name().to_string()
+}
+
+fn fake_powershell_shell_name() -> String {
+    fake_shell(ShellType::PowerShell, "pwsh.exe")
+        .name()
+        .to_string()
 }
 
 fn test_abs_path(unix_path: &str) -> AbsolutePathBuf {
@@ -40,6 +50,60 @@ fn serialize_workspace_write_environment_context() {
   <shell>bash</shell>
   <current_date>2026-02-26</current_date>
   <timezone>America/Los_Angeles</timezone>
+</environment_context>"#,
+        cwd = cwd.display(),
+    );
+
+    assert_eq!(context.render(), expected);
+}
+
+#[test]
+fn serialize_environment_context_uses_resolved_bash_shell_name() {
+    // SANDBOX PATCH: resolved Bash/Git Bash sessions must render `<shell>bash</shell>`.
+    let cwd = test_path_buf("/repo");
+    let context = EnvironmentContext::new(
+        vec![EnvironmentContextEnvironment {
+            id: "local".to_string(),
+            cwd: cwd.abs(),
+            shell: fake_shell_name(),
+        }],
+        /*current_date*/ None,
+        /*timezone*/ None,
+        /*network*/ None,
+        /*subagents*/ None,
+    );
+
+    let expected = format!(
+        r#"<environment_context>
+  <cwd>{cwd}</cwd>
+  <shell>bash</shell>
+</environment_context>"#,
+        cwd = cwd.display(),
+    );
+
+    assert_eq!(context.render(), expected);
+}
+
+#[test]
+fn serialize_environment_context_uses_resolved_powershell_shell_name() {
+    // SANDBOX PATCH: PowerShell sessions must keep rendering `<shell>powershell</shell>`.
+    let cwd = test_path_buf("/repo");
+    let context = EnvironmentContext::new(
+        vec![EnvironmentContextEnvironment {
+            id: "local".to_string(),
+            cwd: cwd.abs(),
+            shell: fake_powershell_shell_name(),
+        }],
+        /*current_date*/ None,
+        /*timezone*/ None,
+        /*network*/ None,
+        /*subagents*/ None,
+    );
+
+    let expected = format!(
+        r#"<environment_context>
+  <cwd>{cwd}</cwd>
+  <shell>powershell</shell>
 </environment_context>"#,
         cwd = cwd.display(),
     );

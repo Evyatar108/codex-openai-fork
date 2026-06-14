@@ -110,6 +110,9 @@ pub mod review_prompts;
 mod thread_manager;
 pub(crate) mod web_search;
 pub(crate) mod windows_sandbox_read_grants;
+// SANDBOX PATCH: Windows-only Git Bash detector for the default session shell feature.
+#[cfg(windows)]
+pub(crate) mod windows_git_bash;
 #[cfg(windows)]
 pub(crate) mod windows_job;
 pub use thread_manager::ForkSnapshot;

@@ -228,6 +228,13 @@ fn fork_visibility_features_are_experimental_and_disabled_by_default() {
             "Allow managed (admin) hooks",
             "OFF by default; enabling honors enterprise/admin managed-config-pushed hooks and managed requirements.",
         ),
+        // SANDBOX PATCH: Windows Git Bash shell is visible and default-off in `/experimental`.
+        (
+            Feature::WindowsGitBashShell,
+            "windows_git_bash_shell",
+            "Windows Git Bash shell",
+            "Use Git Bash as the default Windows session shell when it is detected.",
+        ),
     ];
 
     for (feature, key, menu_name, menu_description) in expected {

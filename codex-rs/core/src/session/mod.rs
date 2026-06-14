@@ -195,6 +195,8 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::exec_output::StreamOutput;
 
 mod config_lock;
+// SANDBOX PATCH: Windows Git Bash default-shell selector and precedence tests.
+mod default_shell;
 mod handlers;
 mod input_queue;
 mod mcp;
@@ -1183,7 +1185,10 @@ impl Session {
         // SANDBOX PATCH: launcher safety rails composition
         let composed = compose_base_with_rails(
             &state.session_configuration.base_instructions,
-            state.session_configuration.additional_instructions.as_deref(),
+            state
+                .session_configuration
+                .additional_instructions
+                .as_deref(),
         );
         BaseInstructions { text: composed }
     }

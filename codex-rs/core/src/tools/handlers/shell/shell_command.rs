@@ -2,6 +2,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::ShellCommandToolCallParams;
 use codex_tools::ShellCommandBackendConfig;
 use codex_tools::ToolName;
+use codex_tools::ToolUserShellType;
 
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecParams;
@@ -26,7 +27,6 @@ use crate::tools::runtimes::shell::ShellRuntimeBackend;
 use codex_tools::ToolSpec;
 
 use super::super::shell_spec::CommandToolOptions;
-use super::super::shell_spec::create_shell_command_tool;
 use super::RunExecLikeArgs;
 use super::run_exec_like;
 use super::shell_command_payload_command;
@@ -47,6 +47,8 @@ pub(crate) struct ShellCommandHandlerOptions {
     pub(crate) backend_config: ShellCommandBackendConfig,
     pub(crate) allow_login_shell: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
+    // SANDBOX PATCH: active shell hint for model-facing shell_command descriptions.
+    pub(crate) user_shell_type: ToolUserShellType,
 }
 
 impl ShellCommandHandler {
@@ -120,6 +122,7 @@ impl From<ShellCommandBackendConfig> for ShellCommandHandler {
             backend_config,
             allow_login_shell: false,
             exec_permission_approvals_enabled: false,
+            user_shell_type: super::super::shell_spec::default_tool_user_shell_type(),
         })
     }
 }
@@ -131,10 +134,13 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_shell_command_tool(CommandToolOptions {
-            allow_login_shell: self.options.allow_login_shell,
-            exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
-        })
+        super::super::shell_spec::create_shell_command_tool_for_shell(
+            CommandToolOptions {
+                allow_login_shell: self.options.allow_login_shell,
+                exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
+            },
+            self.options.user_shell_type,
+        )
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {

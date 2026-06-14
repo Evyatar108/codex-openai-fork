@@ -1,6 +1,7 @@
 use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolSpec;
+use codex_tools::ToolUserShellType;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -13,13 +14,29 @@ pub struct CommandToolOptions {
 
 #[cfg(test)]
 pub fn create_exec_command_tool(options: CommandToolOptions) -> ToolSpec {
-    create_exec_command_tool_with_environment_id(options, /*include_environment_id*/ false)
+    create_exec_command_tool_with_environment_id(
+        options,
+        /*include_environment_id*/ false,
+        default_tool_user_shell_type(),
+    )
+}
+
+pub(crate) fn default_tool_user_shell_type() -> ToolUserShellType {
+    // SANDBOX PATCH: keep direct shell-spec tests on the historical platform default.
+    if cfg!(windows) {
+        ToolUserShellType::PowerShell
+    } else {
+        ToolUserShellType::Bash
+    }
 }
 
 pub(crate) fn create_exec_command_tool_with_environment_id(
     options: CommandToolOptions,
     include_environment_id: bool,
+    user_shell_type: ToolUserShellType,
 ) -> ToolSpec {
+    // SANDBOX PATCH: Windows shell tool copy is derived from the resolved
+    // session shell rather than the feature flag.
     let mut properties = BTreeMap::from([
         (
             "cmd".to_string(),
@@ -81,10 +98,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
     ToolSpec::Function(ResponsesApiTool {
         name: "exec_command".to_string(),
         description: if cfg!(windows) {
-            format!(
-                "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
-                windows_shell_guidance()
-            )
+            windows_exec_command_description(user_shell_type)
         } else {
             "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
                 .to_string()
@@ -144,7 +158,15 @@ pub fn create_write_stdin_tool() -> ToolSpec {
     })
 }
 
+#[cfg(test)]
 pub fn create_shell_command_tool(options: CommandToolOptions) -> ToolSpec {
+    create_shell_command_tool_for_shell(options, default_tool_user_shell_type())
+}
+
+pub(crate) fn create_shell_command_tool_for_shell(
+    options: CommandToolOptions,
+    user_shell_type: ToolUserShellType,
+) -> ToolSpec {
     let mut properties = BTreeMap::from([
         (
             "command".to_string(),
@@ -179,21 +201,7 @@ pub fn create_shell_command_tool(options: CommandToolOptions) -> ToolSpec {
     ));
 
     let description = if cfg!(windows) {
-        format!(
-            r#"Runs a Powershell command (Windows) and returns its output.
-
-Examples of valid command strings:
-
-- ls -a (show hidden): "Get-ChildItem -Force"
-- recursive find by name: "Get-ChildItem -Recurse -Filter *.py"
-- recursive grep: "Get-ChildItem -Path C:\\myrepo -Recurse | Select-String -Pattern 'TODO' -CaseSensitive"
-- ps aux | grep python: "Get-Process | Where-Object {{ $_.ProcessName -like '*python*' }}"
-- setting an env var: "$env:FOO='bar'; echo $env:FOO"
-- running an inline Python script: "@'\\nprint('Hello, world!')\\n'@ | python -"
-
-{}"#,
-            windows_shell_guidance()
-        )
+        windows_shell_command_description(user_shell_type)
     } else {
         r#"Runs a shell command and returns its output.
 - Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary."#
@@ -374,6 +382,75 @@ fn windows_shell_guidance() -> &'static str {
 - Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.
 - Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.
 - When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control."#
+}
+
+fn windows_exec_command_description(user_shell_type: ToolUserShellType) -> String {
+    // SANDBOX PATCH: dynamic Windows exec_command descriptions for Git Bash vs PowerShell.
+    match user_shell_type {
+        ToolUserShellType::Bash | ToolUserShellType::Sh | ToolUserShellType::Zsh => format!(
+            "Runs a command in the active Git Bash/bash shell on Windows, returning output or a session ID for ongoing interaction.\n\nUse bash syntax such as `ls -la`, `find . -name '*.py'`, `grep -R 'TODO' .`, and `export FOO=bar; echo \"$FOO\"`.\n\n{}",
+            windows_bash_guidance()
+        ),
+        ToolUserShellType::Cmd => {
+            "Runs a command in the active cmd.exe shell on Windows, returning output or a session ID for ongoing interaction. Use cmd.exe syntax such as `dir`, `set FOO=bar && echo %FOO%`, and `for /r %F in (*.py) do @echo %F`."
+                .to_string()
+        }
+        ToolUserShellType::PowerShell => format!(
+            "Runs a command in the active PowerShell shell on Windows, returning output or a session ID for ongoing interaction.\n\n{}",
+            windows_shell_guidance()
+        ),
+    }
+}
+
+fn windows_shell_command_description(user_shell_type: ToolUserShellType) -> String {
+    // SANDBOX PATCH: dynamic Windows shell_command descriptions for Git Bash vs PowerShell.
+    match user_shell_type {
+        ToolUserShellType::Bash | ToolUserShellType::Sh | ToolUserShellType::Zsh => format!(
+            r#"Runs a Git Bash/bash command (Windows) and returns its output.
+
+Examples of valid command strings:
+
+- ls -a (show hidden): "ls -la"
+- recursive find by name: "find . -name '*.py'"
+- recursive grep: "grep -R 'TODO' ."
+- setting an env var: "export FOO=bar; echo \"$FOO\""
+- running an inline Python script: "python - <<'PY'\nprint('Hello, world!')\nPY"
+
+{}"#,
+            windows_bash_guidance()
+        ),
+        ToolUserShellType::Cmd => r#"Runs a cmd.exe command (Windows) and returns its output.
+
+Examples of valid command strings:
+
+- list files: "dir /a"
+- recursive find by name: "dir /s /b *.py"
+- recursive grep: "findstr /s /n /c:TODO *"
+- setting an env var: "set FOO=bar && echo %FOO%""#
+            .to_string(),
+        ToolUserShellType::PowerShell => format!(
+            r#"Runs a Powershell command (Windows) and returns its output.
+
+Examples of valid command strings:
+
+- ls -a (show hidden): "Get-ChildItem -Force"
+- recursive find by name: "Get-ChildItem -Recurse -Filter *.py"
+- recursive grep: "Get-ChildItem -Path C:\\myrepo -Recurse | Select-String -Pattern 'TODO' -CaseSensitive"
+- ps aux | grep python: "Get-Process | Where-Object {{ $_.ProcessName -like '*python*' }}"
+- setting an env var: "$env:FOO='bar'; echo $env:FOO"
+- running an inline Python script: "@'\\nprint('Hello, world!')\\n'@ | python -"
+
+{}"#,
+            windows_shell_guidance()
+        ),
+    }
+}
+
+fn windows_bash_guidance() -> &'static str {
+    r#"Windows Git Bash safety rules:
+- Commands run under Git Bash on Windows; use bash/POSIX syntax and keep paths in one shell dialect for each command.
+- Do not compose destructive filesystem commands across shells. Do not enumerate paths in Git Bash and then pass them to PowerShell, cmd.exe, or batch builtins for deletion or moving.
+- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked."#
 }
 
 #[cfg(test)]

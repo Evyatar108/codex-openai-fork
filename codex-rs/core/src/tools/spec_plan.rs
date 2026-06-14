@@ -532,10 +532,14 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
     let allow_login_shell = turn_context.config.permissions.allow_login_shell;
     let exec_permission_approvals_enabled = features.enabled(Feature::ExecPermissionApprovals);
     let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
+    // SANDBOX PATCH: shell tool descriptions must match the resolved session shell,
+    // including explicit default_shell overrides with Windows Git Bash detection off.
+    let user_shell_type = turn_context.user_shell_type;
     let shell_command_options = ShellCommandHandlerOptions {
         backend_config: shell_command_backend_for_features(features),
         allow_login_shell,
         exec_permission_approvals_enabled,
+        user_shell_type,
     };
 
     match shell_type_for_model_and_features(&turn_context.model_info, features) {
@@ -544,6 +548,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
                 allow_login_shell,
                 exec_permission_approvals_enabled,
                 include_environment_id,
+                user_shell_type,
             }));
             planned_tools.add(WriteStdinHandler);
 

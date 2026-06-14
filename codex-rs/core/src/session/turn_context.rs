@@ -81,6 +81,8 @@ pub struct TurnContext {
     pub(crate) windows_sandbox_level: WindowsSandboxLevel,
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
     pub(crate) available_models: Vec<ModelPreset>,
+    // SANDBOX PATCH: resolved session shell type used by model-facing shell tool descriptions.
+    pub(crate) user_shell_type: codex_tools::ToolUserShellType,
     pub(crate) unified_exec_shell_mode: UnifiedExecShellMode,
     pub(crate) goal_tools_supported: bool,
     pub features: ManagedFeatures,
@@ -238,6 +240,8 @@ impl TurnContext {
             windows_sandbox_level: self.windows_sandbox_level,
             shell_environment_policy: self.shell_environment_policy.clone(),
             available_models,
+            // SANDBOX PATCH: preserve resolved shell hint across cloned turn contexts.
+            user_shell_type: self.user_shell_type,
             unified_exec_shell_mode: self.unified_exec_shell_mode.clone(),
             goal_tools_supported: self.goal_tools_supported,
             features,
@@ -466,9 +470,13 @@ impl Session {
         let available_models = models_manager.try_list_models().unwrap_or_default();
         let shell_command_backend =
             shell_command_backend_for_features(per_turn_config.features.get());
+        // SANDBOX PATCH: carry the resolved session shell into tool specs; this
+        // intentionally follows explicit default_shell overrides even when
+        // Windows Git Bash auto-detection is disabled.
+        let user_shell_type = crate::tools::tool_user_shell_type(user_shell);
         let unified_exec_shell_mode = UnifiedExecShellMode::for_session(
             shell_command_backend,
-            crate::tools::tool_user_shell_type(user_shell),
+            user_shell_type,
             shell_zsh_path,
             main_execve_wrapper_exe,
         );
@@ -523,6 +531,7 @@ impl Session {
             windows_sandbox_level: session_configuration.windows_sandbox_level,
             shell_environment_policy: per_turn_config.permissions.shell_environment_policy.clone(),
             available_models,
+            user_shell_type,
             unified_exec_shell_mode,
             goal_tools_supported,
             features: per_turn_config.features.clone(),

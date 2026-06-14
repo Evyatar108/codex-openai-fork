@@ -1,10 +1,7 @@
 use super::*;
+use codex_tools::ToolUserShellType;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
-
-fn windows_shell_guidance_description() -> String {
-    format!("\n\n{}", windows_shell_guidance())
-}
 
 #[test]
 fn exec_command_tool_matches_expected_spec() {
@@ -14,10 +11,7 @@ fn exec_command_tool_matches_expected_spec() {
     });
 
     let description = if cfg!(windows) {
-        format!(
-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction.{}",
-            windows_shell_guidance_description()
-        )
+        windows_exec_command_description(ToolUserShellType::PowerShell)
     } else {
         "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
             .to_string()
@@ -179,18 +173,7 @@ fn shell_command_tool_matches_expected_spec() {
     });
 
     let description = if cfg!(windows) {
-        r#"Runs a Powershell command (Windows) and returns its output.
-
-Examples of valid command strings:
-
-- ls -a (show hidden): "Get-ChildItem -Force"
-- recursive find by name: "Get-ChildItem -Recurse -Filter *.py"
-- recursive grep: "Get-ChildItem -Path C:\\myrepo -Recurse | Select-String -Pattern 'TODO' -CaseSensitive"
-- ps aux | grep python: "Get-Process | Where-Object { $_.ProcessName -like '*python*' }"
-- setting an env var: "$env:FOO='bar'; echo $env:FOO"
-- running an inline Python script: "@'\\nprint('Hello, world!')\\n'@ | python -""#
-            .to_string()
-            + &windows_shell_guidance_description()
+        windows_shell_command_description(ToolUserShellType::PowerShell)
     } else {
         r#"Runs a shell command and returns its output.
 - Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary."#
@@ -243,4 +226,65 @@ Examples of valid command strings:
             output_schema: None,
         })
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_bash_shell_tools_describe_git_bash_syntax() {
+    // SANDBOX PATCH: model-facing shell hints must follow active Git Bash sessions.
+    let exec_tool = create_exec_command_tool_with_environment_id(
+        CommandToolOptions {
+            allow_login_shell: false,
+            exec_permission_approvals_enabled: false,
+        },
+        /*include_environment_id*/ false,
+        ToolUserShellType::Bash,
+    );
+    let shell_tool = create_shell_command_tool_for_shell(
+        CommandToolOptions {
+            allow_login_shell: false,
+            exec_permission_approvals_enabled: false,
+        },
+        ToolUserShellType::Bash,
+    );
+
+    let ToolSpec::Function(exec_tool) = exec_tool else {
+        panic!("exec_command should be a function tool");
+    };
+    let ToolSpec::Function(shell_tool) = shell_tool else {
+        panic!("shell_command should be a function tool");
+    };
+
+    assert!(exec_tool.description.contains("Git Bash/bash shell"));
+    assert!(exec_tool.description.contains("grep -R 'TODO' ."));
+    assert!(!exec_tool.description.contains("PowerShell cmdlets"));
+    assert!(
+        shell_tool
+            .description
+            .contains("Runs a Git Bash/bash command")
+    );
+    assert!(shell_tool.description.contains("find . -name '*.py'"));
+    assert!(shell_tool.description.contains("export FOO=bar"));
+    assert!(!shell_tool.description.contains("Get-ChildItem"));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_powershell_shell_tools_describe_powershell_syntax() {
+    // SANDBOX PATCH: preserve PowerShell model-facing hints for PowerShell sessions.
+    let shell_tool = create_shell_command_tool_for_shell(
+        CommandToolOptions {
+            allow_login_shell: false,
+            exec_permission_approvals_enabled: false,
+        },
+        ToolUserShellType::PowerShell,
+    );
+
+    let ToolSpec::Function(shell_tool) = shell_tool else {
+        panic!("shell_command should be a function tool");
+    };
+
+    assert!(shell_tool.description.contains("Powershell command"));
+    assert!(shell_tool.description.contains("Get-ChildItem"));
+    assert!(!shell_tool.description.contains("Git Bash/bash"));
 }

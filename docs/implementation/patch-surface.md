@@ -136,3 +136,31 @@ comments may reference earlier entries that predate this reconstructed file.
   behavior.
 - **Safety:** when disabled, managed/admin-config hooks remain suppressed exactly as before; enabling
   the feature restores honored managed hooks without changing user/project hook discovery.
+
+## §21 Windows Git Bash default-shell opt-in
+
+- **Surface:** `codex-rs/features/src/lib.rs`, `codex-rs/core/src/windows_git_bash.rs`,
+  `codex-rs/core/src/session/default_shell.rs`, `codex-rs/core/src/session/session.rs`,
+  `codex-rs/core/src/session/turn_context.rs`,
+  `codex-rs/core/src/tools/spec_plan.rs`, `codex-rs/core/src/tools/handlers/shell_spec.rs`,
+  `codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs`,
+  `codex-rs/core/src/tools/handlers/shell/shell_command.rs`,
+  `codex-rs/core/src/context/environment_context_tests.rs`
+- **Status:** active
+- **Reason:** Windows users need a default-off experimental path to run sessions under Git Bash
+  without launcher-specific `default_shell` wiring, while preserving explicit shell overrides and the
+  Windows Job Object child-tree cleanup that protects shell grandchildren from hanging shutdown.
+- **Patch:** add `features.windows_git_bash_shell` as a visible default-off experiment; when enabled
+  on Windows and no explicit `default_shell` or zsh fork shell wins, detect Git Bash via fixed
+  Git-for-Windows installs, `%LOCALAPPDATA%\Programs\Git`, `where git` candidates in
+  `..\bin\bash.exe` / `.\bash.exe` / `..\usr\bin\bash.exe` order, then `where bash` last. The
+  detector returns a normal Bash `Shell`, so `Session::new`, `exec_command`, and `shell_command`
+  continue through `Shell::derive_exec_args` and the existing exec/session-shell path. The resolved
+  session shell type now flows through `TurnContext` into model-visible shell tool descriptions so
+  Git Bash sessions advertise bash syntax and PowerShell sessions retain PowerShell syntax.
+- **Safety:** feature-off behavior is unchanged, the feature is a no-op off Windows, explicit
+  `default_shell` and `ShellZshFork` stay higher priority, missing Git Bash emits a startup warning
+  before falling back, no `features.unified_exec=false` guard is introduced, and no Git-Bash-specific
+  process-spawn path bypasses the Windows Job Object wrapper. Replant by keeping the detector
+  ordering tests, default-shell selector tests, shell-spec Bash/PowerShell assertions, and the
+  `detected_shell_routes_through_existing_bash_exec_args` regression together with this seam.
