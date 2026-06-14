@@ -2587,6 +2587,24 @@ impl Config {
             configured_features
                 .set_enabled(Feature::LegacyPasteBurstHeuristic, !disable_paste_burst);
         }
+        // SANDBOX PATCH: compatibility adapter for the old top-level
+        // `style_user_messages` launcher/config knob. Canonical
+        // `features.user_message_styling` entries win when both are set.
+        let user_message_styling_key = Feature::UserMessageStyling.key();
+        let user_message_styling_explicit = cfg.features.as_ref().is_some_and(|features| {
+            let entries = features.entries();
+            entries.contains_key(user_message_styling_key)
+                || entries.contains_key("style_user_messages")
+        });
+        if let Some(style_user_messages) = cfg.style_user_messages
+            && !user_message_styling_explicit
+        {
+            configured_features.set_enabled(Feature::UserMessageStyling, style_user_messages);
+            configured_features.record_legacy_usage(
+                "style_user_messages",
+                Feature::UserMessageStyling,
+            );
+        }
         // SANDBOX PATCH: resolve the managed-hooks opt-in gate. The fork skips
         // managed/admin-config hooks by default; re-enable via the
         // `--enable-managed-hooks` flag (folded into `-c features.managed_hooks=true`),

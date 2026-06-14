@@ -473,6 +473,10 @@ pub struct ConfigToml {
     /// legacy detector.
     pub disable_paste_burst: Option<bool>,
 
+    /// Deprecated compatibility alias for `features.user_message_styling`.
+    /// Prefer `[features] user_message_styling = true`.
+    pub style_user_messages: Option<bool>,
+
     /// When `false`, disables analytics across Codex product surfaces in this machine.
     /// Defaults to `true`.
     pub analytics: Option<AnalyticsConfigToml>,

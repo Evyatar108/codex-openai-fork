@@ -134,6 +134,9 @@ pub enum Feature {
     /// Enable Anthropic (Claude-via-Copilot) models. Default off; also settable via
     /// the `--enable-anthropic` flag.
     AnthropicModels,
+    // SANDBOX PATCH: opt-in gate for loading CLAUDE.md project docs.
+    /// Auto-load CLAUDE.md when AGENTS files are absent. Default off.
+    AutoLoadClaudeMd,
     // SANDBOX PATCH: opt-in gate for the legacy paste-burst heuristic.
     /// Enable legacy non-bracketed paste-burst detection. Default off.
     LegacyPasteBurstHeuristic,
@@ -980,7 +983,23 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::AnthropicModels,
         key: "anthropic_models",
-        stage: Stage::Stable,
+        stage: Stage::Experimental {
+            name: "Anthropic models",
+            menu_description: "Enable Claude-via-Copilot model options.",
+            announcement: "Anthropic models can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: default-off CLAUDE.md project-doc fallback. Explicit
+    // `project_doc_fallback_filenames` remains the lower-level override path.
+    FeatureSpec {
+        id: Feature::AutoLoadClaudeMd,
+        key: "auto_load_claude_md",
+        stage: Stage::Experimental {
+            name: "Auto-load CLAUDE.md",
+            menu_description: "Use CLAUDE.md as a project-doc fallback when AGENTS files are missing.",
+            announcement: "CLAUDE.md fallback loading can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
         default_enabled: false,
     },
     // SANDBOX PATCH: opt-in gate for the legacy non-bracketed paste-burst
@@ -1016,7 +1035,11 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ManagedHooks,
         key: "managed_hooks",
-        stage: Stage::Stable,
+        stage: Stage::Experimental {
+            name: "Allow managed (admin) hooks",
+            menu_description: "OFF by default; enabling honors enterprise/admin managed-config-pushed hooks and managed requirements.",
+            announcement: "Managed/admin hooks can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
         default_enabled: false,
     },
     FeatureSpec {

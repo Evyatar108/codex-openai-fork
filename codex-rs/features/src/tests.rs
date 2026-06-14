@@ -208,6 +208,62 @@ fn network_proxy_is_experimental_and_disabled_by_default() {
 }
 
 #[test]
+fn fork_visibility_features_are_experimental_and_disabled_by_default() {
+    let expected = [
+        (
+            Feature::AnthropicModels,
+            "anthropic_models",
+            "Anthropic models",
+            "Enable Claude-via-Copilot model options.",
+        ),
+        (
+            Feature::AutoLoadClaudeMd,
+            "auto_load_claude_md",
+            "Auto-load CLAUDE.md",
+            "Use CLAUDE.md as a project-doc fallback when AGENTS files are missing.",
+        ),
+        (
+            Feature::ManagedHooks,
+            "managed_hooks",
+            "Allow managed (admin) hooks",
+            "OFF by default; enabling honors enterprise/admin managed-config-pushed hooks and managed requirements.",
+        ),
+    ];
+
+    for (feature, key, menu_name, menu_description) in expected {
+        let stage = feature.stage();
+        assert_eq!(
+            (
+                feature_for_key(key),
+                feature.default_enabled(),
+                stage.experimental_menu_name(),
+                stage.experimental_menu_description(),
+            ),
+            (
+                Some(feature),
+                false,
+                Some(menu_name),
+                Some(menu_description),
+            ),
+        );
+    }
+}
+
+#[test]
+fn style_user_messages_alias_maps_to_user_message_styling() {
+    let mut features = Features::with_defaults();
+    features.apply_map(&BTreeMap::from([("style_user_messages".to_string(), true)]));
+
+    assert_eq!(
+        (
+            feature_for_key("style_user_messages"),
+            features.enabled(Feature::UserMessageStyling),
+        ),
+        (Some(Feature::UserMessageStyling), true),
+    );
+}
+
+#[test]
 fn tool_search_is_removed_and_disabled_by_default() {
     assert_eq!(Feature::ToolSearch.stage(), Stage::Removed);
     assert_eq!(Feature::ToolSearch.default_enabled(), false);

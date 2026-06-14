@@ -58,20 +58,26 @@ comments may reference earlier entries that predate this reconstructed file.
   `CODEX_ENABLE_ANTHROPIC` value or persisted Claude model cannot keep Claude visible when the
   feature is off.
 - **Patch:** keep `features.anthropic_models` default-off and install its final resolved value into
-  the model-provider gate; keep `--enable-anthropic` only as a CLI alias to the canonical feature;
+  the model-provider gate; make it visible in `/experimental`; keep `--enable-anthropic` only as a CLI alias to the canonical feature;
   replace unavailable persisted Claude defaults with the gate-filtered catalog default in the
   Copilot model manager and during TUI bootstrap; add default-off experimental features
   `legacy_paste_burst_heuristic` and
   `user_message_styling`; map the old `disable_paste_burst` config key into
   `legacy_paste_burst_heuristic` only when the canonical feature key is absent; install
-  `user_message_styling` once from resolved TUI config instead of reading a process env var.
+  `user_message_styling` once from resolved TUI config instead of reading a process env var; map the
+  old `style_user_messages` launcher/config key to `user_message_styling`; add a default-off
+  `auto_load_claude_md` experimental feature that appends `CLAUDE.md` as a project-doc fallback after
+  explicit `project_doc_fallback_filenames`.
 - **Safety:** canonical feature entries win over compatibility aliases. Custom non-catalog model
   strings remain untouched unless they are Claude/Anthropic slugs absent from the gate-filtered model
-  list. The standalone public composer keeps its existing non-config-backed paste behavior because it
-  has no feature source to re-enable the detector.
+  list. `CLAUDE.md` is not auto-loaded unless `auto_load_claude_md` is explicitly enabled, and
+  explicit fallback filenames retain priority. The standalone public composer keeps its existing
+  non-config-backed paste behavior because it has no feature source to re-enable the detector.
 - **Verification:** feature registry/config tests cover default-off paste semantics, legacy alias
-  mapping, and canonical precedence; model-provider tests cover the Anthropic gate; TUI tests cover
-  persisted-Claude fallback and the feature-backed styling helper branches.
+  mapping, stale style-key mapping, picker visibility, and canonical precedence; model-provider tests
+  cover the Anthropic gate; agents-md tests cover default-off/configured/feature-enabled `CLAUDE.md`
+  fallback behavior; TUI tests cover persisted-Claude fallback and the feature-backed styling helper
+  branches.
 
 ## §18 Copilot prompt budget context tiers
 
@@ -112,3 +118,21 @@ comments may reference earlier entries that predate this reconstructed file.
   syscalls beyond the §15 guard snapshot. The marker path records no command text, prompts, paste
   content, tool output, absolute paths, or raw ids; privacy/off-path tests cover disabled no-write and
   command-notification redaction.
+
+## §20 Managed hooks opt-in gate
+
+- **Surface:** `codex-rs/features/src/lib.rs`, `codex-rs/core/src/config/mod.rs`,
+  `codex-rs/hooks/src/managed_gate.rs`, `codex-rs/hooks/src/engine/discovery.rs`,
+  `codex-rs/cli/src/main.rs`, `codex-rs/tui/src/chatwidget/settings_popups.rs`
+- **Status:** active
+- **Reason:** commit `883f75f50a` made the fork skip managed/admin-config-pushed hooks by default
+  because enterprise-managed hook sources can run privileged policy code on every tool call. That
+  behavior needs to remain default-off while still exposing an explicit opt-in path.
+- **Patch:** keep `features.managed_hooks` default-off and resolve it as the single runtime gate for
+  managed hook discovery. `--enable-managed-hooks`, `[features] managed_hooks = true`,
+  `-c features.managed_hooks=true`, and the compatibility `CODEX_ENABLE_MANAGED_HOOKS` environment
+  fallback all converge on the same gate. The feature is now visible in `/experimental` as "Allow
+  managed (admin) hooks" with copy that calls out the enterprise/admin surface and the default-off
+  behavior.
+- **Safety:** when disabled, managed/admin-config hooks remain suppressed exactly as before; enabling
+  the feature restores honored managed hooks without changing user/project hook discovery.

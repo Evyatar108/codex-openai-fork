@@ -172,6 +172,32 @@ async fn candidate_filenames_omits_claude_md_when_not_configured() {
     );
 }
 
+#[tokio::test]
+async fn candidate_filenames_appends_claude_md_when_feature_enabled() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut cfg = make_config_with_fallback(
+        &tmp,
+        /*limit*/ 4096,
+        /*instructions*/ None,
+        &["EXAMPLE.md"],
+    )
+    .await;
+    cfg.features
+        .enable(Feature::AutoLoadClaudeMd)
+        .expect("test config should allow CLAUDE.md auto-load");
+    let manager = AgentsMdManager::new(&cfg);
+
+    assert_eq!(
+        manager.candidate_filenames(),
+        vec![
+            LOCAL_AGENTS_MD_FILENAME.to_string(),
+            DEFAULT_AGENTS_MD_FILENAME.to_string(),
+            "EXAMPLE.md".to_string(),
+            "CLAUDE.md".to_string()
+        ]
+    );
+}
+
 /// AGENTS.md missing – should yield `None`.
 #[tokio::test]
 async fn no_doc_file_returns_none() {
@@ -485,6 +511,23 @@ async fn uses_configured_fallback_when_agents_missing() {
         .expect("fallback doc expected");
 
     assert_eq!(res, "example instructions");
+}
+
+#[tokio::test]
+async fn auto_load_claude_md_feature_uses_claude_md_when_agents_missing() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("CLAUDE.md"), "claude instructions").unwrap();
+
+    let mut cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    cfg.features
+        .enable(Feature::AutoLoadClaudeMd)
+        .expect("test config should allow CLAUDE.md auto-load");
+
+    let res = get_user_instructions(&cfg)
+        .await
+        .expect("CLAUDE.md should be loaded when the feature is enabled");
+
+    assert_eq!(res, "claude instructions");
 }
 
 /// AGENTS.md remains preferred when both AGENTS.md and fallbacks are present.

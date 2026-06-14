@@ -45,6 +45,10 @@ const ALIASES: &[Alias] = &[
         legacy_key: "codex_hooks",
         feature: Feature::CodexHooks,
     },
+    Alias {
+        legacy_key: "style_user_messages",
+        feature: Feature::UserMessageStyling,
+    },
 ];
 
 pub fn legacy_feature_keys() -> impl Iterator<Item = &'static str> {

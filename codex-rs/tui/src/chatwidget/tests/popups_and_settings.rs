@@ -2131,6 +2131,25 @@ async fn experimental_popup_omits_stable_guardian_approval() {
         !popup.contains("Auto-review"),
         "expected stable auto-review feature to be omitted from experimental popup, got:\n{popup}"
     );
+    for label in ["Anthropic models", "Auto-load CLAUDE.md"] {
+        assert!(
+            popup.contains(label),
+            "expected {label:?} to be visible in experimental popup, got:\n{popup}"
+        );
+    }
+
+    let mut scrolled_popup = popup;
+    for _ in 0..FEATURES.len() {
+        if scrolled_popup.contains("Allow managed (admin) hooks") {
+            break;
+        }
+        chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        scrolled_popup = render_bottom_popup(&chat, /*width*/ 120);
+    }
+    assert!(
+        scrolled_popup.contains("Allow managed (admin) hooks"),
+        "expected managed hooks to be reachable in experimental popup, got:\n{scrolled_popup}"
+    );
 }
 
 #[tokio::test]
