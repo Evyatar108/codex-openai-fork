@@ -16,6 +16,13 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use ratatui::widgets::Wrap;
 
+// SANDBOX PATCH: shared retained viewport area allocation for render and visible-height prepass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RetainedTranscriptAllocation {
+    committed_area_height: u16,
+    active_area_height: u16,
+}
+
 // SANDBOX PATCH: Shared retained committed-transcript helpers for the main viewport and Ctrl+T.
 pub(crate) fn render_committed_cells(
     cells: &[Arc<dyn HistoryCell>],
@@ -83,6 +90,19 @@ fn active_cell_lines(
     lines
 }
 
+fn line_has_readable_text(line: &Line<'_>) -> bool {
+    line.spans
+        .iter()
+        .any(|span| !span.content.trim().is_empty())
+}
+
+fn line_height(line: Line<'static>, width: u16) -> u16 {
+    let row_count = Paragraph::new(Text::from(vec![line]))
+        .wrap(Wrap { trim: false })
+        .line_count(width);
+    u16::try_from(row_count).unwrap_or(u16::MAX)
+}
+
 // SANDBOX PATCH: The main viewport now renders only the visible committed tail from retained cells.
 pub(crate) struct RetainedTranscriptViewportRenderable<'a> {
     committed_cells: &'a [Arc<dyn HistoryCell>],
@@ -108,23 +128,14 @@ impl<'a> RetainedTranscriptViewportRenderable<'a> {
 
     pub(crate) fn visible_height(&self, width: u16, max_height: u16) -> u16 {
         let content_width = self.content_width(width);
-        let mut total_height = self.active_total_height(content_width);
-        if total_height >= max_height {
-            return max_height;
-        }
-
-        for (index, cell) in self.committed_cells.iter().enumerate().rev() {
-            total_height = total_height.saturating_add(committed_cell_total_height(
-                index,
-                cell.as_ref(),
-                content_width,
-            ));
-            if total_height >= max_height {
-                return max_height;
-            }
-        }
-
-        total_height
+        // SANDBOX PATCH: match render() allocation so resize prepass and draw agree.
+        let allocation = self.allocate_viewport(content_width, max_height);
+        let committed_visible_height =
+            self.visible_committed_height(content_width, allocation.committed_area_height);
+        allocation
+            .active_area_height
+            .saturating_add(committed_visible_height)
+            .min(max_height)
     }
 
     fn content_width(&self, width: u16) -> u16 {
@@ -136,6 +147,53 @@ impl<'a> RetainedTranscriptViewportRenderable<'a> {
             cell.desired_height_for_mode(width, self.render_mode)
                 .saturating_add(1)
         })
+    }
+
+    fn allocate_viewport(&self, width: u16, max_height: u16) -> RetainedTranscriptAllocation {
+        let active_height = self.active_total_height(width);
+        // SANDBOX PATCH: reserve readable recent committed context before a tall active tail.
+        let committed_reservation_height =
+            self.recent_committed_context_reservation_height(width, max_height);
+        // SANDBOX PATCH: leave the active tail at least one row whenever both regions can fit.
+        let active_area_height =
+            active_height.min(max_height.saturating_sub(committed_reservation_height));
+        // SANDBOX PATCH: any rows not needed by the active tail remain available to committed cells.
+        let committed_area_height = max_height.saturating_sub(active_area_height);
+
+        RetainedTranscriptAllocation {
+            committed_area_height,
+            active_area_height,
+        }
+    }
+
+    fn recent_committed_context_reservation_height(&self, width: u16, max_height: u16) -> u16 {
+        if self.active_cell.is_none() || self.committed_cells.is_empty() || max_height <= 1 {
+            return 0;
+        }
+
+        let Some((index, cell)) = self.committed_cells.iter().enumerate().next_back() else {
+            return 0;
+        };
+        let readable_suffix_height =
+            committed_cell_readable_suffix_height(index, cell.as_ref(), width);
+
+        readable_suffix_height.min(max_height.saturating_sub(1))
+    }
+
+    fn visible_committed_height(&self, width: u16, max_height: u16) -> u16 {
+        let mut total_height = 0u16;
+        for (index, cell) in self.committed_cells.iter().enumerate().rev() {
+            total_height = total_height.saturating_add(committed_cell_total_height(
+                index,
+                cell.as_ref(),
+                width,
+            ));
+            if total_height >= max_height {
+                return max_height;
+            }
+        }
+
+        total_height
     }
 
     fn render_active_tail(&self, area: Rect, buf: &mut Buffer) {
@@ -209,6 +267,27 @@ impl<'a> RetainedTranscriptViewportRenderable<'a> {
     }
 }
 
+fn committed_cell_readable_suffix_height(index: usize, cell: &dyn HistoryCell, width: u16) -> u16 {
+    let mut suffix_height = 0u16;
+    for line in committed_cell_lines(
+        cell,
+        width,
+        committed_cell_has_separator_before(index, cell),
+        committed_cell_style(cell, /*highlighted*/ false),
+    )
+    .into_iter()
+    .rev()
+    {
+        let has_readable_text = line_has_readable_text(&line);
+        suffix_height = suffix_height.saturating_add(line_height(line, width));
+        if has_readable_text {
+            return suffix_height;
+        }
+    }
+
+    0
+}
+
 impl Renderable for RetainedTranscriptViewportRenderable<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let content_area = Rect::new(area.x, area.y, self.content_width(area.width), area.height);
@@ -218,29 +297,29 @@ impl Renderable for RetainedTranscriptViewportRenderable<'_> {
 
         Clear.render(content_area, buf);
 
-        let active_height = self.active_total_height(content_area.width);
-        let active_area_height = active_height.min(content_area.height);
-        let committed_area_height = content_area.height.saturating_sub(active_area_height);
+        let allocation = self.allocate_viewport(content_area.width, content_area.height);
 
-        if committed_area_height > 0 {
+        if allocation.committed_area_height > 0 {
             self.render_committed_tail(
                 Rect::new(
                     content_area.x,
                     content_area.y,
                     content_area.width,
-                    committed_area_height,
+                    allocation.committed_area_height,
                 ),
                 buf,
             );
         }
 
-        if active_area_height > 0 {
+        if allocation.active_area_height > 0 {
             self.render_active_tail(
                 Rect::new(
                     content_area.x,
-                    content_area.bottom().saturating_sub(active_area_height),
+                    content_area
+                        .bottom()
+                        .saturating_sub(allocation.active_area_height),
                     content_area.width,
-                    active_area_height,
+                    allocation.active_area_height,
                 ),
                 buf,
             );

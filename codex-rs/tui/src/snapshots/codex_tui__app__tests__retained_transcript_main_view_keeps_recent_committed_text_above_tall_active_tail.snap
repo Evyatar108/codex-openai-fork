@@ -1,0 +1,14 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered
+---
+KEEP-ME prompt before tall active table
+  | active table row 16 | value |
+  | active table row 17 | value |
+  | active table row 18 | value |
+  | active table row 19 | value |
+
+
+› Ask Codex to do anything
+
+  gpt-5.5 default · 272K context · C:\t…

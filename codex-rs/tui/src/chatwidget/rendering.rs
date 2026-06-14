@@ -52,6 +52,12 @@ impl ChatWidget {
         self.last_rendered_width.set(Some(area.width as usize));
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_active_cell_for_tests(&mut self, active_cell: Box<dyn HistoryCell>) {
+        self.transcript.active_cell = Some(active_cell);
+        self.bump_active_cell_revision();
+    }
+
     pub(crate) fn desired_height_with_committed_cells(
         &self,
         committed_cells: &[Arc<dyn HistoryCell>],

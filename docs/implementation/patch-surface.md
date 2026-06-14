@@ -38,11 +38,15 @@ comments may reference earlier entries that predate this reconstructed file.
   batch retained replay to a single frame, and keep stream-finalization reflow on the default path
   limited to real resize-repair cases. The retained main-viewport renderable reports O(1)
   fill-available intent from `desired_height`, leaving the existing bounded `visible_height` prepass
-  and visible-tail renderer to decide which committed rows are drawn.
+  and visible-tail renderer to decide which committed rows are drawn. With
+  `retained_transcript_viewport` enabled, tall active tails reserve a readable suffix from the most
+  recent committed cell before active-tail allocation so a table or paste tail cannot evict the
+  immediately preceding committed message from the live view.
 - **Safety:** default behavior returns to the upstream/native scrollback model, while the retained
   viewport remains opt-in and still preserves its resize-friendly rendering when explicitly enabled.
   The typing-lag fix is contained to the fork-owned retained renderable and does not alter generic
-  flex allocation or native history-cell height measurement.
+  flex allocation or native history-cell height measurement. The no-eviction invariant is enforced
+  by `retained_transcript_main_view_keeps_recent_committed_text_above_tall_active_tail_snapshot`.
 
 ## §17 Fork runtime flags migrated to experimental features
 

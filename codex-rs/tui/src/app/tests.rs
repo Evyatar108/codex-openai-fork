@@ -19,6 +19,7 @@ use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::StreamingAgentTailCell;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_session_info;
 use crate::multi_agents::AgentPickerThreadEntry;
@@ -3986,6 +3987,15 @@ fn plain_line_cell(text: impl Into<String>) -> Arc<dyn HistoryCell> {
     Arc::new(PlainHistoryCell::new(vec![Line::from(text.into())])) as Arc<dyn HistoryCell>
 }
 
+fn tall_table_like_active_cell(row_count: usize) -> Box<dyn HistoryCell> {
+    Box::new(StreamingAgentTailCell::new(
+        (0..row_count)
+            .map(|index| Line::from(format!("| active table row {index:02} | value |")))
+            .collect(),
+        /*is_first_line*/ true,
+    ))
+}
+
 fn rendered_line_text(line: &Line<'static>) -> String {
     line.spans
         .iter()
@@ -4110,6 +4120,49 @@ async fn retained_transcript_main_view_renders_visible_tail_snapshot() {
     assert!(!rendered.contains("cell 0"));
     assert!(rendered.contains("cell 7"));
     assert_app_snapshot!("retained_transcript_main_view_tail", rendered);
+}
+
+#[tokio::test]
+async fn retained_transcript_main_view_keeps_recent_committed_text_above_tall_active_tail_snapshot()
+{
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    enable_terminal_resize_reflow(&mut app);
+    enable_retained_transcript_viewport(&mut app);
+    const READABLE_PROMPT: &str = "KEEP-ME prompt before tall active table";
+    app.transcript_cells = vec![
+        plain_line_cell("older committed cell"),
+        plain_line_cell(READABLE_PROMPT),
+    ];
+    app.chat_widget
+        .set_active_cell_for_tests(tall_table_like_active_cell(/*row_count*/ 20));
+
+    let width = 40;
+    let height = 10;
+    let desired_height =
+        app.chat_widget
+            .desired_height_with_committed_cells(&app.transcript_cells, width, height);
+    let area = Rect::new(0, 0, width, desired_height);
+    let mut buffer = Buffer::empty(area);
+    app.chat_widget
+        .render_with_committed_cells(&app.transcript_cells, area, &mut buffer);
+
+    let rendered = buffer_to_string(&buffer);
+    assert!(
+        rendered.contains(READABLE_PROMPT),
+        "recent committed prompt text should remain readable above the active tail:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("active table row 19"),
+        "active tail should remain bottom-rendered:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("active table row 00"),
+        "tall active tail should still be clipped from the top:\n{rendered}"
+    );
+    assert_app_snapshot!(
+        "retained_transcript_main_view_keeps_recent_committed_text_above_tall_active_tail",
+        rendered
+    );
 }
 
 #[tokio::test]
