@@ -137,7 +137,11 @@ async fn handle_spawn_agent(
         },
     ))
     .await
-    .map_err(collab_spawn_error);
+    .map_err(|err| {
+        // SANDBOX PATCH: v1-agent-limit-ux - include open-agent context in limit errors.
+        let open_agents = session.services.agent_control.live_agent_references();
+        collab_spawn_error(err, &open_agents)
+    });
     let (new_thread_id, new_agent_metadata, status) = match &result {
         Ok(spawned_agent) => (
             Some(spawned_agent.thread_id),

@@ -83,7 +83,8 @@ pub enum CodexErr {
     ContextWindowExceeded,
     #[error("no thread with id: {0}")]
     ThreadNotFound(ThreadId),
-    #[error("agent thread limit reached")]
+    // SANDBOX PATCH: v1-agent-limit-ux - generic display should not imply running-only threads.
+    #[error("open agent thread limit reached")]
     AgentLimitReached { max_threads: usize },
     #[error("session configured event was not the first event in the stream")]
     SessionConfiguredNotFirstEvent,

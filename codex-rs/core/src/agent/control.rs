@@ -180,6 +180,56 @@ impl AgentControl {
         self.session_id
     }
 
+    // SANDBOX PATCH: v1-agent-limit-ux - expose open-agent labels for model-facing limit errors.
+    pub(crate) fn live_agent_references(&self) -> Vec<String> {
+        let mut live_agents = self.state.live_agents();
+        live_agents.sort_by(|left, right| {
+            left.agent_path
+                .as_deref()
+                .unwrap_or_default()
+                .cmp(right.agent_path.as_deref().unwrap_or_default())
+                .then_with(|| {
+                    left.agent_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_default()
+                        .cmp(&right.agent_id.map(|id| id.to_string()).unwrap_or_default())
+                })
+        });
+
+        live_agents
+            .into_iter()
+            .map(|metadata| {
+                let agent_id = metadata.agent_id.map(|id| id.to_string());
+                let primary = metadata
+                    .agent_path
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .or_else(|| metadata.agent_nickname.clone())
+                    .or_else(|| agent_id.clone())
+                    .unwrap_or_else(|| "unknown agent".to_string());
+                let mut details = Vec::new();
+                if let Some(id) = agent_id.as_deref()
+                    && id != primary
+                {
+                    details.push(format!("id {id}"));
+                }
+                if let Some(nickname) = metadata.agent_nickname.as_deref()
+                    && nickname != primary
+                {
+                    details.push(format!("nickname {nickname}"));
+                }
+                if let Some(role) = metadata.agent_role.as_deref() {
+                    details.push(format!("role {role}"));
+                }
+                if details.is_empty() {
+                    primary
+                } else {
+                    format!("{primary} ({})", details.join(", "))
+                }
+            })
+            .collect()
+    }
+
     /// Spawn a new agent thread and submit the initial prompt.
     #[cfg(test)]
     pub(crate) async fn spawn_agent(

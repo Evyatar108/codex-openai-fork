@@ -70,6 +70,9 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert!(description.contains("Spawns an agent to work on the specified task."));
     assert!(description.contains("The spawned agent will have the same tools as you"));
     assert!(description.contains("`max_concurrent_threads_per_session = 4`"));
+    // SANDBOX PATCH: v1-agent-limit-ux - keep the open-agent close_agent contract discoverable.
+    assert!(description.contains("Completed or errored agents still count while open"));
+    assert!(description.contains("use close_agent when an agent is no longer needed"));
     assert!(description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
     assert!(
         description

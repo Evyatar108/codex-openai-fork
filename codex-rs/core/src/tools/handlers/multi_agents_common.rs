@@ -115,12 +115,25 @@ pub(crate) fn build_wait_agent_statuses(
     entries
 }
 
-pub(crate) fn collab_spawn_error(err: CodexErr) -> FunctionCallError {
+// SANDBOX PATCH: v1-agent-limit-ux - clarify that the cap counts open reusable agents.
+pub(crate) fn collab_spawn_error(err: CodexErr, open_agents: &[String]) -> FunctionCallError {
     match err {
         CodexErr::UnsupportedOperation(message) if message == "thread manager dropped" => {
             FunctionCallError::RespondToModel("collab manager unavailable".to_string())
         }
         CodexErr::UnsupportedOperation(message) => FunctionCallError::RespondToModel(message),
+        CodexErr::AgentLimitReached { max_threads } => {
+            let mut message = format!(
+                "collab spawn failed: open agent thread limit reached ({max_threads} open agent thread{} max). Completed or errored agents remain open and reusable until closed; use close_agent on agents that are no longer needed before spawning another.",
+                if max_threads == 1 { "" } else { "s" }
+            );
+            if !open_agents.is_empty() {
+                message.push_str(" Currently open agents: ");
+                message.push_str(open_agents.join(", ").as_str());
+                message.push('.');
+            }
+            FunctionCallError::RespondToModel(message)
+        }
         err => FunctionCallError::RespondToModel(format!("collab spawn failed: {err}")),
     }
 }

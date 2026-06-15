@@ -635,10 +635,11 @@ fn spawn_agent_tool_description(
 ) -> String {
     let agent_role_guidance = available_models_description.unwrap_or_default();
 
+    // SANDBOX PATCH: v1-agent-limit-ux - describe max-thread semantics as open/reusable agents.
     let tool_description = format!(
         r#"
         {agent_role_guidance}
-        Spawn a sub-agent for a well-scoped task. {return_value_description} {SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}"#
+        Spawn a sub-agent for a well-scoped task. {return_value_description} {SPAWN_AGENT_INHERITED_MODEL_GUIDANCE} Spawned agents remain open and reusable after completion until close_agent closes them."#
     );
 
     if !include_usage_hint {
@@ -706,11 +707,12 @@ fn spawn_agent_tool_description_v2(
     let concurrency_guidance = max_concurrent_threads_per_session
         .map(|limit| {
             format!(
-                "This session is configured with `max_concurrent_threads_per_session = {limit}` for concurrently open agent threads."
+                "This session is configured with `max_concurrent_threads_per_session = {limit}` for concurrently open agent threads. Completed or errored agents still count while open; use close_agent when an agent is no longer needed."
             )
         })
         .unwrap_or_default();
 
+    // SANDBOX PATCH: v1-agent-limit-ux - describe max-thread semantics as open/reusable agents.
     let tool_description = format!(
         r#"
         {agent_role_guidance}
@@ -718,7 +720,7 @@ fn spawn_agent_tool_description_v2(
 You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 {SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
-It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
+It will be able to send you and other open agents messages, and its final answer will be provided to you when it finishes. Finished agents remain open and reusable until close_agent closes them.
 The new agent's canonical task name will be provided to it along with the message.
 {concurrency_guidance}"#
     );

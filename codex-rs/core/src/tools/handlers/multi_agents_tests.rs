@@ -1134,6 +1134,123 @@ async fn spawn_agent_errors_when_manager_dropped() {
     );
 }
 
+// SANDBOX PATCH: v1-agent-limit-ux - model-facing limit errors explain open-agent semantics.
+#[tokio::test]
+async fn spawn_agent_limit_error_lists_open_agent_context() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+        nickname: Option<String>,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config.agent_max_threads = Some(1);
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+    turn.config = Arc::new(config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let spawn_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({"message": "inspect this repo"})),
+        ))
+        .await
+        .expect("first spawn_agent should succeed");
+    let (content, _) = expect_text_output(spawn_output);
+    let spawn_result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn result should parse");
+
+    let Err(err) = SpawnAgentHandler::default()
+        .handle(invocation(
+            session,
+            turn,
+            "spawn_agent",
+            function_payload(json!({"message": "inspect this repo again"})),
+        ))
+        .await
+    else {
+        panic!("second spawn_agent should hit the open-agent limit");
+    };
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("limit should surface as a model-facing error");
+    };
+    assert!(message.contains("open agent thread limit reached"));
+    assert!(message.contains("Completed or errored agents remain open and reusable until closed"));
+    assert!(message.contains("use close_agent"));
+    assert!(message.contains("Currently open agents:"));
+    assert!(message.contains(spawn_result.agent_id.as_str()));
+    if let Some(nickname) = spawn_result.nickname {
+        assert!(message.contains(nickname.as_str()));
+    }
+}
+
+// SANDBOX PATCH: v1-agent-limit-ux - v2 errors should name the open task to close.
+#[tokio::test]
+async fn multi_agent_v2_spawn_limit_error_lists_open_task_context() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config.agent_max_threads = Some(1);
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+    turn.config = Arc::new(config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "first_task"
+            })),
+        ))
+        .await
+        .expect("first spawn_agent should succeed");
+
+    let Err(err) = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo again",
+                "task_name": "second_task"
+            })),
+        ))
+        .await
+    else {
+        panic!("second spawn_agent should hit the open-agent limit");
+    };
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("limit should surface as a model-facing error");
+    };
+    assert!(message.contains("open agent thread limit reached"));
+    assert!(message.contains("use close_agent"));
+    assert!(message.contains("Currently open agents:"));
+    assert!(message.contains("/root/first_task"));
+}
+
 #[tokio::test]
 async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_path() {
     #[derive(Debug, Deserialize)]

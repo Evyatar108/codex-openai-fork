@@ -109,6 +109,28 @@ comments may reference earlier entries that predate this reconstructed file.
 - **Verification:** config tests assert the platform-specific default, explicit feature enable,
   legacy alias enable, legacy alias opt-out, and canonical feature precedence.
 
+## §17b Open-agent limit UX
+
+- **Surface:** `codex-rs/core/src/agent/control.rs`,
+  `codex-rs/core/src/tools/handlers/multi_agents_common.rs`,
+  `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`,
+  `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`,
+  `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`,
+  `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`,
+  `codex-rs/protocol/src/error.rs`
+- **Status:** active
+- **Reason:** the fork keeps upstream-native reusable spawned-agent threads: completed or errored
+  children stay open for `send_input` / `followup_task` until `close_agent`. The old limit text
+  sounded like a running-agent cap, which made a full open-agent registry look like a leaked counter.
+- **Patch:** reword `AgentLimitReached` and the v1/v2 spawn tool surfaces as an open-agent-thread
+  limit, tell the model to use `close_agent` for agents that are no longer needed, and include the
+  currently open agent ids/names/nicknames in spawn-limit errors so the model can choose a close
+  target.
+- **Safety:** lifecycle and accounting are unchanged. Slots are still released only by the existing
+  close/shutdown paths; no release is added to TurnComplete, TurnAborted, or error completion.
+- **Verification:** multi-agent handler tests cover v1 id/nickname and v2 task-name context in
+  model-facing limit errors; spec tests cover the close-agent guidance in the tool description.
+
 ## §18 Copilot prompt budget context tiers
 
 - **Surface:** `codex-rs/model-provider/src/copilot_models_endpoint.rs`,

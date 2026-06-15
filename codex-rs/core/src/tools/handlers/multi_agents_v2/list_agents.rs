@@ -36,7 +36,8 @@ impl ToolExecutor<ToolInvocation> for Handler {
             .agent_control
             .list_agents(&turn.session_source, args.path_prefix.as_deref())
             .await
-            .map_err(collab_spawn_error)?;
+            // SANDBOX PATCH: v1-agent-limit-ux - preserve the shared mapper's non-limit behavior.
+            .map_err(|err| collab_spawn_error(err, &[]))?;
 
         Ok(boxed_tool_output(ListAgentsResult { agents }))
     }
