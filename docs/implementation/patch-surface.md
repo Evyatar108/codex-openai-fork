@@ -53,8 +53,10 @@ comments may reference earlier entries that predate this reconstructed file.
 - **Surface:** `codex-rs/features/src/lib.rs`, `codex-rs/core/src/config/mod.rs`,
   `codex-rs/config/src/config_toml.rs`, `codex-rs/model-provider/src/anthropic_gate.rs`,
   `codex-rs/model-provider/src/copilot/gated_models_manager.rs`,
+  `codex-rs/model-provider/src/copilot.rs`, `codex-rs/tui/src/app/config_persistence.rs`,
   `codex-rs/tui/src/app_server_session.rs`, `codex-rs/tui/src/app.rs`,
-  `codex-rs/tui/src/chatwidget/constructor.rs`, `codex-rs/tui/src/style.rs`,
+  `codex-rs/tui/src/chatwidget/constructor.rs`, `codex-rs/tui/src/chatwidget/settings.rs`,
+  `codex-rs/tui/src/style.rs`, `codex-rs/tui/src/bottom_pane/mod.rs`,
   `codex-rs/tui/src/bottom_pane/chat_composer.rs`
 - **Status:** active
 - **Reason:** fork-local runtime behavior should not be controlled by ad-hoc launcher/env/top-level
@@ -71,7 +73,13 @@ comments may reference earlier entries that predate this reconstructed file.
   `user_message_styling` once from resolved TUI config instead of reading a process env var; map the
   old `style_user_messages` launcher/config key to `user_message_styling`; add a default-off
   `auto_load_claude_md` experimental feature that appends `CLAUDE.md` as a project-doc fallback after
-  explicit `project_doc_fallback_filenames`.
+  explicit `project_doc_fallback_filenames`. Accepted `/experimental` changes for the three
+  restart-free flags (`anthropic_models`, `legacy_paste_burst_heuristic`, and
+  `user_message_styling`) are patched into the live TUI session: Anthropic model changes re-read the
+  app-server `model/list` catalog after the config write/reload, swap both App and ChatWidget
+  catalogs, and fall back the active model if disabling removes the selected Claude/Anthropic slug;
+  paste-burst changes flip the composer's `disable_paste_burst` escape hatch; styling changes
+  reinstall the atomic user-message style gate and redraw.
 - **Safety:** canonical feature entries win over compatibility aliases. Custom non-catalog model
   strings remain untouched unless they are Claude/Anthropic slugs absent from the gate-filtered model
   list. `CLAUDE.md` is not auto-loaded unless `auto_load_claude_md` is explicitly enabled, and
@@ -81,7 +89,8 @@ comments may reference earlier entries that predate this reconstructed file.
   mapping, stale style-key mapping, picker visibility, and canonical precedence; model-provider tests
   cover the Anthropic gate; agents-md tests cover default-off/configured/feature-enabled `CLAUDE.md`
   fallback behavior; TUI tests cover persisted-Claude fallback and the feature-backed styling helper
-  branches.
+  branches; live-toggle tests cover post-construction Anthropic gate flips, catalog swap plus
+  active-model fallback, paste-burst inversion, and user-message styling redraw state.
 
 ## §17a Windows paste-burst default invariant
 

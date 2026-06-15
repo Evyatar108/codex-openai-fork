@@ -160,6 +160,11 @@ pub(crate) struct AppServerBootstrap {
     pub(crate) available_models: Vec<ModelPreset>,
 }
 
+pub(crate) struct AppServerModelCatalog {
+    pub(crate) default_model: String,
+    pub(crate) available_models: Vec<ModelPreset>,
+}
+
 pub(crate) struct AppServerSession {
     client: AppServerClient,
     next_request_id: i64,
@@ -236,30 +241,13 @@ impl AppServerSession {
 
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let account = self.read_account().await?;
-        let model_request_id = self.next_request_id();
-        let models: ModelListResponse = self
-            .client
-            .request_typed(ClientRequest::ModelList {
-                request_id: model_request_id,
-                params: ModelListParams {
-                    cursor: None,
-                    limit: None,
-                    include_hidden: Some(true),
-                },
-            })
+        let AppServerModelCatalog {
+            default_model,
+            available_models,
+        } = self
+            .refresh_model_catalog_for_model(config.model.as_deref())
             .await
-            .map_err(|err| {
-                bootstrap_request_error("model/list failed during TUI bootstrap", err)
-            })?;
-        let available_models = models
-            .data
-            .into_iter()
-            .map(model_preset_from_api_model)
-            .collect::<Vec<_>>();
-        let default_model = bootstrap_default_model(config.model.as_deref(), &available_models)
-            .wrap_err("model/list returned no models for TUI bootstrap")?;
-        self.default_model = Some(default_model.clone());
-        self.available_models = available_models.clone();
+            .wrap_err("model/list failed during TUI bootstrap")?;
 
         let (
             account_email,
@@ -309,6 +297,41 @@ impl AppServerSession {
             default_model,
             feedback_audience,
             has_chatgpt_account,
+            available_models,
+        })
+    }
+
+    // SANDBOX PATCH: Reuse the bootstrap model/list shape for live
+    // AnthropicModels refreshes after `/experimental` persists config.
+    pub(crate) async fn refresh_model_catalog_for_model(
+        &mut self,
+        model_override: Option<&str>,
+    ) -> Result<AppServerModelCatalog> {
+        let model_request_id = self.next_request_id();
+        let models: ModelListResponse = self
+            .client
+            .request_typed(ClientRequest::ModelList {
+                request_id: model_request_id,
+                params: ModelListParams {
+                    cursor: None,
+                    limit: None,
+                    include_hidden: Some(true),
+                },
+            })
+            .await
+            .map_err(|err| bootstrap_request_error("model/list failed", err))?;
+        let available_models = models
+            .data
+            .into_iter()
+            .map(model_preset_from_api_model)
+            .collect::<Vec<_>>();
+        let default_model = bootstrap_default_model(model_override, &available_models)
+            .wrap_err("model/list returned no models")?;
+        self.default_model = Some(default_model.clone());
+        self.available_models = available_models.clone();
+
+        Ok(AppServerModelCatalog {
+            default_model,
             available_models,
         })
     }

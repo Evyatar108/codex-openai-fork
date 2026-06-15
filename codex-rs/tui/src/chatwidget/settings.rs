@@ -113,6 +113,17 @@ impl ChatWidget {
         if feature == Feature::MentionsV2 {
             self.sync_mentions_v2_enabled();
         }
+        // SANDBOX PATCH: `legacy_paste_burst_heuristic` is the positive
+        // feature gate; the composer field is the inverted escape hatch.
+        if feature == Feature::LegacyPasteBurstHeuristic {
+            self.bottom_pane.set_disable_paste_burst(!enabled);
+        }
+        // SANDBOX PATCH: User-message styling is process-global but atomic, so
+        // `/experimental` can install the new gate and repaint immediately.
+        if feature == Feature::UserMessageStyling {
+            crate::style::install_user_message_styling(enabled);
+            self.request_redraw();
+        }
         if feature == Feature::PreventIdleSleep {
             self.turn_lifecycle.set_prevent_idle_sleep(enabled);
         }
@@ -223,6 +234,32 @@ impl ChatWidget {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn model_catalog(&self) -> Arc<ModelCatalog> {
         self.model_catalog.clone()
+    }
+
+    // SANDBOX PATCH: Replace the bootstrap-frozen model catalog after an
+    // AnthropicModels live refresh. Returns the active-model fallback, if any,
+    // so `App` can sync the active app-server thread.
+    pub(crate) fn set_model_catalog(
+        &mut self,
+        model_catalog: Arc<ModelCatalog>,
+        fallback_model: &str,
+    ) -> Option<String> {
+        let previous_model = self.current_model().to_string();
+        self.model_catalog = model_catalog;
+        let fallback_model = fallback_model.to_string();
+        let changed_model = (fallback_model != previous_model).then_some(fallback_model.clone());
+        if changed_model.is_some() {
+            self.set_model(&fallback_model);
+            self.add_info_message(
+                format!("Model changed to {fallback_model} because the previous model is no longer available."),
+                /*hint*/ None,
+            );
+        } else {
+            self.refresh_model_dependent_surfaces();
+        }
+        self.refresh_plan_mode_nudge();
+        self.request_redraw();
+        changed_model
     }
 
     pub(crate) fn current_plan_type(&self) -> Option<PlanType> {

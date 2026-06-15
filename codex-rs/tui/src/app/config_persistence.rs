@@ -501,6 +501,13 @@ impl App {
             feature_updates_to_apply.iter().any(|(feature, enabled)| {
                 *feature == Feature::MemoryTool && *enabled && !memory_tool_was_enabled
             });
+        let anthropic_models_changed = feature_updates_to_apply
+            .iter()
+            .any(|(feature, _)| *feature == Feature::AnthropicModels);
+        if anthropic_models_changed {
+            self.refresh_anthropic_model_catalog_after_feature_update(app_server)
+                .await;
+        }
         for (feature, effective_enabled) in feature_updates_to_apply {
             self.chat_widget
                 .set_feature_enabled(feature, effective_enabled);
@@ -584,6 +591,45 @@ impl App {
                 format!("Permissions updated to {label}"),
                 /*hint*/ None,
             );
+        }
+    }
+
+    // SANDBOX PATCH: After the awaited config write/reload has reinstalled the
+    // global Anthropic gate, re-run app-server model/list and replace the
+    // bootstrap-frozen TUI catalogs for the current process.
+    async fn refresh_anthropic_model_catalog_after_feature_update(
+        &mut self,
+        app_server: &mut AppServerSession,
+    ) {
+        let current_model = self.chat_widget.current_model().to_string();
+        let model_override = (!current_model.is_empty()).then_some(current_model.as_str());
+        let refreshed = match app_server
+            .refresh_model_catalog_for_model(model_override)
+            .await
+        {
+            Ok(refreshed) => refreshed,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to refresh model catalog after AnthropicModels feature update"
+                );
+                self.chat_widget.add_error_message(format!(
+                    "Anthropic model setting was saved, but Codex could not refresh /model: {err}"
+                ));
+                return;
+            }
+        };
+
+        let model_catalog = Arc::new(ModelCatalog::new(refreshed.available_models));
+        self.model_catalog = model_catalog.clone();
+        if let Some(fallback_model) = self
+            .chat_widget
+            .set_model_catalog(model_catalog, &refreshed.default_model)
+        {
+            self.sync_active_thread_model_setting(app_server, fallback_model)
+                .await;
+            self.sync_active_thread_service_tier_to_cached_session()
+                .await;
         }
     }
 

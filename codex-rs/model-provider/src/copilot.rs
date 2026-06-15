@@ -25,7 +25,6 @@ use codex_protocol::openai_models::ModelsResponse;
 use tokio::sync::OnceCell;
 use tracing::warn;
 
-use crate::anthropic_gate::anthropic_models_resolved;
 use crate::copilot::gated_models_manager::GatedModelsManager;
 use crate::copilot_models_endpoint::CopilotModelsEndpoint;
 use crate::provider::ModelProvider;
@@ -120,13 +119,12 @@ impl ModelProvider for CopilotModelProvider {
         // Copilot-only slugs). When the caller provides an explicit
         // `model_catalog`, honor it as authoritative.
         if let Some(model_catalog) = config_model_catalog {
-            return GatedModelsManager::wrap(
-                Arc::new(StaticModelsManager::new(
-                    self.auth_manager.clone(),
-                    model_catalog,
-                )),
-                anthropic_models_resolved(),
-            );
+            // SANDBOX PATCH: `GatedModelsManager` reads the Anthropic feature
+            // gate live so `/experimental` can update an existing TUI session.
+            return GatedModelsManager::wrap(Arc::new(StaticModelsManager::new(
+                self.auth_manager.clone(),
+                model_catalog,
+            )));
         }
 
         let base_url = self
@@ -138,14 +136,13 @@ impl ModelProvider for CopilotModelProvider {
             base_url,
             Arc::clone(&self.copilot_auth),
         ));
-        GatedModelsManager::wrap(
-            Arc::new(OpenAiModelsManager::new(
-                codex_home,
-                endpoint,
-                self.auth_manager.clone(),
-            )),
-            anthropic_models_resolved(),
-        )
+        // SANDBOX PATCH: `GatedModelsManager` reads the Anthropic feature gate
+        // live so `/experimental` can update an existing TUI session.
+        GatedModelsManager::wrap(Arc::new(OpenAiModelsManager::new(
+            codex_home,
+            endpoint,
+            self.auth_manager.clone(),
+        )))
     }
 
     async fn api_provider(&self) -> CodexResult<Provider> {

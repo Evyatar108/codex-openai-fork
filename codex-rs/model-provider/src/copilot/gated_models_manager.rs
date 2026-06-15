@@ -1,4 +1,8 @@
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use codex_login::AuthManager;
@@ -14,27 +18,52 @@ use codex_protocol::openai_models::ModelWireRoute;
 use codex_protocol::openai_models::ModelsResponse;
 use tokio::sync::TryLockError;
 
+use crate::anthropic_gate::anthropic_models_resolved;
+
 #[derive(Debug)]
 pub(crate) struct GatedModelsManager {
     inner: SharedModelsManager,
-    anthropic_enabled: bool,
+    anthropic_gate: AnthropicGate,
+}
+
+#[derive(Debug)]
+enum AnthropicGate {
+    Global,
+    #[cfg(test)]
+    Test(Arc<AtomicBool>),
+}
+
+impl AnthropicGate {
+    fn enabled(&self) -> bool {
+        match self {
+            // SANDBOX PATCH: Read the process-global Anthropic feature gate at
+            // filter time so `/experimental` changes apply to existing managers.
+            Self::Global => anthropic_models_resolved(),
+            #[cfg(test)]
+            Self::Test(gate) => gate.load(Ordering::Relaxed),
+        }
+    }
 }
 
 impl GatedModelsManager {
-    pub(crate) fn wrap(inner: SharedModelsManager, anthropic_enabled: bool) -> SharedModelsManager {
+    pub(crate) fn wrap(inner: SharedModelsManager) -> SharedModelsManager {
         Arc::new(Self {
             inner,
-            anthropic_enabled,
+            anthropic_gate: AnthropicGate::Global,
         })
     }
 
     fn keep_model_slug(&self, model: &str) -> bool {
-        self.anthropic_enabled || !is_anthropic_model_slug(model)
+        self.anthropic_enabled() || !is_anthropic_model_slug(model)
     }
 
     fn keep_model(&self, model: &ModelInfo) -> bool {
         self.keep_model_slug(&model.slug)
-            && (self.anthropic_enabled || model.wire_route != ModelWireRoute::ChatCompletions)
+            && (self.anthropic_enabled() || model.wire_route != ModelWireRoute::ChatCompletions)
+    }
+
+    fn anthropic_enabled(&self) -> bool {
+        self.anthropic_gate.enabled()
     }
 
     fn filter_model_infos(&self, models: Vec<ModelInfo>) -> Vec<ModelInfo> {
@@ -51,6 +80,17 @@ impl GatedModelsManager {
             .or_else(|| models.first())
             .map(|model| model.model.clone())
             .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn wrap_with_test_gate(
+        inner: SharedModelsManager,
+        gate: Arc<AtomicBool>,
+    ) -> SharedModelsManager {
+        Arc::new(Self {
+            inner,
+            anthropic_gate: AnthropicGate::Test(gate),
+        })
     }
 }
 
@@ -192,17 +232,19 @@ mod tests {
         }
     }
 
-    fn manager(anthropic_enabled: bool) -> SharedModelsManager {
+    fn manager(anthropic_enabled: bool) -> (SharedModelsManager, Arc<AtomicBool>) {
         let models = ModelsResponse {
             models: vec![
                 model("gpt-5.5", ModelWireRoute::ProviderDefault),
                 model("claude-sonnet-4.6", ModelWireRoute::ChatCompletions),
             ],
         };
-        GatedModelsManager::wrap(
+        let gate = Arc::new(AtomicBool::new(anthropic_enabled));
+        let manager = GatedModelsManager::wrap_with_test_gate(
             Arc::new(StaticModelsManager::new(/*auth_manager*/ None, models)),
-            anthropic_enabled,
-        )
+            Arc::clone(&gate),
+        );
+        (manager, gate)
     }
 
     fn slugs(models: &[ModelInfo]) -> Vec<&str> {
@@ -215,7 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn off_filters_chat_completions_from_all_catalog_reads() {
-        let manager = manager(/*anthropic_enabled*/ false);
+        let (manager, _gate) = manager(/*anthropic_enabled*/ false);
 
         assert_eq!(slugs(&manager.get_remote_models().await), vec!["gpt-5.5"]);
         assert_eq!(
@@ -243,7 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn on_preserves_chat_completions_models() {
-        let manager = manager(/*anthropic_enabled*/ true);
+        let (manager, _gate) = manager(/*anthropic_enabled*/ true);
 
         assert_eq!(
             slugs(&manager.get_remote_models().await),
@@ -257,7 +299,7 @@ mod tests {
 
     #[tokio::test]
     async fn off_does_not_resolve_chat_completions_metadata_for_explicit_model() {
-        let manager = manager(/*anthropic_enabled*/ false);
+        let (manager, _gate) = manager(/*anthropic_enabled*/ false);
 
         let info = manager
             .get_model_info("claude-sonnet-4.6", &ModelsManagerConfig::default())
@@ -270,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn off_replaces_inherited_chat_completions_model_with_filtered_default() {
-        let manager = manager(/*anthropic_enabled*/ false);
+        let (manager, _gate) = manager(/*anthropic_enabled*/ false);
 
         let selected = manager
             .get_default_model(
@@ -284,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn off_replaces_unavailable_anthropic_slug_with_filtered_default() {
-        let manager = manager(/*anthropic_enabled*/ false);
+        let (manager, _gate) = manager(/*anthropic_enabled*/ false);
 
         let selected = manager
             .get_default_model(
@@ -298,7 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn off_preserves_custom_non_anthropic_slug() {
-        let manager = manager(/*anthropic_enabled*/ false);
+        let (manager, _gate) = manager(/*anthropic_enabled*/ false);
 
         let selected = manager
             .get_default_model(&Some("custom-model".to_string()), RefreshStrategy::Offline)
@@ -309,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn on_preserves_inherited_chat_completions_model() {
-        let manager = manager(/*anthropic_enabled*/ true);
+        let (manager, _gate) = manager(/*anthropic_enabled*/ true);
 
         let selected = manager
             .get_default_model(
@@ -333,16 +375,102 @@ mod tests {
     /// plus the `core::chat_transport` routing fail-closed test.)
     #[tokio::test]
     async fn off_excludes_claude_from_spawn_agent_available_models() {
-        let off = manager(/*anthropic_enabled*/ false);
+        let (off, _off_gate) = manager(/*anthropic_enabled*/ false);
         assert_eq!(
             preset_slugs(&off.list_models(RefreshStrategy::Offline).await),
             vec!["gpt-5.5"]
         );
 
-        let on = manager(/*anthropic_enabled*/ true);
+        let (on, _on_gate) = manager(/*anthropic_enabled*/ true);
         assert_eq!(
             preset_slugs(&on.list_models(RefreshStrategy::Offline).await),
             vec!["gpt-5.5", "claude-sonnet-4.6"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_gate_flips_after_construction_for_all_catalog_reads() {
+        let (manager, gate) = manager(/*anthropic_enabled*/ false);
+
+        assert_eq!(
+            preset_slugs(&manager.list_models(RefreshStrategy::Offline).await),
+            vec!["gpt-5.5"]
+        );
+        assert_eq!(
+            manager
+                .get_default_model(
+                    &Some("claude-sonnet-4.6".to_string()),
+                    RefreshStrategy::Offline,
+                )
+                .await,
+            "gpt-5.5"
+        );
+        assert_eq!(
+            manager
+                .get_model_info("claude-sonnet-4.6", &ModelsManagerConfig::default())
+                .await
+                .slug,
+            "gpt-5.5"
+        );
+
+        gate.store(true, Ordering::Relaxed);
+
+        assert_eq!(
+            slugs(&manager.get_remote_models().await),
+            vec!["gpt-5.5", "claude-sonnet-4.6"]
+        );
+        assert_eq!(
+            slugs(
+                &manager
+                    .raw_model_catalog(RefreshStrategy::Offline)
+                    .await
+                    .models
+            ),
+            vec!["gpt-5.5", "claude-sonnet-4.6"]
+        );
+        assert_eq!(
+            slugs(&manager.try_get_remote_models().expect("try remote")),
+            vec!["gpt-5.5", "claude-sonnet-4.6"]
+        );
+        assert_eq!(
+            preset_slugs(&manager.try_list_models().expect("try list")),
+            vec!["gpt-5.5", "claude-sonnet-4.6"]
+        );
+        assert_eq!(
+            preset_slugs(&manager.list_models(RefreshStrategy::Offline).await),
+            vec!["gpt-5.5", "claude-sonnet-4.6"]
+        );
+        assert_eq!(
+            manager
+                .get_default_model(
+                    &Some("claude-sonnet-4.6".to_string()),
+                    RefreshStrategy::Offline,
+                )
+                .await,
+            "claude-sonnet-4.6"
+        );
+        assert_eq!(
+            manager
+                .get_model_info("claude-sonnet-4.6", &ModelsManagerConfig::default())
+                .await
+                .slug,
+            "claude-sonnet-4.6"
+        );
+
+        gate.store(false, Ordering::Relaxed);
+
+        assert_eq!(
+            preset_slugs(&manager.list_models(RefreshStrategy::Offline).await),
+            vec!["gpt-5.5"]
+        );
+        assert_eq!(
+            manager
+                .get_default_model(
+                    &Some("claude-sonnet-4.6".to_string()),
+                    RefreshStrategy::Offline,
+                )
+                .await,
+            "gpt-5.5"
         );
     }
 }

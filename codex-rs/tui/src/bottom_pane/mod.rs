@@ -328,6 +328,19 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    // SANDBOX PATCH: Let `/experimental` live-toggle the legacy paste-burst
+    // heuristic while preserving the composer's defuse/flush semantics.
+    pub(crate) fn set_disable_paste_burst(&mut self, disabled: bool) {
+        self.disable_paste_burst = disabled;
+        self.composer.set_disable_paste_burst(disabled);
+        self.request_redraw();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn disable_paste_burst(&self) -> bool {
+        self.disable_paste_burst
+    }
+
     pub fn take_mention_bindings(&mut self) -> Vec<MentionBinding> {
         self.composer.take_mention_bindings()
     }

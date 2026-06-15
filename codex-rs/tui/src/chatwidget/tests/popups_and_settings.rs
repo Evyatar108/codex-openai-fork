@@ -97,6 +97,68 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
 }
 
 #[tokio::test]
+async fn live_feature_toggle_updates_paste_burst_escape_hatch() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.set_feature_enabled(Feature::LegacyPasteBurstHeuristic, /*enabled*/ true);
+    assert!(!chat.bottom_pane.disable_paste_burst());
+
+    chat.set_feature_enabled(Feature::LegacyPasteBurstHeuristic, /*enabled*/ false);
+    assert!(chat.bottom_pane.disable_paste_burst());
+}
+
+#[tokio::test]
+async fn live_feature_toggle_updates_user_message_styling_gate() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let terminal_bg = Some((0, 0, 0));
+
+    crate::style::install_user_message_styling(false);
+    let disabled_user = crate::style::user_message_style_for(terminal_bg);
+    let disabled_plan = crate::style::proposed_plan_style_for(terminal_bg);
+
+    chat.set_feature_enabled(Feature::UserMessageStyling, /*enabled*/ true);
+    let enabled_user = crate::style::user_message_style_for(terminal_bg);
+    let enabled_plan = crate::style::proposed_plan_style_for(terminal_bg);
+
+    assert_ne!(enabled_user, disabled_user);
+    assert_ne!(enabled_plan, disabled_plan);
+
+    chat.set_feature_enabled(Feature::UserMessageStyling, /*enabled*/ false);
+    assert_eq!(
+        crate::style::user_message_style_for(terminal_bg),
+        disabled_user
+    );
+    assert_eq!(
+        crate::style::proposed_plan_style_for(terminal_bg),
+        disabled_plan
+    );
+}
+
+#[tokio::test]
+async fn live_model_catalog_refresh_updates_catalog_and_falls_back_active_model() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("claude-sonnet-4.6")).await;
+    let safe_preset = get_available_model(&chat, "gpt-5.4");
+    let next_catalog = Arc::new(ModelCatalog::new(vec![safe_preset]));
+
+    let fallback = chat.set_model_catalog(next_catalog.clone(), "gpt-5.4");
+
+    assert_eq!(fallback.as_deref(), Some("gpt-5.4"));
+    assert_eq!(chat.current_model(), "gpt-5.4");
+    assert!(Arc::ptr_eq(&chat.model_catalog(), &next_catalog));
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains(
+            "Model changed to gpt-5.4 because the previous model is no longer available."
+        ),
+        "expected fallback info message, got: {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn plugins_popup_loading_state_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Plugins, /*enabled*/ true);
