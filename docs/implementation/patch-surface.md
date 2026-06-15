@@ -208,3 +208,24 @@ comments may reference earlier entries that predate this reconstructed file.
   recovery tag, and coalescing re-emits already-escaped XML values without double-escaping. Replant
   with the helper tests, async watcher XML/truncation tests, process-manager end-to-end spill test,
   and task coalescer mixed-artifact regression.
+
+## §23 Copilot model-cache identity
+
+- **Surface:** `codex-rs/models-manager/src/cache.rs`,
+  `codex-rs/models-manager/src/manager.rs`,
+  `codex-rs/model-provider/src/copilot_models_endpoint.rs`
+- **Status:** active
+- **Reason:** Copilot `/models` rows are filtered through the resolved Anthropic-models gate before
+  being written to `models_cache.json`. A fresh cache written while Anthropic models were disabled
+  can omit chat-only Claude rows and otherwise satisfy `OnlineIfUncached` after the operator enables
+  the gate and restarts within the 300 second TTL.
+- **Patch:** `models_cache.json` records optional provider/request-shaping identity metadata. Cache
+  eligibility still requires the client version and TTL match, and now also requires an exact
+  identity match when the endpoint supplies one. Copilot supplies provider id `copilot` plus
+  `anthropic_models=<resolved gate>`; providers with no identity keep the legacy version + TTL-only
+  behavior.
+- **Safety:** legacy cache files without identity still deserialize, but miss only when a current
+  endpoint expects identity. The Copilot picker predicate remains unchanged: GPT `/responses` rows
+  pass in both gate states, while chat-only Claude rows pass only when Anthropic is enabled. Replant
+  with the manager cache-identity hit/miss tests and the Copilot endpoint identity/filter
+  guardrails.

@@ -3,6 +3,7 @@ use chrono::Utc;
 use codex_protocol::openai_models::ModelInfo;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::io;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -28,10 +29,15 @@ impl ModelsCacheManager {
     }
 
     /// Attempt to load a fresh cache entry. Returns `None` if the cache doesn't exist or is stale.
-    pub(crate) async fn load_fresh(&self, expected_version: &str) -> Option<ModelsCache> {
+    pub(crate) async fn load_fresh(
+        &self,
+        expected_version: &str,
+        expected_identity: Option<&ModelsCacheIdentity>,
+    ) -> Option<ModelsCache> {
         info!(
                 cache_path = %self.cache_path.display(),
                 expected_version,
+                expected_identity = ?expected_identity,
             "models cache: attempting load_fresh"
         );
         let cache = match self.load().await {
@@ -44,6 +50,7 @@ impl ModelsCacheManager {
         info!(
             cache_path = %self.cache_path.display(),
             cached_version = ?cache.client_version,
+            cached_identity = ?cache.cache_identity,
             fetched_at = %cache.fetched_at,
             "models cache: loaded cache file"
         );
@@ -53,6 +60,20 @@ impl ModelsCacheManager {
                 expected_version,
                 cached_version = ?cache.client_version,
                 "models cache: cache version mismatch"
+            );
+            return None;
+        }
+        // SANDBOX PATCH: cache eligibility includes provider/request-shaping
+        // identity when an endpoint supplies one. Legacy providers pass `None`
+        // and keep the version + TTL-only behavior.
+        if let Some(expected_identity) = expected_identity
+            && cache.cache_identity.as_ref() != Some(expected_identity)
+        {
+            info!(
+                cache_path = %self.cache_path.display(),
+                expected_identity = ?expected_identity,
+                cached_identity = ?cache.cache_identity,
+                "models cache: cache identity mismatch"
             );
             return None;
         }
@@ -79,11 +100,13 @@ impl ModelsCacheManager {
         models: &[ModelInfo],
         etag: Option<String>,
         client_version: String,
+        cache_identity: Option<ModelsCacheIdentity>,
     ) {
         let cache = ModelsCache {
             fetched_at: Utc::now(),
             etag,
             client_version: Some(client_version),
+            cache_identity,
             models: models.to_vec(),
         };
         if let Err(err) = self.save_internal(&cache).await {
@@ -157,6 +180,32 @@ impl ModelsCacheManager {
     }
 }
 
+/// Provider/request-shaping identity for `models_cache.json` eligibility.
+///
+/// The identity deliberately stays small and deterministic: provider id plus
+/// request-shaping dimensions that can change the filtered catalog stored on
+/// disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelsCacheIdentity {
+    pub provider_id: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub request_shape: BTreeMap<String, String>,
+}
+
+impl ModelsCacheIdentity {
+    pub fn new(provider_id: impl Into<String>) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            request_shape: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_request_shape(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.request_shape.insert(key.into(), value.into());
+        self
+    }
+}
+
 /// Serialized snapshot of models and metadata cached on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ModelsCache {
@@ -165,6 +214,8 @@ pub(crate) struct ModelsCache {
     pub(crate) etag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) client_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_identity: Option<ModelsCacheIdentity>,
     pub(crate) models: Vec<ModelInfo>,
 }
 

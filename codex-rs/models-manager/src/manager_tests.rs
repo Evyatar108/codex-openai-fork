@@ -74,6 +74,7 @@ fn assert_models_contain(actual: &[ModelInfo], expected: &[ModelInfo]) {
 struct TestModelsEndpoint {
     has_command_auth: bool,
     uses_codex_backend: bool,
+    cache_identity: Option<ModelsCacheIdentity>,
     responses: Mutex<VecDeque<Vec<ModelInfo>>>,
     fetch_count: AtomicUsize,
 }
@@ -83,6 +84,20 @@ impl TestModelsEndpoint {
         Arc::new(Self {
             has_command_auth: false,
             uses_codex_backend: true,
+            cache_identity: None,
+            responses: Mutex::new(responses.into()),
+            fetch_count: AtomicUsize::new(0),
+        })
+    }
+
+    fn with_cache_identity(
+        responses: Vec<Vec<ModelInfo>>,
+        cache_identity: ModelsCacheIdentity,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            has_command_auth: false,
+            uses_codex_backend: true,
+            cache_identity: Some(cache_identity),
             responses: Mutex::new(responses.into()),
             fetch_count: AtomicUsize::new(0),
         })
@@ -92,6 +107,7 @@ impl TestModelsEndpoint {
         Arc::new(Self {
             has_command_auth: false,
             uses_codex_backend: false,
+            cache_identity: None,
             responses: Mutex::new(responses.into()),
             fetch_count: AtomicUsize::new(0),
         })
@@ -150,6 +166,10 @@ impl ModelsEndpointClient for TestModelsEndpoint {
         self.has_command_auth
     }
 
+    fn cache_identity(&self) -> Option<ModelsCacheIdentity> {
+        self.cache_identity.clone()
+    }
+
     async fn uses_codex_backend(&self) -> bool {
         self.uses_codex_backend
     }
@@ -192,6 +212,11 @@ fn openai_manager_for_tests_with_auth(
 
 fn static_manager_for_tests(model_catalog: ModelsResponse) -> StaticModelsManager {
     StaticModelsManager::new(/*auth_manager*/ None, model_catalog)
+}
+
+fn copilot_cache_identity(anthropic_enabled: bool) -> ModelsCacheIdentity {
+    ModelsCacheIdentity::new("copilot")
+        .with_request_shape("anthropic_models", anthropic_enabled.to_string())
 }
 
 async fn chatgpt_auth_tokens_for_tests(codex_home: &Path) -> CodexAuth {
@@ -498,6 +523,7 @@ async fn refresh_available_models_keeps_merging_for_api_auth() {
     let endpoint = Arc::new(TestModelsEndpoint {
         has_command_auth: true,
         uses_codex_backend: false,
+        cache_identity: None,
         responses: Mutex::new(vec![remote_models.clone()].into()),
         fetch_count: AtomicUsize::new(0),
     });
@@ -547,6 +573,40 @@ async fn refresh_available_models_uses_cache_when_fresh() {
 }
 
 #[tokio::test]
+async fn refresh_available_models_uses_cache_when_identity_matches() {
+    let remote_models = vec![remote_model("identity-cached", "Identity Cached", 5)];
+    let cache_identity = copilot_cache_identity(true);
+    let codex_home = tempdir().expect("temp dir");
+    let fetch_endpoint = TestModelsEndpoint::with_cache_identity(
+        vec![remote_models.clone()],
+        cache_identity.clone(),
+    );
+    let fetch_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), fetch_endpoint.clone());
+
+    fetch_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("first refresh succeeds");
+
+    let cache_endpoint = TestModelsEndpoint::with_cache_identity(Vec::new(), cache_identity);
+    let cache_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), cache_endpoint.clone());
+
+    cache_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("cached refresh succeeds");
+
+    assert_models_contain(&cache_manager.get_remote_models().await, &remote_models);
+    assert_eq!(
+        cache_endpoint.fetch_count(),
+        0,
+        "matching identity cache hit should avoid a model fetch"
+    );
+}
+
+#[tokio::test]
 async fn refresh_available_models_refetches_when_cache_stale() {
     let initial_models = vec![remote_model("stale", "Stale", /*priority*/ 1)];
     let codex_home = tempdir().expect("temp dir");
@@ -577,6 +637,91 @@ async fn refresh_available_models_refetches_when_cache_stale() {
         endpoint.fetch_count(),
         2,
         "stale cache refresh should fetch models again"
+    );
+}
+
+#[tokio::test]
+async fn refresh_available_models_refetches_when_expected_identity_missing() {
+    let legacy_models = vec![remote_model("legacy-cache", "Legacy Cache", 1)];
+    let updated_models = vec![remote_model("identity-required", "Identity Required", 2)];
+    let codex_home = tempdir().expect("temp dir");
+    let legacy_endpoint = TestModelsEndpoint::new(vec![legacy_models]);
+    let legacy_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), legacy_endpoint.clone());
+
+    legacy_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("legacy refresh succeeds");
+
+    let identity_endpoint = TestModelsEndpoint::with_cache_identity(
+        vec![updated_models.clone()],
+        copilot_cache_identity(true),
+    );
+    let identity_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), identity_endpoint.clone());
+
+    identity_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("identity refresh succeeds");
+
+    assert_models_contain(&identity_manager.get_remote_models().await, &updated_models);
+    assert_eq!(
+        identity_endpoint.fetch_count(),
+        1,
+        "legacy cache without identity should miss when identity is expected"
+    );
+}
+
+#[tokio::test]
+async fn refresh_available_models_refetches_copilot_cache_when_anthropic_gate_changes() {
+    let gpt = remote_model("gpt-responses", "GPT Responses", 0);
+    let claude = remote_model("claude-sonnet-4.6", "Claude Sonnet 4.6", 1);
+    let codex_home = tempdir().expect("temp dir");
+    let feature_off_endpoint = TestModelsEndpoint::with_cache_identity(
+        vec![vec![gpt.clone()]],
+        copilot_cache_identity(false),
+    );
+    let feature_off_manager = openai_manager_for_tests(
+        codex_home.path().to_path_buf(),
+        feature_off_endpoint.clone(),
+    );
+
+    feature_off_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("feature-off refresh succeeds");
+
+    let feature_on_endpoint = TestModelsEndpoint::with_cache_identity(
+        vec![vec![gpt.clone(), claude.clone()]],
+        copilot_cache_identity(true),
+    );
+    let feature_on_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), feature_on_endpoint.clone());
+
+    feature_on_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("feature-on refresh succeeds");
+
+    let feature_on_models = feature_on_manager.get_remote_models().await;
+    assert_models_contain(&feature_on_models, &[gpt, claude]);
+    assert_eq!(
+        feature_on_endpoint.fetch_count(),
+        1,
+        "feature-on identity should reject the feature-off cache and fetch"
+    );
+
+    feature_on_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("same-gate refresh succeeds");
+
+    assert_eq!(
+        feature_on_endpoint.fetch_count(),
+        1,
+        "unchanged feature-on identity should reuse the fresh cache"
     );
 }
 

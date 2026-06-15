@@ -1,3 +1,4 @@
+pub use super::cache::ModelsCacheIdentity;
 use super::cache::ModelsCacheManager;
 use crate::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use crate::config::ModelsManagerConfig;
@@ -33,6 +34,15 @@ const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
     /// Returns whether this provider can authenticate command-scoped requests.
     fn has_command_auth(&self) -> bool;
+
+    /// Returns provider/request-shaping identity that must match cached models.
+    ///
+    /// SANDBOX PATCH: endpoints that filter `/models` based on resolved feature
+    /// gates can opt into cache identity checks. The default preserves the
+    /// legacy client-version + TTL-only behavior.
+    fn cache_identity(&self) -> Option<ModelsCacheIdentity> {
+        None
+    }
 
     /// Returns whether the currently resolved auth can use Codex backend-only models.
     async fn uses_codex_backend(&self) -> bool;
@@ -302,11 +312,12 @@ impl OpenAiModelsManager {
 
     async fn fetch_and_update_models(&self) -> CoreResult<()> {
         let client_version = crate::client_version_to_whole();
+        let cache_identity = self.endpoint_client.cache_identity();
         let (models, etag) = self.endpoint_client.list_models(&client_version).await?;
         self.apply_remote_models(models.clone()).await;
         *self.etag.write().await = etag.clone();
         self.cache_manager
-            .persist_cache(&models, etag, client_version)
+            .persist_cache(&models, etag, client_version, cache_identity)
             .await;
         Ok(())
     }
@@ -357,10 +368,20 @@ impl OpenAiModelsManager {
         let _timer =
             codex_otel::start_global_timer("codex.remote_models.load_cache.duration_ms", &[]);
         let client_version = crate::client_version_to_whole();
-        info!(client_version, "models cache: evaluating cache eligibility");
-        // TODO(celia-oai): Include provider identity in cache eligibility so switching
-        // providers does not reuse a fresh models_cache.json entry from another provider.
-        let cache = match self.cache_manager.load_fresh(&client_version).await {
+        let cache_identity = self.endpoint_client.cache_identity();
+        info!(
+            client_version,
+            cache_identity = ?cache_identity,
+            "models cache: evaluating cache eligibility"
+        );
+        // SANDBOX PATCH: include endpoint-provided identity in cache
+        // eligibility so request-shaping provider state cannot reuse a fresh
+        // models_cache.json entry from another catalog shape.
+        let cache = match self
+            .cache_manager
+            .load_fresh(&client_version, cache_identity.as_ref())
+            .await
+        {
             Some(cache) => cache,
             None => {
                 info!("models cache: no usable cache entry");

@@ -27,6 +27,7 @@ use codex_copilot::CopilotAuth;
 use codex_copilot::CopilotHeaderSource;
 use codex_login::default_client::build_reqwest_client;
 use codex_models_manager::bundled_models_response;
+use codex_models_manager::manager::ModelsCacheIdentity;
 use codex_models_manager::manager::ModelsEndpointClient;
 use codex_models_manager::model_info::BASE_INSTRUCTIONS;
 use codex_protocol::config_types::ReasoningSummary;
@@ -169,6 +170,16 @@ impl ModelsEndpointClient for CopilotModelsEndpoint {
         // CopilotHeaderSource. Returning true tells `OpenAiModelsManager`
         // to refresh on demand without consulting `AuthManager`.
         true
+    }
+
+    fn cache_identity(&self) -> Option<ModelsCacheIdentity> {
+        // SANDBOX PATCH: Copilot filters `/models` through the resolved
+        // Anthropic gate, so the persisted catalog is only eligible when the
+        // same gate state is expected by the current process.
+        Some(
+            ModelsCacheIdentity::new("copilot")
+                .with_request_shape("anthropic_models", anthropic_models_resolved().to_string()),
+        )
     }
 
     async fn uses_codex_backend(&self) -> bool {
@@ -515,6 +526,7 @@ fn truncate(input: &str, max: usize) -> &str {
 #[cfg(test)]
 mod chat_transport_tests {
     use super::*;
+    use crate::anthropic_gate::install_anthropic_gate;
     use serde_json::json;
 
     fn entry(value: serde_json::Value) -> CopilotModelEntry {
@@ -559,6 +571,30 @@ mod chat_transport_tests {
             wire_route_for(&responses_row, /*anthropic_enabled*/ false),
             ModelWireRoute::ProviderDefault
         );
+    }
+
+    #[test]
+    fn cache_identity_tracks_resolved_anthropic_gate() {
+        let endpoint =
+            CopilotModelsEndpoint::new("https://example.invalid".to_string(), Arc::default());
+
+        install_anthropic_gate(false);
+        assert_eq!(
+            endpoint.cache_identity(),
+            Some(
+                ModelsCacheIdentity::new("copilot").with_request_shape("anthropic_models", "false")
+            )
+        );
+
+        install_anthropic_gate(true);
+        assert_eq!(
+            endpoint.cache_identity(),
+            Some(
+                ModelsCacheIdentity::new("copilot").with_request_shape("anthropic_models", "true")
+            )
+        );
+
+        install_anthropic_gate(false);
     }
 
     #[test]
