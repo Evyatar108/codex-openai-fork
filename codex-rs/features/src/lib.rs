@@ -138,7 +138,7 @@ pub enum Feature {
     /// Auto-load CLAUDE.md when AGENTS files are absent. Default off.
     AutoLoadClaudeMd,
     // SANDBOX PATCH: opt-in gate for the legacy paste-burst heuristic.
-    /// Enable legacy non-bracketed paste-burst detection. Default off.
+    /// Enable legacy non-bracketed paste-burst detection. Default on for Windows.
     LegacyPasteBurstHeuristic,
     // SANDBOX PATCH: opt-in gate for Claude-style user-message styling.
     /// Render user messages and proposed plans with Claude-style styling. Default off.
@@ -1012,8 +1012,10 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     // SANDBOX PATCH: opt-in gate for the legacy non-bracketed paste-burst
-    // heuristic. Default off so ordinary key streams are not buffered unless
-    // users explicitly opt back into the legacy detector.
+    // heuristic. Default on for Windows because crossterm does not surface
+    // bracketed Event::Paste there, and default off elsewhere so ordinary key
+    // streams are not buffered unless users explicitly opt back into the
+    // legacy detector.
     FeatureSpec {
         id: Feature::LegacyPasteBurstHeuristic,
         key: "legacy_paste_burst_heuristic",
@@ -1022,7 +1024,7 @@ pub const FEATURES: &[FeatureSpec] = &[
             menu_description: "Re-enable legacy buffering for terminals that send pasted text as rapid key events.",
             announcement: "Legacy paste-burst detection can now be enabled from /experimental. Restart Codex after enabling it.",
         },
-        default_enabled: false,
+        default_enabled: cfg!(windows),
     },
     // SANDBOX PATCH: opt-in gate for Claude-style user-message/proposed-plan
     // styling. Default off to preserve upstream rendering unless explicitly

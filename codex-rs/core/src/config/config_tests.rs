@@ -9241,7 +9241,7 @@ async fn feature_requirements_normalize_effective_feature_values() -> std::io::R
 }
 
 #[tokio::test]
-async fn legacy_paste_burst_feature_defaults_to_disabled_heuristic() -> std::io::Result<()> {
+async fn legacy_paste_burst_feature_default_is_platform_specific() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
 
     let config = ConfigBuilder::without_managed_config_for_tests()
@@ -9250,8 +9250,14 @@ async fn legacy_paste_burst_feature_defaults_to_disabled_heuristic() -> std::io:
         .build()
         .await?;
 
-    assert!(!config.features.enabled(Feature::LegacyPasteBurstHeuristic));
-    assert!(config.disable_paste_burst);
+    // SANDBOX PATCH: Windows needs the legacy heuristic by default because
+    // crossterm does not emit Event::Paste there; Unix keeps the .8 default-off
+    // behavior and uses the real bracketed-paste path.
+    assert_eq!(
+        config.features.enabled(Feature::LegacyPasteBurstHeuristic),
+        cfg!(windows)
+    );
+    assert_eq!(config.disable_paste_burst, !cfg!(windows));
     Ok(())
 }
 
@@ -9293,6 +9299,27 @@ async fn disable_paste_burst_alias_maps_to_legacy_paste_burst_feature() -> std::
 
     assert!(config.features.enabled(Feature::LegacyPasteBurstHeuristic));
     assert!(!config.disable_paste_burst);
+    Ok(())
+}
+
+#[tokio::test]
+async fn disable_paste_burst_alias_can_still_disable_windows_default() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"disable_paste_burst = true
+"#,
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    // SANDBOX PATCH: explicit opt-out must still win over the Windows default.
+    assert!(!config.features.enabled(Feature::LegacyPasteBurstHeuristic));
+    assert!(config.disable_paste_burst);
     Ok(())
 }
 

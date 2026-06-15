@@ -83,6 +83,23 @@ comments may reference earlier entries that predate this reconstructed file.
   fallback behavior; TUI tests cover persisted-Claude fallback and the feature-backed styling helper
   branches.
 
+## §17a Windows paste-burst default invariant
+
+- **Surface:** `codex-rs/features/src/lib.rs`, `codex-rs/core/src/config/config_tests.rs`
+- **Status:** active
+- **Reason:** the .8 feature migration made `legacy_paste_burst_heuristic` default-off on every
+  platform, but Windows cannot rely on the normal bracketed-paste path: crossterm does not emit
+  `Event::Paste` there when Codex clears virtual terminal input. Without the legacy burst detector,
+  multiline paste arrives as an ungrouped key-event flood and can submit or truncate early.
+- **Patch:** reverse the .8 cross-platform default-off only on Windows by making the feature
+  registry default `cfg!(windows)`. Keep Unix default-off so Unix terminals continue through the
+  real bracketed-paste path unless users opt into the legacy heuristic.
+- **Safety:** this is a default-only change. Canonical `features.legacy_paste_burst_heuristic =
+  false` and legacy `disable_paste_burst = true` still disable the heuristic on Windows; no
+  paste-burst algorithm code changes.
+- **Verification:** config tests assert the platform-specific default, explicit feature enable,
+  legacy alias enable, legacy alias opt-out, and canonical feature precedence.
+
 ## §18 Copilot prompt budget context tiers
 
 - **Surface:** `codex-rs/model-provider/src/copilot_models_endpoint.rs`,
