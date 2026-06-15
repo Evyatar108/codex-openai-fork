@@ -842,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn history_search_flushes_pending_first_char_before_snapshot() {
+    fn history_search_keeps_immediate_typed_char_in_snapshot() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
         let mut composer = ChatComposer::new(
@@ -854,8 +854,8 @@ mod tests {
         );
 
         let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
-        assert!(composer.is_in_paste_burst());
-        assert_eq!(composer.draft.textarea.text(), "");
+        assert!(!composer.is_in_paste_burst());
+        assert_eq!(composer.draft.textarea.text(), "h");
 
         let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
 

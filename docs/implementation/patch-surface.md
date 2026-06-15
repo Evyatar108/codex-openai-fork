@@ -109,6 +109,35 @@ comments may reference earlier entries that predate this reconstructed file.
 - **Verification:** config tests assert the platform-specific default, explicit feature enable,
   legacy alias enable, legacy alias opt-out, and canonical feature precedence.
 
+## §17a.1 Non-bracketed paste-burst robustness invariant
+
+- **Surface:** `codex-rs/tui/src/bottom_pane/paste_burst.rs`,
+  `codex-rs/tui/src/bottom_pane/chat_composer.rs`,
+  `codex-rs/tui/src/bottom_pane/chat_composer/history_search.rs`
+- **Status:** active
+- **Reason:** Windows Terminal still reaches Codex as a stream of `KeyCode::Char` and
+  `KeyCode::Enter` events rather than `Event::Paste(String)`. With the Windows default-on
+  `legacy_paste_burst_heuristic`, the fallback must not delay ordinary typing and must not split a
+  slow multiline paste or submit a pasted Enter early.
+- **Patch:** remove the ASCII pending-first-char hold from the normal typing path. `PasteBurst`
+  now classifies immediate input with timing metadata, retro-captures already-inserted prefixes only
+  after a stream proves paste-like, treats fast ASCII prefix+Enter as a short multiline paste, and
+  keeps an active burst rearmable across bounded slow terminal delivery before flushing. The
+  composer offers burst-eligible chars/Enter to that rearmable state before applying an idle flush,
+  while non-char keys still flush any buffered paste before normal handling.
+- **Safety:** explicit `Event::Paste(String)` handling still enters through `handle_paste` and is
+  unchanged. The `legacy_paste_burst_heuristic` feature/default and `disable_paste_burst` escape
+  hatch semantics are unchanged; this section only covers the detector internals used when the
+  heuristic is enabled.
+- **Invariant:** `cargo test -p codex-tui paste_burst` covers no first-char lag and rearmable
+  active bursts; `cargo test -p codex-tui chat_composer` covers
+  `slow_multiline_ascii_burst_rearms_without_split_or_early_submit`,
+  `slow_large_ascii_burst_creates_single_complete_placeholder`,
+  `mixed_non_ascii_slow_burst_preserves_enter_and_tail`, non-char flush behavior, slash-command
+  Enter bypass, and explicit paste behavior. Replant this section with the two `SANDBOX PATCH`
+  markers in `paste_burst.rs` and `chat_composer.rs` if upstream conflicts in the bottom-pane input
+  state machine.
+
 ## §17b Open-agent limit UX
 
 - **Surface:** `codex-rs/core/src/agent/control.rs`,

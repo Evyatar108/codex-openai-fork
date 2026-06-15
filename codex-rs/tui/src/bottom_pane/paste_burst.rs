@@ -6,15 +6,16 @@
 //!
 //! - Prevent transient UI side effects (e.g. toggles bound to `?`) from triggering on pasted text.
 //! - Ensure Enter is treated as a newline *inside the paste*, not as "submit the message".
-//! - Avoid flicker caused by inserting a typed prefix and then immediately reclassifying it as
-//!   paste once enough chars have arrived.
+//! - Avoid slowing the normal typing path while still recovering short prefixes once a stream
+//!   proves paste-like.
 //!
 //! This module provides the `PasteBurst` state machine. `ChatComposer` feeds it only "plain"
 //! character events (no Ctrl/Alt) and uses its decisions to either:
 //!
-//! - briefly hold a first ASCII char (flicker suppression),
+//! - insert ordinary typing immediately,
+//! - retroactively capture an already-inserted prefix once a stream proves paste-like,
 //! - buffer a burst as a single pasted string, or
-//! - let input flow through as normal typing.
+//! - keep an active burst open across bounded slow terminal delivery.
 //!
 //! # Call Pattern
 //!
@@ -23,11 +24,15 @@
 //!
 //! - For each plain `KeyCode::Char`, call [`PasteBurst::on_plain_char`] (ASCII) or
 //!   [`PasteBurst::on_plain_char_no_hold`] (non-ASCII/IME).
-//! - If the decision indicates buffering, the caller appends to `PasteBurst.buffer` via
+//! - If the decision indicates buffering, the caller removes any requested retro-captured prefix
+//!   from its own text buffer and appends to `PasteBurst.buffer` via
 //!   [`PasteBurst::append_char_to_buffer`].
-//! - On a UI tick, call [`PasteBurst::flush_if_due`]. If it returns [`FlushResult::Typed`], insert
-//!   that char as normal typing. If it returns [`FlushResult::Paste`], treat the returned string as
-//!   an explicit paste.
+//! - On a UI tick, call [`PasteBurst::flush_if_due`]. If it returns [`FlushResult::Paste`], treat
+//!   the returned string as an explicit paste.
+//! - Before applying a plain char or Enter while a burst is active, call
+//!   [`PasteBurst::should_flush_before_burst_input`]. If it returns false, offer the current input
+//!   to the burst before applying any idle flush so late-but-bounded continuations can rearm the
+//!   burst instead of splitting it.
 //! - Before applying non-char input (arrow keys, Ctrl/Alt modifiers, etc.), use
 //!   [`PasteBurst::flush_before_modified_input`] to avoid leaving buffered text "stuck", and then
 //!   [`PasteBurst::clear_window_after_non_char`] so subsequent typing does not get grouped into a
@@ -40,9 +45,6 @@
 //! - `active`: true while we are still *actively* accepting characters into the current burst.
 //! - `buffer`: accumulated burst text that will eventually flush as a single `Paste(String)`.
 //!   A non-empty buffer is treated as "in burst context" even if `active` has been cleared.
-//! - `pending_first_char`: a single held ASCII char used for flicker suppression. The caller must
-//!   not render this char until it either becomes part of a burst (`BeginBufferFromPending`) or
-//!   flushes as a normal typed char (`FlushResult::Typed`).
 //! - `last_plain_char_time`/`consecutive_plain_char_burst`: the timing/count heuristic for
 //!   "paste-like" streams.
 //! - `burst_window_until`: the Enter suppression window ("Enter inserts newline") that outlives the
@@ -50,12 +52,12 @@
 //!
 //! # Timing Model
 //!
-//! There are two timeouts:
+//! There are two timeout concepts:
 //!
 //! - `PASTE_BURST_CHAR_INTERVAL`: maximum delay between consecutive "plain" chars for them to be
-//!   considered part of a single burst. It also bounds how long `pending_first_char` is held.
-//! - `PASTE_BURST_ACTIVE_IDLE_TIMEOUT`: once buffering is active, how long to wait after the last
-//!   char before flushing the accumulated buffer as a paste.
+//!   considered part of the initial paste classification window.
+//! - `PASTE_BURST_ACTIVE_REARM_TIMEOUT`: once buffering is active, how long a likely-continuation
+//!   char/Enter may arrive and still rearm the same burst before the pending paste is flushed.
 //!
 //! `flush_if_due()` intentionally uses `>` (not `>=`) when comparing elapsed time, so tests and UI
 //! ticks should cross the threshold by at least 1ms (see `recommended_flush_delay()`).
@@ -67,13 +69,17 @@
 //! remove a prefix of already-inserted text from the textarea and move it into the burst buffer so
 //! the eventual `handle_paste(...)` sees a contiguous pasted string.
 //!
-//! Retro-capture mostly matters on paths that do *not* hold the first character (non-ASCII/IME
-//! input, and retro-grab scenarios). The ASCII path usually prefers
-//! `RetainFirstChar -> BeginBufferFromPending`, which avoids needing retro-capture at all.
+//! Retro-capture has two modes:
+//!
+//! - `Conservative`: used for IME/non-ASCII paths. Short whitespace-free prefixes remain normal
+//!   typing unless the prefix looks paste-like.
+//! - `ProvenPaste`: used once an ASCII stream or a fast prefix+Enter sequence crosses the paste
+//!   threshold. Short prefixes such as `hi` may be removed from the textarea and moved into the
+//!   burst buffer.
 //!
 //! Retro-capture is expressed in terms of characters, not bytes:
 //!
-//! - `CharDecision::BeginBuffer { retro_chars }` uses `retro_chars` as a character count.
+//! - `CharDecision::BeginBuffer { retro_chars, capture }` uses `retro_chars` as a character count.
 //! - `decide_begin_buffer(now, before_cursor, retro_chars)` turns that into a UTF-8 byte range by
 //!   calling `retro_start_index()`.
 //! - `RetroGrab.start_byte` is a byte index into the `before_cursor` slice; callers must clamp the
@@ -83,8 +89,8 @@
 //!
 //! There are two ways callers end burst handling, and they are not interchangeable:
 //!
-//! - `flush_before_modified_input()` returns the buffered text (and/or a pending first ASCII char)
-//!   so the caller can apply it through the normal paste path before handling an unrelated input.
+//! - `flush_before_modified_input()` returns buffered text so the caller can apply it through the
+//!   normal paste path before handling an unrelated input.
 //! - `clear_window_after_non_char()` clears the *classification window* so subsequent typing does
 //!   not get grouped into the previous burst. It assumes the caller has already flushed any buffer
 //!   because it clears `last_plain_char_time`, which means `flush_if_due()` will not flush a
@@ -92,19 +98,18 @@
 //!
 //! # States (Conceptually)
 //!
-//! - **Idle**: no buffered text, no pending char.
-//! - **Pending first char**: `pending_first_char` holds one ASCII char for up to
-//!   `PASTE_BURST_CHAR_INTERVAL` while we wait to see if a burst follows.
+//! - **Idle**: no buffered text.
+//! - **Classifying**: recent plain chars were inserted immediately while we watch timing/count
+//!   metadata to decide whether they are paste-like.
 //! - **Active buffer**: `active`/`buffer` holds paste-like content until it times out and flushes.
 //! - **Enter suppress window**: `burst_window_until` keeps Enter treated as newline briefly after
 //!   burst activity so multiline pastes stay grouped.
 //!
 //! # ASCII vs Non-ASCII
 //!
-//! - [`PasteBurst::on_plain_char`] may return [`CharDecision::RetainFirstChar`] to hold the first
-//!   ASCII char and avoid flicker.
-//! - [`PasteBurst::on_plain_char_no_hold`] never holds (used for IME/non-ASCII paths), since
-//!   holding a non-ASCII character can feel like dropped input.
+//! - [`PasteBurst::on_plain_char`] never holds the first ASCII char. It returns
+//!   [`CharDecision::Insert`] until the stream crosses a paste-like threshold.
+//! - [`PasteBurst::on_plain_char_no_hold`] uses conservative retro-capture for IME/non-ASCII paths.
 //!
 //! # Contract With `ChatComposer`
 //!
@@ -112,12 +117,10 @@
 //! interpret decisions and apply the corresponding UI edits:
 //!
 //! - For each plain ASCII `KeyCode::Char`, call [`PasteBurst::on_plain_char`].
-//!   - [`CharDecision::RetainFirstChar`]: do **not** insert the char into the textarea yet.
-//!   - [`CharDecision::BeginBufferFromPending`]: call [`PasteBurst::append_char_to_buffer`] for the
-//!     current char (the previously-held char is already in the burst buffer).
-//!   - [`CharDecision::BeginBuffer { retro_chars }`]: consider retro-capturing the already-inserted
-//!     prefix by calling [`PasteBurst::decide_begin_buffer`]. If it returns `Some`, remove the
-//!     returned `start_byte..cursor` range from the textarea and then call
+//!   - [`CharDecision::Insert`]: insert the char normally.
+//!   - [`CharDecision::BeginBuffer { retro_chars, capture }`]: consider retro-capturing the
+//!     already-inserted prefix by calling [`PasteBurst::decide_begin_buffer`]. If it returns
+//!     `Some`, remove the returned `start_byte..cursor` range from the textarea and then call
 //!     [`PasteBurst::append_char_to_buffer`] for the current char. If it returns `None`, fall back
 //!     to normal insertion.
 //!   - [`CharDecision::BufferAppend`]: call [`PasteBurst::append_char_to_buffer`].
@@ -125,7 +128,7 @@
 //! - For each plain non-ASCII `KeyCode::Char`, call [`PasteBurst::on_plain_char_no_hold`] and then:
 //!   - If it returns `Some(CharDecision::BufferAppend)`, call
 //!     [`PasteBurst::append_char_to_buffer`].
-//!   - If it returns `Some(CharDecision::BeginBuffer { retro_chars })`, call
+//!   - If it returns `Some(CharDecision::BeginBuffer { retro_chars, capture })`, call
 //!     [`PasteBurst::decide_begin_buffer`] as above (and if buffering starts, remove the grabbed
 //!     prefix from the textarea and then append the current char to the buffer).
 //!   - If it returns `None`, insert normally.
@@ -135,7 +138,6 @@
 //!   normal paste path.
 //!
 //! - Periodically (e.g. on a UI tick), call [`PasteBurst::flush_if_due`].
-//!   - [`FlushResult::Typed`]: insert that single char as normal typing.
 //!   - [`FlushResult::Paste`]: treat the returned string as an explicit paste.
 //!
 //! - When a non-plain key is pressed (Ctrl/Alt-modified input, arrows, etc.), callers should use
@@ -146,41 +148,57 @@ use std::time::Duration;
 use std::time::Instant;
 
 // Heuristic thresholds for detecting paste-like input bursts.
-// Detect quickly to avoid showing typed prefix before paste is recognized
+// Detect quickly to limit how much already-inserted prefix may be retro-captured.
 const PASTE_BURST_MIN_CHARS: u16 = 3;
 const PASTE_ENTER_SUPPRESS_WINDOW: Duration = Duration::from_millis(120);
 
 // Maximum delay between consecutive chars to be considered part of a paste burst.
 const PASTE_BURST_CHAR_INTERVAL: Duration = Duration::from_millis(8);
 
-// Idle timeout before flushing buffered paste content.
-// Slower paste bursts have been observed in Windows environments.
-#[cfg(not(windows))]
-const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(8);
-#[cfg(windows)]
-const PASTE_BURST_ACTIVE_IDLE_TIMEOUT: Duration = Duration::from_millis(60);
+// SANDBOX PATCH: keep classified non-bracketed paste bursts rearmable across bounded slow
+// terminal/PTY delivery. Windows Terminal currently has no bracketed-paste event path, so this
+// fallback must not split a physical paste just because one chunk is slower than the old 60ms idle
+// timeout.
+const PASTE_BURST_ACTIVE_REARM_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Default)]
 pub(crate) struct PasteBurst {
     last_plain_char_time: Option<Instant>,
     consecutive_plain_char_burst: u16,
+    consecutive_ascii_plain_char_burst: u16,
     burst_window_until: Option<Instant>,
     buffer: String,
     active: bool,
-    // Hold first fast char briefly to avoid rendering flicker
-    pending_first_char: Option<(char, Instant)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RetroCaptureMode {
+    Conservative,
+    ProvenPaste,
 }
 
 pub(crate) enum CharDecision {
+    /// Insert/render this char immediately as normal typing.
+    Insert,
     /// Start buffering and retroactively capture some already-inserted chars.
-    BeginBuffer { retro_chars: u16 },
+    BeginBuffer {
+        retro_chars: u16,
+        capture: RetroCaptureMode,
+    },
     /// We are currently buffering; append the current char into the buffer.
     BufferAppend,
-    /// Do not insert/render this char yet; temporarily save the first fast
-    /// char while we wait to see if a paste-like burst follows.
-    RetainFirstChar,
-    /// Begin buffering using the previously saved first char (no retro grab needed).
-    BeginBufferFromPending,
+}
+
+pub(crate) enum EnterDecision {
+    /// Enter was appended into an already-active burst.
+    Buffered,
+    /// Start buffering by retroactively capturing already-inserted chars, then append newline.
+    BeginBuffer {
+        retro_chars: u16,
+        capture: RetroCaptureMode,
+    },
+    /// Treat Enter as ordinary submit/newline handling.
+    Submit,
 }
 
 pub(crate) struct RetroGrab {
@@ -190,14 +208,12 @@ pub(crate) struct RetroGrab {
 
 pub(crate) enum FlushResult {
     Paste(String),
-    Typed(char),
     None,
 }
 
 impl PasteBurst {
-    /// Recommended delay to wait between simulated keypresses (or before
-    /// scheduling a UI tick) so that a pending fast keystroke is flushed
-    /// out of the burst detector as normal typed input.
+    /// Recommended delay to wait between simulated keypresses so ordinary
+    /// typing does not remain in the initial burst-classification window.
     ///
     /// Primarily used by tests and by the TUI to reliably cross the
     /// paste-burst timing threshold.
@@ -207,40 +223,28 @@ impl PasteBurst {
 
     #[cfg(test)]
     pub(crate) fn recommended_active_flush_delay() -> Duration {
-        PASTE_BURST_ACTIVE_IDLE_TIMEOUT + Duration::from_millis(1)
+        PASTE_BURST_ACTIVE_REARM_TIMEOUT + Duration::from_millis(1)
     }
 
     /// Entry point: decide how to treat a plain char with current timing.
-    pub fn on_plain_char(&mut self, ch: char, now: Instant) -> CharDecision {
-        self.note_plain_char(now);
-
-        if self.active {
+    pub fn on_plain_char(&mut self, _ch: char, now: Instant) -> CharDecision {
+        if self.is_active_internal() {
+            self.note_plain_char(now);
             self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
             return CharDecision::BufferAppend;
         }
 
-        // If we already held a first char and receive a second fast char,
-        // start buffering without retro-grabbing (we never rendered the first).
-        if let Some((held, held_at)) = self.pending_first_char
-            && now.duration_since(held_at) <= PASTE_BURST_CHAR_INTERVAL
-        {
-            self.active = true;
-            // take() to clear pending; we already captured the held char above
-            let _ = self.pending_first_char.take();
-            self.buffer.push(held);
-            self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
-            return CharDecision::BeginBufferFromPending;
-        }
+        self.note_plain_char(now);
+        self.consecutive_ascii_plain_char_burst = self.consecutive_plain_char_burst;
 
         if self.consecutive_plain_char_burst >= PASTE_BURST_MIN_CHARS {
             return CharDecision::BeginBuffer {
                 retro_chars: self.consecutive_plain_char_burst.saturating_sub(1),
+                capture: RetroCaptureMode::ProvenPaste,
             };
         }
 
-        // Save the first fast char very briefly to see if a burst follows.
-        self.pending_first_char = Some((ch, now));
-        CharDecision::RetainFirstChar
+        CharDecision::Insert
     }
 
     /// Like on_plain_char(), but never holds the first char.
@@ -251,6 +255,7 @@ impl PasteBurst {
     /// Note: This method will only ever return BufferAppend or BeginBuffer.
     pub fn on_plain_char_no_hold(&mut self, now: Instant) -> Option<CharDecision> {
         self.note_plain_char(now);
+        self.consecutive_ascii_plain_char_burst = 0;
 
         if self.active {
             self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
@@ -260,10 +265,36 @@ impl PasteBurst {
         if self.consecutive_plain_char_burst >= PASTE_BURST_MIN_CHARS {
             return Some(CharDecision::BeginBuffer {
                 retro_chars: self.consecutive_plain_char_burst.saturating_sub(1),
+                capture: RetroCaptureMode::Conservative,
             });
         }
 
         None
+    }
+
+    /// Decide whether Enter should be captured as part of a paste burst.
+    ///
+    /// Enter can either continue an active burst or prove that a short fast prefix (for example
+    /// `h`, `i`, `Enter`) was paste-like. It does not start a burst from a single preceding char.
+    pub fn on_enter(&mut self, now: Instant) -> EnterDecision {
+        if self.is_active_internal() {
+            self.buffer.push('\n');
+            self.last_plain_char_time = Some(now);
+            self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
+            return EnterDecision::Buffered;
+        }
+
+        let follows_fast_prefix = self
+            .last_plain_char_time
+            .is_some_and(|t| now.duration_since(t) <= PASTE_BURST_CHAR_INTERVAL);
+        if follows_fast_prefix && self.consecutive_ascii_plain_char_burst >= 2 {
+            return EnterDecision::BeginBuffer {
+                retro_chars: self.consecutive_ascii_plain_char_burst,
+                capture: RetroCaptureMode::ProvenPaste,
+            };
+        }
+
+        EnterDecision::Submit
     }
 
     fn note_plain_char(&mut self, now: Instant) {
@@ -283,33 +314,27 @@ impl PasteBurst {
     ///
     /// - [`FlushResult::Paste`] when a paste burst was active and buffered text is emitted as one
     ///   pasted string.
-    /// - [`FlushResult::Typed`] when a single fast first ASCII char was being held (flicker
-    ///   suppression) and no burst followed before the timeout elapsed.
     /// - [`FlushResult::None`] when the timeout has not elapsed, or there is nothing to flush.
     pub fn flush_if_due(&mut self, now: Instant) -> FlushResult {
-        let timeout = if self.is_active_internal() {
-            PASTE_BURST_ACTIVE_IDLE_TIMEOUT
-        } else {
-            PASTE_BURST_CHAR_INTERVAL
-        };
         let timed_out = self
             .last_plain_char_time
-            .is_some_and(|t| now.duration_since(t) > timeout);
+            .is_some_and(|t| now.duration_since(t) > PASTE_BURST_ACTIVE_REARM_TIMEOUT);
         if timed_out && self.is_active_internal() {
             self.active = false;
             let out = std::mem::take(&mut self.buffer);
+            self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
             FlushResult::Paste(out)
-        } else if timed_out {
-            // If we were saving a single fast char and no burst followed,
-            // flush it as normal typed input.
-            if let Some((ch, _at)) = self.pending_first_char.take() {
-                FlushResult::Typed(ch)
-            } else {
-                FlushResult::None
-            }
         } else {
             FlushResult::None
         }
+    }
+
+    /// Returns true when a new plain char/Enter should first close the existing burst.
+    pub fn should_flush_before_burst_input(&self, now: Instant) -> bool {
+        self.is_active_internal()
+            && self
+                .last_plain_char_time
+                .is_some_and(|t| now.duration_since(t) > PASTE_BURST_ACTIVE_REARM_TIMEOUT)
     }
 
     /// While bursting: accumulate a newline into the buffer instead of
@@ -320,6 +345,7 @@ impl PasteBurst {
     pub fn append_newline_if_active(&mut self, now: Instant) -> bool {
         if self.is_active() {
             self.buffer.push('\n');
+            self.last_plain_char_time = Some(now);
             self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
             true
         } else {
@@ -344,12 +370,14 @@ impl PasteBurst {
             self.buffer.push_str(&grabbed);
         }
         self.active = true;
+        self.last_plain_char_time = Some(now);
         self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
     }
 
     /// Append a char into the burst buffer.
     pub fn append_char_to_buffer(&mut self, ch: char, now: Instant) {
         self.buffer.push(ch);
+        self.last_plain_char_time = Some(now);
         self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
     }
 
@@ -368,11 +396,10 @@ impl PasteBurst {
     /// Decide whether to begin buffering by retroactively capturing recent
     /// chars from the slice before the cursor.
     ///
-    /// Heuristic: if the retro-grabbed slice contains any whitespace or is
-    /// sufficiently long (>= 16 characters), treat it as paste-like to avoid
-    /// rendering the typed prefix momentarily before the paste is recognized.
-    /// This favors responsiveness and prevents flicker for typical pastes
-    /// (URLs, file paths, multiline text) while not triggering on short words.
+    /// In conservative mode, if the retro-grabbed slice contains any whitespace or is sufficiently
+    /// long (>= 16 characters), treat it as paste-like while not triggering on short IME words. In
+    /// proven-paste mode, the caller has already observed a paste-like ASCII threshold or
+    /// prefix+Enter sequence, so short prefixes may be captured too.
     ///
     /// Returns Some(RetroGrab) with the start byte and grabbed text when we
     /// decide to buffer retroactively; otherwise None.
@@ -381,12 +408,13 @@ impl PasteBurst {
         now: Instant,
         before: &str,
         retro_chars: usize,
+        capture: RetroCaptureMode,
     ) -> Option<RetroGrab> {
         let start_byte = retro_start_index(before, retro_chars);
         let grabbed = before[start_byte..].to_string();
         let looks_pastey =
             grabbed.chars().any(char::is_whitespace) || grabbed.chars().count() >= 16;
-        if looks_pastey {
+        if capture == RetroCaptureMode::ProvenPaste || looks_pastey {
             // Note: caller is responsible for removing this slice from UI text.
             self.begin_with_retro_grabbed(grabbed.clone(), now);
             Some(RetroGrab {
@@ -404,30 +432,26 @@ impl PasteBurst {
             return None;
         }
         self.active = false;
-        let mut out = std::mem::take(&mut self.buffer);
-        if let Some((ch, _at)) = self.pending_first_char.take() {
-            out.push(ch);
-        }
+        let out = std::mem::take(&mut self.buffer);
         Some(out)
     }
 
-    /// Clear only the timing window and any pending first-char.
+    /// Clear only the timing window.
     ///
     /// Does not emit or clear the buffered text itself; callers should have
     /// already flushed (if needed) via one of the flush methods above.
     pub fn clear_window_after_non_char(&mut self) {
         self.consecutive_plain_char_burst = 0;
+        self.consecutive_ascii_plain_char_burst = 0;
         self.last_plain_char_time = None;
         self.burst_window_until = None;
         self.active = false;
-        self.pending_first_char = None;
     }
 
     /// Returns true if we are in any paste-burst related transient state
-    /// (actively buffering, have a non-empty buffer, or have saved the first
-    /// fast char while waiting for a potential burst).
+    /// (actively buffering or have a non-empty buffer).
     pub fn is_active(&self) -> bool {
-        self.is_active_internal() || self.pending_first_char.is_some()
+        self.is_active_internal()
     }
 
     fn is_active_internal(&self) -> bool {
@@ -437,10 +461,10 @@ impl PasteBurst {
     pub fn clear_after_explicit_paste(&mut self) {
         self.last_plain_char_time = None;
         self.consecutive_plain_char_burst = 0;
+        self.consecutive_ascii_plain_char_burst = 0;
         self.burst_window_until = None;
         self.active = false;
         self.buffer.clear();
-        self.pending_first_char = None;
     }
 }
 
@@ -461,57 +485,59 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    /// Behavior: for ASCII input we "hold" the first fast char briefly. If no burst follows,
-    /// that held char should eventually flush as normal typed input (not as a paste).
+    /// Behavior: for ASCII input we insert the first char immediately and do not enter burst state.
     #[test]
-    fn ascii_first_char_is_held_then_flushes_as_typed() {
+    fn ascii_first_char_inserts_immediately_without_burst_state() {
         let mut burst = PasteBurst::default();
         let t0 = Instant::now();
-        assert!(matches!(
-            burst.on_plain_char('a', t0),
-            CharDecision::RetainFirstChar
-        ));
+        assert!(matches!(burst.on_plain_char('a', t0), CharDecision::Insert));
 
         let t1 = t0 + PasteBurst::recommended_flush_delay() + Duration::from_millis(1);
-        assert!(matches!(burst.flush_if_due(t1), FlushResult::Typed('a')));
+        assert!(matches!(burst.flush_if_due(t1), FlushResult::None));
         assert!(!burst.is_active());
     }
 
-    /// Behavior: if two ASCII chars arrive quickly, we should start buffering without ever
-    /// rendering the first one, then flush the whole buffered payload as a paste.
+    /// Behavior: once an ASCII stream crosses the paste threshold, the caller may retro-capture the
+    /// already-inserted prefix and flush the whole buffered payload as a paste.
     #[test]
-    fn ascii_two_fast_chars_start_buffer_from_pending_and_flush_as_paste() {
+    fn ascii_threshold_starts_buffer_with_proven_retro_capture() {
         let mut burst = PasteBurst::default();
         let t0 = Instant::now();
-        assert!(matches!(
-            burst.on_plain_char('a', t0),
-            CharDecision::RetainFirstChar
-        ));
+        assert!(matches!(burst.on_plain_char('a', t0), CharDecision::Insert));
 
         let t1 = t0 + Duration::from_millis(1);
-        assert!(matches!(
-            burst.on_plain_char('b', t1),
-            CharDecision::BeginBufferFromPending
-        ));
-        burst.append_char_to_buffer('b', t1);
+        assert!(matches!(burst.on_plain_char('b', t1), CharDecision::Insert));
 
-        let t2 = t1 + PasteBurst::recommended_active_flush_delay() + Duration::from_millis(1);
+        let t2 = t1 + Duration::from_millis(1);
+        let CharDecision::BeginBuffer {
+            retro_chars,
+            capture,
+        } = burst.on_plain_char('c', t2)
+        else {
+            panic!("third fast char should begin buffer");
+        };
+        assert_eq!(retro_chars, 2);
+        assert_eq!(capture, RetroCaptureMode::ProvenPaste);
+        let grab = burst
+            .decide_begin_buffer(t2, "ab", retro_chars as usize, capture)
+            .expect("proven paste should capture short prefix");
+        assert_eq!(grab.grabbed, "ab");
+        burst.append_char_to_buffer('c', t2);
+
+        let t3 = t2 + PasteBurst::recommended_active_flush_delay() + Duration::from_millis(1);
         assert!(matches!(
-            burst.flush_if_due(t2),
-            FlushResult::Paste(ref s) if s == "ab"
+            burst.flush_if_due(t3),
+            FlushResult::Paste(ref s) if s == "abc"
         ));
     }
 
-    /// Behavior: when non-char input is about to be applied, we flush any transient burst state
-    /// immediately (including a single pending ASCII char) so state doesn't leak across inputs.
+    /// Behavior: when non-char input is about to be applied, we flush any buffered burst state
+    /// immediately so state doesn't leak across inputs.
     #[test]
-    fn flush_before_modified_input_includes_pending_first_char() {
+    fn flush_before_modified_input_emits_active_buffer() {
         let mut burst = PasteBurst::default();
         let t0 = Instant::now();
-        assert!(matches!(
-            burst.on_plain_char('a', t0),
-            CharDecision::RetainFirstChar
-        ));
+        burst.begin_with_retro_grabbed("a".to_string(), t0);
 
         assert_eq!(burst.flush_before_modified_input(), Some("a".to_string()));
         assert!(!burst.is_active());
@@ -526,17 +552,89 @@ mod tests {
 
         assert!(
             burst
-                .decide_begin_buffer(now, "ab", /*retro_chars*/ 2)
+                .decide_begin_buffer(
+                    now,
+                    "ab",
+                    /*retro_chars*/ 2,
+                    RetroCaptureMode::Conservative
+                )
                 .is_none()
         );
         assert!(!burst.is_active());
 
         let grab = burst
-            .decide_begin_buffer(now, "a b", /*retro_chars*/ 2)
+            .decide_begin_buffer(
+                now,
+                "a b",
+                /*retro_chars*/ 2,
+                RetroCaptureMode::Conservative,
+            )
             .expect("whitespace should be considered paste-like");
         assert_eq!(grab.start_byte, 1);
         assert_eq!(grab.grabbed, " b");
         assert!(burst.is_active());
+    }
+
+    /// Behavior: proven-paste retro capture may grab a short whitespace-free prefix.
+    #[test]
+    fn proven_paste_retro_capture_accepts_short_prefix() {
+        let mut burst = PasteBurst::default();
+        let now = Instant::now();
+
+        let grab = burst
+            .decide_begin_buffer(
+                now,
+                "hi",
+                /*retro_chars*/ 2,
+                RetroCaptureMode::ProvenPaste,
+            )
+            .expect("proven paste should capture short prefix");
+        assert_eq!(grab.start_byte, 0);
+        assert_eq!(grab.grabbed, "hi");
+        assert!(burst.is_active());
+    }
+
+    /// Behavior: Enter after a fast two-char prefix proves a short multiline paste.
+    #[test]
+    fn enter_after_fast_prefix_starts_burst() {
+        let mut burst = PasteBurst::default();
+        let t0 = Instant::now();
+        assert!(matches!(burst.on_plain_char('h', t0), CharDecision::Insert));
+        let t1 = t0 + Duration::from_millis(1);
+        assert!(matches!(burst.on_plain_char('i', t1), CharDecision::Insert));
+
+        let EnterDecision::BeginBuffer {
+            retro_chars,
+            capture,
+        } = burst.on_enter(t1 + Duration::from_millis(1))
+        else {
+            panic!("fast prefix + Enter should begin buffer");
+        };
+        assert_eq!(retro_chars, 2);
+        assert_eq!(capture, RetroCaptureMode::ProvenPaste);
+    }
+
+    /// Behavior: active bursts accept bounded slow continuations beyond the old Windows 60ms idle
+    /// timeout and flush as one paste after the rearm window expires.
+    #[test]
+    fn active_burst_accepts_slow_bounded_continuation_before_flush() {
+        let mut burst = PasteBurst::default();
+        let t0 = Instant::now();
+        burst.begin_with_retro_grabbed("hi".to_string(), t0);
+
+        let t1 = t0 + Duration::from_millis(100);
+        assert!(!burst.should_flush_before_burst_input(t1));
+        assert!(matches!(
+            burst.on_plain_char('!', t1),
+            CharDecision::BufferAppend
+        ));
+        burst.append_char_to_buffer('!', t1);
+
+        let t2 = t1 + PasteBurst::recommended_active_flush_delay() + Duration::from_millis(1);
+        assert!(matches!(
+            burst.flush_if_due(t2),
+            FlushResult::Paste(ref s) if s == "hi!"
+        ));
     }
 
     /// Behavior: after a paste-like burst, we keep an "enter suppression window" alive briefly so
@@ -545,24 +643,14 @@ mod tests {
     fn newline_suppression_window_outlives_buffer_flush() {
         let mut burst = PasteBurst::default();
         let t0 = Instant::now();
-        assert!(matches!(
-            burst.on_plain_char('a', t0),
-            CharDecision::RetainFirstChar
-        ));
+        burst.begin_with_retro_grabbed("ab".to_string(), t0);
 
-        let t1 = t0 + Duration::from_millis(1);
-        assert!(matches!(
-            burst.on_plain_char('b', t1),
-            CharDecision::BeginBufferFromPending
-        ));
-        burst.append_char_to_buffer('b', t1);
-
-        let t2 = t1 + PasteBurst::recommended_active_flush_delay() + Duration::from_millis(1);
+        let t2 = t0 + PasteBurst::recommended_active_flush_delay() + Duration::from_millis(1);
         assert!(matches!(burst.flush_if_due(t2), FlushResult::Paste(ref s) if s == "ab"));
         assert!(!burst.is_active());
 
         assert!(burst.newline_should_insert_instead_of_submit(t2));
-        let t3 = t1 + PASTE_ENTER_SUPPRESS_WINDOW + Duration::from_millis(1);
+        let t3 = t2 + PASTE_ENTER_SUPPRESS_WINDOW + Duration::from_millis(1);
         assert!(!burst.newline_should_insert_instead_of_submit(t3));
     }
 }
