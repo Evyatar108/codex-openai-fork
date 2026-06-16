@@ -84,6 +84,37 @@ fn plugin_hooks_is_removed_and_disabled_by_default() {
 }
 
 #[test]
+fn external_migration_is_removed_and_disabled_by_default() {
+    assert_eq!(Feature::ExternalMigration.stage(), Stage::Removed);
+    assert_eq!(Feature::ExternalMigration.default_enabled(), false);
+    assert_eq!(
+        feature_for_key("external_migration"),
+        Some(Feature::ExternalMigration)
+    );
+}
+
+#[test]
+fn removed_apps_mcp_path_override_shapes_are_ignored() {
+    let features = [
+        toml::from_str::<FeaturesToml>("apps_mcp_path_override = true")
+            .expect("boolean compatibility form should deserialize"),
+        toml::from_str::<FeaturesToml>(
+            r#"
+[apps_mcp_path_override]
+enabled = true
+path = "/custom/mcp"
+"#,
+        )
+        .expect("structured compatibility form should deserialize"),
+    ];
+
+    assert_eq!(
+        features.map(|features| features.entries()),
+        [BTreeMap::new(), BTreeMap::new()]
+    );
+}
+
+#[test]
 fn code_mode_only_requires_code_mode() {
     let mut features = Features::with_defaults();
     features.enable(Feature::CodeModeOnly);
@@ -102,23 +133,6 @@ fn guardian_approval_is_stable_and_enabled_by_default() {
 }
 
 #[test]
-fn external_migration_is_experimental_and_disabled_by_default() {
-    let spec = Feature::ExternalMigration.info();
-    let stage = spec.stage;
-
-    assert!(matches!(stage, Stage::Experimental { .. }));
-    assert_eq!(stage.experimental_menu_name(), Some("External migration"));
-    assert_eq!(
-        stage.experimental_menu_description(),
-        Some(
-            "Show a startup prompt when Codex detects migratable external agent config for this machine or project."
-        )
-    );
-    assert_eq!(stage.experimental_announcement(), None);
-    assert_eq!(Feature::ExternalMigration.default_enabled(), false);
-}
-
-#[test]
 fn request_permissions_is_under_development() {
     assert_eq!(
         Feature::ExecPermissionApprovals.stage(),
@@ -134,32 +148,6 @@ fn request_permissions_tool_is_under_development() {
         Stage::UnderDevelopment
     );
     assert_eq!(Feature::RequestPermissionsTool.default_enabled(), false);
-}
-
-#[test]
-fn remote_compaction_v2_is_under_development() {
-    assert_eq!(Feature::RemoteCompactionV2.stage(), Stage::UnderDevelopment);
-    assert_eq!(Feature::RemoteCompactionV2.default_enabled(), false);
-    assert_eq!(
-        feature_for_key("remote_compaction_v2"),
-        Some(Feature::RemoteCompactionV2)
-    );
-}
-
-#[test]
-fn responses_websocket_response_processed_is_under_development() {
-    assert_eq!(
-        Feature::ResponsesWebsocketResponseProcessed.stage(),
-        Stage::UnderDevelopment
-    );
-    assert_eq!(
-        Feature::ResponsesWebsocketResponseProcessed.default_enabled(),
-        false
-    );
-    assert_eq!(
-        feature_for_key("responses_websocket_response_processed"),
-        Some(Feature::ResponsesWebsocketResponseProcessed)
-    );
 }
 
 #[test]
@@ -296,6 +284,16 @@ fn tool_search_is_removed_and_disabled_by_default() {
 }
 
 #[test]
+fn secret_auth_storage_defaults_to_windows_only() {
+    assert_eq!(Feature::SecretAuthStorage.stage(), Stage::Stable);
+    assert_eq!(Feature::SecretAuthStorage.default_enabled(), cfg!(windows));
+    assert_eq!(
+        feature_for_key("secret_auth_storage"),
+        Some(Feature::SecretAuthStorage)
+    );
+}
+
+#[test]
 fn browser_controls_are_stable_and_enabled_by_default() {
     assert_eq!(Feature::InAppBrowser.stage(), Stage::Stable);
     assert_eq!(Feature::InAppBrowser.default_enabled(), true);
@@ -336,6 +334,13 @@ fn use_linux_sandbox_bwrap_is_a_removed_feature_key() {
 fn image_generation_is_stable_and_enabled_by_default() {
     assert_eq!(Feature::ImageGeneration.stage(), Stage::Stable);
     assert_eq!(Feature::ImageGeneration.default_enabled(), true);
+}
+
+#[test]
+fn image_generation_extension_is_under_development_and_disabled_by_default() {
+    assert_eq!(Feature::ImageGenExt.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::ImageGenExt.default_enabled(), false);
+    assert_eq!(feature_for_key("imagegenext"), Some(Feature::ImageGenExt));
 }
 
 #[test]
@@ -396,6 +401,13 @@ fn auth_elicitation_is_under_development() {
         feature_for_key("auth_elicitation"),
         Some(Feature::AuthElicitation)
     );
+}
+
+#[test]
+fn mentions_v2_is_stable_and_enabled_by_default() {
+    assert_eq!(Feature::MentionsV2.stage(), Stage::Stable);
+    assert_eq!(Feature::MentionsV2.default_enabled(), true);
+    assert_eq!(feature_for_key("mentions_v2"), Some(Feature::MentionsV2));
 }
 
 #[test]
@@ -793,4 +805,35 @@ fn unstable_warning_event_only_mentions_enabled_under_development_features() {
     assert!(message.contains("child_agents_md"));
     assert!(!message.contains("personality"));
     assert!(message.contains("/tmp/config.toml"));
+}
+
+#[test]
+fn unstable_warning_event_mentions_enabled_structured_under_development_feature() {
+    let configured_features: Table = toml::from_str(
+        r#"
+multi_agent_v2 = { enabled = true, tool_namespace = "agents" }
+code_mode = true
+"#,
+    )
+    .expect("features table should deserialize");
+
+    let mut features = Features::with_defaults();
+    features.enable(Feature::MultiAgentV2);
+    features.enable(Feature::CodeMode);
+
+    let warning = unstable_features_warning_event(
+        Some(&configured_features),
+        /*suppress_unstable_features_warning*/ false,
+        &features,
+        "/tmp/config.toml",
+    )
+    .expect("warning event");
+
+    let EventMsg::Warning(WarningEvent { message }) = warning.msg else {
+        panic!("expected warning event");
+    };
+    assert_eq!(
+        "Under-development features enabled: code_mode, multi_agent_v2. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /tmp/config.toml.".to_string(),
+        message
+    );
 }

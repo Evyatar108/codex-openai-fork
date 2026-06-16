@@ -79,6 +79,14 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             Line::from("https://github.com/gim-home/codex/releases"),
         ]
     }
+
+    fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        crate::terminal_hyperlinks::annotate_web_urls(self.display_lines(width))
+    }
+
+    fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        self.display_hyperlink_lines(width)
+    }
 }
 #[allow(clippy::disallowed_methods)]
 pub(crate) fn new_warning_event(message: String) -> PrefixedWrappedHistoryCell {
@@ -136,6 +144,14 @@ impl HistoryCell for CyberPolicyNoticeCell {
             ),
             Line::from(TRUSTED_ACCESS_FOR_CYBER_URL),
         ]
+    }
+
+    fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        crate::terminal_hyperlinks::annotate_web_urls(self.display_lines(width))
+    }
+
+    fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        self.display_hyperlink_lines(width)
     }
 }
 

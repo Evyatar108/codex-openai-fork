@@ -32,6 +32,7 @@ use std::sync::atomic::AtomicBool;
 use codex_exec_server::Environment;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::models::AdditionalPermissionProfile;
+use codex_tools::UnifiedExecShellMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
 use rand::Rng;
@@ -105,6 +106,7 @@ pub(crate) struct ExecCommandRequest {
     pub cwd: AbsolutePathBuf,
     pub sandbox_cwd: AbsolutePathBuf,
     pub environment: Arc<Environment>,
+    pub shell_mode: UnifiedExecShellMode,
     pub network: Option<NetworkProxy>,
     pub tty: bool,
     pub sandbox_permissions: SandboxPermissions,
@@ -175,6 +177,8 @@ struct ProcessEntry {
     notified: Arc<AtomicBool>,
     call_id: String,
     process_id: i32,
+    cwd: AbsolutePathBuf,
+    initial_exec_command_active: Arc<std::sync::atomic::AtomicBool>,
     hook_command: String,
     tty: bool,
     network_approval: Option<DeferredNetworkApproval>,

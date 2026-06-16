@@ -52,3 +52,35 @@ fn substitute(value: &str, root: &str) -> String {
         .replace(CLAUDE_PLACEHOLDER, root)
         .replace(CODEX_PLACEHOLDER, root)
 }
+
+/// SANDBOX PATCH: invariant 20 — apply [`apply_plugin_root_substitution`] to every server
+/// object in a raw plugin `.mcp.json` document, before upstream's structured
+/// `parse_plugin_mcp_config`. Re-serializing through `serde_json` keeps substituted
+/// (Windows backslash) paths valid JSON. Supports both the `{ "mcpServers": { … } }` and the
+/// flat `{ name: { … } }` document shapes parsed by `parse_plugin_mcp_config`.
+pub(crate) fn apply_plugin_root_substitution_to_contents(
+    plugin_root: &Path,
+    contents: &str,
+) -> String {
+    let mut doc: JsonValue = match serde_json::from_str(contents) {
+        Ok(doc) => doc,
+        Err(_) => return contents.to_string(),
+    };
+    let Some(object) = doc.as_object_mut() else {
+        return contents.to_string();
+    };
+    if let Some(JsonValue::Object(servers)) = object.get_mut("mcpServers") {
+        for value in servers.values_mut() {
+            if let JsonValue::Object(server) = value {
+                apply_plugin_root_substitution(plugin_root, server);
+            }
+        }
+    } else {
+        for value in object.values_mut() {
+            if let JsonValue::Object(server) = value {
+                apply_plugin_root_substitution(plugin_root, server);
+            }
+        }
+    }
+    serde_json::to_string(&doc).unwrap_or_else(|_| contents.to_string())
+}

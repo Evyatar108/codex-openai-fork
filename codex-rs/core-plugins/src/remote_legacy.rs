@@ -6,18 +6,8 @@ use serde::Deserialize;
 use std::time::Duration;
 use url::Url;
 
-const DEFAULT_REMOTE_MARKETPLACE_NAME: &str = "openai-curated";
-const REMOTE_PLUGIN_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_PLUGIN_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct RemotePluginStatusSummary {
-    pub name: String,
-    #[serde(default = "default_remote_marketplace_name")]
-    pub marketplace_name: String,
-    pub enabled: bool,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,32 +73,21 @@ pub enum RemotePluginMutationError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RemotePluginFetchError {
-    #[error("chatgpt authentication required to sync remote plugins")]
-    AuthRequired,
-
-    #[error(
-        "chatgpt authentication required to sync remote plugins; api key auth is not supported"
-    )]
-    UnsupportedAuthMode,
-
-    #[error("failed to read auth token for remote plugin sync: {0}")]
-    AuthToken(#[source] std::io::Error),
-
-    #[error("failed to send remote plugin sync request to {url}: {source}")]
+    #[error("failed to send remote featured plugin request to {url}: {source}")]
     Request {
         url: String,
         #[source]
         source: reqwest::Error,
     },
 
-    #[error("remote plugin sync request to {url} failed with status {status}: {body}")]
+    #[error("remote featured plugin request to {url} failed with status {status}: {body}")]
     UnexpectedStatus {
         url: String,
         status: reqwest::StatusCode,
         body: String,
     },
 
-    #[error("failed to parse remote plugin sync response from {url}: {source}")]
+    #[error("failed to parse remote featured plugin response from {url}: {source}")]
     Decode {
         url: String,
         #[source]
@@ -162,10 +141,6 @@ fn ensure_codex_backend_auth(
         return Err(RemotePluginMutationError::UnsupportedAuthMode);
     }
     Ok(auth)
-}
-
-fn default_remote_marketplace_name() -> String {
-    DEFAULT_REMOTE_MARKETPLACE_NAME.to_string()
 }
 
 async fn post_remote_plugin_mutation(

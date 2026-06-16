@@ -1,7 +1,7 @@
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
-use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
 use std::collections::VecDeque;
@@ -11,8 +11,12 @@ use tokio::sync::watch;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TurnInput {
-    UserInput(Vec<UserInput>),
-    ResponseInputItem(ResponseInputItem),
+    UserInput {
+        content: Vec<UserInput>,
+        client_id: Option<String>,
+    },
+    ResponseItem(ResponseItem),
+    InterAgentCommunication(InterAgentCommunication),
 }
 
 /// Turn-local pending input storage owned by the input queue flow.
@@ -25,8 +29,6 @@ pub(crate) struct TurnInputQueue {
 pub(crate) struct InputQueue {
     mailbox_tx: watch::Sender<()>,
     mailbox_pending_mails: Mutex<VecDeque<InterAgentCommunication>>,
-
-    idle_pending_input: Mutex<Vec<ResponseInputItem>>,
 }
 
 impl InputQueue {
@@ -35,7 +37,6 @@ impl InputQueue {
         Self {
             mailbox_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
-            idle_pending_input: Mutex::new(Vec::new()),
         }
     }
 
@@ -70,29 +71,13 @@ impl InputQueue {
             .any(|mail| mail.trigger_turn)
     }
 
-    pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<ResponseInputItem> {
+    pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<TurnInput> {
         self.mailbox_pending_mails
             .lock()
             .await
             .drain(..)
-            .map(|mail| mail.to_response_input_item())
+            .map(TurnInput::InterAgentCommunication)
             .collect()
-    }
-
-    pub(crate) async fn queue_response_items_for_next_turn(&self, items: Vec<ResponseInputItem>) {
-        if items.is_empty() {
-            return;
-        }
-
-        self.idle_pending_input.lock().await.extend(items);
-    }
-
-    pub(crate) async fn take_queued_response_items_for_next_turn(&self) -> Vec<ResponseInputItem> {
-        std::mem::take(&mut *self.idle_pending_input.lock().await)
-    }
-
-    pub(crate) async fn has_queued_response_items_for_next_turn(&self) -> bool {
-        !self.idle_pending_input.lock().await.is_empty()
     }
 
     pub(crate) async fn turn_state_for_sub_id(
@@ -185,32 +170,6 @@ impl InputQueue {
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"
     )]
-    pub(crate) async fn inject_response_items(
-        &self,
-        active_turn: &Mutex<Option<ActiveTurn>>,
-        input: Vec<ResponseInputItem>,
-    ) -> Result<(), Vec<ResponseInputItem>> {
-        let mut active = active_turn.lock().await;
-        match active.as_mut() {
-            Some(active_turn) => {
-                self.extend_pending_input_for_turn_state(
-                    active_turn.turn_state.as_ref(),
-                    input
-                        .into_iter()
-                        .map(TurnInput::ResponseInputItem)
-                        .collect(),
-                )
-                .await;
-                Ok(())
-            }
-            None => Err(input),
-        }
-    }
-
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "active turn checks and turn state updates must remain atomic"
-    )]
     pub(crate) async fn get_pending_input(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
@@ -231,11 +190,7 @@ impl InputQueue {
         if !accepts_mailbox_delivery {
             return pending_input;
         }
-        let mailbox_items = self
-            .drain_mailbox_input_items()
-            .await
-            .into_iter()
-            .map(TurnInput::ResponseInputItem);
+        let mailbox_items = self.drain_mailbox_input_items().await.into_iter();
         if pending_input.is_empty() {
             mailbox_items.collect()
         } else {
@@ -332,7 +287,7 @@ mod tests {
             AgentPath::try_from("/root/worker").expect("agent path"),
             AgentPath::root(),
             "two",
-            /*trigger_turn*/ false,
+            /*trigger_turn*/ true,
         );
 
         input_queue
@@ -345,8 +300,8 @@ mod tests {
         assert_eq!(
             input_queue.drain_mailbox_input_items().await,
             vec![
-                mail_one.to_response_input_item(),
-                mail_two.to_response_input_item()
+                TurnInput::InterAgentCommunication(mail_one),
+                TurnInput::InterAgentCommunication(mail_two)
             ]
         );
         assert!(!input_queue.has_pending_mailbox_items().await);

@@ -98,7 +98,8 @@ pub(crate) fn parse_session_start(stdout: &str) -> Option<SessionStartOutput> {
     let wire: SessionStartCommandOutputWire = parse_json(stdout)?;
     Some(session_start_output(
         wire.universal,
-        wire.hook_specific_output,
+        wire.hook_specific_output
+            .and_then(|output| output.additional_context),
     ))
 }
 
@@ -106,15 +107,15 @@ pub(crate) fn parse_subagent_start(stdout: &str) -> Option<SessionStartOutput> {
     let wire: SubagentStartCommandOutputWire = parse_json(stdout)?;
     Some(session_start_output(
         wire.universal,
-        wire.hook_specific_output,
+        wire.hook_specific_output
+            .and_then(|output| output.additional_context),
     ))
 }
 
 fn session_start_output(
     universal: HookUniversalOutputWire,
-    hook_specific_output: Option<crate::schema::SessionStartHookSpecificOutputWire>,
+    additional_context: Option<String>,
 ) -> SessionStartOutput {
-    let additional_context = hook_specific_output.and_then(|output| output.additional_context);
     SessionStartOutput {
         universal: UniversalOutput::from(universal),
         additional_context,

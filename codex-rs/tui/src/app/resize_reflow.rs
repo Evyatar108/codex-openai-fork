@@ -27,11 +27,12 @@ use super::InitialHistoryReplayBuffer;
 use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::insert_history::HistoryLineWrapPolicy;
+use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::transcript_reflow::TRANSCRIPT_REFLOW_DEBOUNCE;
 use crate::tui;
 
 struct ReflowCellDisplay {
-    lines: Vec<Line<'static>>,
+    lines: Vec<HyperlinkLine>,
     is_stream_continuation: bool,
 }
 
@@ -41,7 +42,7 @@ struct ReflowCellDisplay {
 /// already-wrapped rows. Callers should keep treating `transcript_cells` as the source of truth; the
 /// rows here are a transient render product for a single terminal width.
 pub(super) struct ReflowRenderResult {
-    pub(super) lines: Vec<Line<'static>>,
+    pub(super) lines: Vec<HyperlinkLine>,
 }
 
 pub(super) fn trailing_run_start<T: 'static>(transcript_cells: &[Arc<dyn HistoryCell>]) -> usize {
@@ -75,12 +76,12 @@ impl App {
         &mut self,
         cell: &dyn HistoryCell,
         width: u16,
-    ) -> Vec<Line<'static>> {
+    ) -> Vec<HyperlinkLine> {
         let mut display =
-            cell.display_lines_for_mode(width, self.chat_widget.history_render_mode());
+            cell.display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
         if !display.is_empty() && !cell.is_stream_continuation() {
             if self.has_emitted_history_lines {
-                display.insert(0, Line::from(""));
+                display.insert(/*index*/ 0, HyperlinkLine::new(Line::from("")));
             } else {
                 self.has_emitted_history_lines = true;
             }
@@ -101,7 +102,10 @@ impl App {
         if self.overlay.is_some() {
             self.deferred_history_lines.extend(display);
         } else {
-            tui.insert_history_lines_with_wrap_policy(display, self.history_line_wrap_policy());
+            tui.insert_history_hyperlink_lines_with_wrap_policy(
+                display,
+                self.history_line_wrap_policy(),
+            );
         }
     }
 
@@ -178,14 +182,20 @@ impl App {
                 let width = tui.terminal.last_known_screen_size.width;
                 let reflowed_lines = self.render_transcript_lines_for_reflow(width).lines;
                 if !reflowed_lines.is_empty() {
-                    tui.insert_history_lines(reflowed_lines);
+                    tui.insert_history_hyperlink_lines_with_wrap_policy(
+                        reflowed_lines,
+                        self.history_line_wrap_policy(),
+                    );
                 }
             }
             return;
         }
 
         let retained_lines = buffer.retained_lines.into_iter().collect::<Vec<_>>();
-        tui.insert_history_lines_with_wrap_policy(retained_lines, self.history_line_wrap_policy());
+        tui.insert_history_hyperlink_lines_with_wrap_policy(
+            retained_lines,
+            self.history_line_wrap_policy(),
+        );
     }
 
     pub(super) fn insert_history_cell_lines_with_initial_replay_buffer(
@@ -220,7 +230,10 @@ impl App {
             } else if self.overlay.is_some() {
                 self.deferred_history_lines.extend(display);
             } else {
-                tui.insert_history_lines_with_wrap_policy(display, self.history_line_wrap_policy());
+                tui.insert_history_hyperlink_lines_with_wrap_policy(
+                    display,
+                    self.history_line_wrap_policy(),
+                );
             }
         }
     }
@@ -240,7 +253,7 @@ impl App {
     /// here would make copy, transcript overlay, and future replay paths disagree about history.
     pub(super) fn buffer_initial_history_replay_display_lines(
         buffer: &mut InitialHistoryReplayBuffer,
-        display: Vec<Line<'static>>,
+        display: Vec<HyperlinkLine>,
         max_rows: usize,
     ) {
         buffer.retained_lines.extend(display);
@@ -281,6 +294,14 @@ impl App {
     /// transient stream rows.
     pub(super) fn maybe_finish_stream_reflow(&mut self, tui: &mut tui::Tui) -> Result<()> {
         if !self.terminal_resize_reflow_enabled() {
+            if self.transcript_reflow.take_stream_finish_reflow_needed() {
+                self.schedule_immediate_history_cell_refresh(tui);
+                self.maybe_run_resize_reflow(tui)?;
+                return Ok(());
+            }
+            if self.transcript_reflow.history_cell_refresh_requested() {
+                return Ok(());
+            }
             self.transcript_reflow.clear();
             return Ok(());
         }
@@ -309,6 +330,22 @@ impl App {
         tui.frame_requester().schedule_frame();
     }
 
+    fn schedule_immediate_history_cell_refresh(&mut self, tui: &mut tui::Tui) {
+        self.transcript_reflow.schedule_history_cell_refresh();
+        tui.frame_requester().schedule_frame();
+    }
+
+    pub(crate) fn retry_pending_history_cell_refresh(&self, tui: &mut tui::Tui) {
+        if self.transcript_reflow.history_cell_refresh_requested() {
+            tui.frame_requester().schedule_frame();
+        }
+    }
+
+    pub(super) fn should_handle_draw_pre_render(&self) -> bool {
+        self.terminal_resize_reflow_enabled()
+            || self.transcript_reflow.history_cell_refresh_requested()
+    }
+
     /// Force stream-finalized output through the resize reflow path.
     ///
     /// Proposed plan consolidation uses this stricter path because a completed plan is inserted or
@@ -316,7 +353,9 @@ impl App {
     /// resize, the visible scrollback can keep the pre-consolidation wrapping.
     pub(super) fn finish_required_stream_reflow(&mut self, tui: &mut tui::Tui) -> Result<()> {
         if !self.terminal_resize_reflow_enabled() {
-            self.transcript_reflow.clear();
+            if !self.transcript_reflow.history_cell_refresh_requested() {
+                self.transcript_reflow.clear();
+            }
             return Ok(());
         }
         if self.retained_transcript_viewport_enabled() {
@@ -382,7 +421,10 @@ impl App {
                 } else {
                     frame_requester.schedule_frame_in(TRANSCRIPT_REFLOW_DEBOUNCE);
                 }
-            } else if width.changed {
+            } else if !self.terminal_resize_reflow_enabled()
+                && width.changed
+                && !self.transcript_reflow.history_cell_refresh_requested()
+            {
                 self.transcript_reflow.clear();
             }
         }
@@ -436,7 +478,9 @@ impl App {
     /// reuse terminal-wrapped output here would preserve exactly the stale wrapping this feature is
     /// meant to remove.
     pub(super) fn maybe_run_resize_reflow(&mut self, tui: &mut tui::Tui) -> Result<()> {
-        if !self.terminal_resize_reflow_enabled() {
+        if !self.terminal_resize_reflow_enabled()
+            && !self.transcript_reflow.history_cell_refresh_requested()
+        {
             self.transcript_reflow.clear();
             return Ok(());
         }
@@ -499,13 +543,42 @@ impl App {
 
         self.deferred_history_lines.clear();
         if !reflowed_lines.is_empty() {
-            tui.insert_history_lines_with_wrap_policy(
+            tui.insert_history_hyperlink_lines_with_wrap_policy(
                 reflowed_lines,
                 self.history_line_wrap_policy(),
             );
         }
 
         Ok(terminal_width)
+    }
+
+    /// Rebuild scrollback after rollback removes transcript cells.
+    ///
+    /// Unlike resize reflow, rollback must clear the terminal even when no cells remain. Otherwise
+    /// the cancelled user prompt stays visible in scrollback despite being removed from the source
+    /// transcript.
+    pub(super) fn rebuild_transcript_after_backtrack(&mut self, tui: &mut tui::Tui) -> Result<()> {
+        let terminal_width = tui.terminal.size()?.width;
+        let width = self.chat_widget.history_wrap_width(terminal_width);
+        let reflowed_lines = if self.transcript_cells.is_empty() {
+            self.reset_history_emission_state();
+            Vec::new()
+        } else {
+            self.render_transcript_lines_for_reflow(width).lines
+        };
+
+        tui.clear_pending_history_lines();
+        self.clear_terminal_for_resize_replay(tui)?;
+
+        self.deferred_history_lines.clear();
+        if !reflowed_lines.is_empty() {
+            tui.insert_history_hyperlink_lines_with_wrap_policy(
+                reflowed_lines,
+                self.history_line_wrap_policy(),
+            );
+        }
+
+        Ok(())
     }
 
     /// Render transcript cells for the current resize rebuild.
@@ -524,7 +597,8 @@ impl App {
         while start > 0 {
             start -= 1;
             let cell = self.transcript_cells[start].clone();
-            let lines = cell.display_lines_for_mode(width, self.chat_widget.history_render_mode());
+            let lines = cell
+                .display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
             rendered_rows += lines.len();
             cell_displays.push_front(ReflowCellDisplay {
                 lines,
@@ -544,7 +618,10 @@ impl App {
             start -= 1;
             let cell = self.transcript_cells[start].clone();
             cell_displays.push_front(ReflowCellDisplay {
-                lines: cell.display_lines_for_mode(width, self.chat_widget.history_render_mode()),
+                lines: cell.display_hyperlink_lines_for_mode(
+                    width,
+                    self.chat_widget.history_render_mode(),
+                ),
                 is_stream_continuation: cell.is_stream_continuation(),
             });
         }
@@ -554,7 +631,7 @@ impl App {
         for display in cell_displays {
             if !display.lines.is_empty() && !display.is_stream_continuation {
                 if has_emitted_history_lines {
-                    reflowed_lines.push(Line::from(""));
+                    reflowed_lines.push(HyperlinkLine::new(Line::from("")));
                 } else {
                     has_emitted_history_lines = true;
                 }

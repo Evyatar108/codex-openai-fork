@@ -32,6 +32,16 @@ Agent Identity JWT in `CODEX_ACCESS_TOKEN` can opt into that auth path with
 `--use-agent-identity-auth`; Codex then registers an Agent task and sends the
 derived AgentAssertion headers on the registry request.
 
+Alternatively, API users can instead use `CODEX_API_KEY`;
+Codex sends it as a bearer token on the registration request. For example:
+
+```sh
+CODEX_API_KEY="$OPENAI_API_KEY" \
+codex exec-server \
+  --remote ... \
+  --environment-id "$ENVIRONMENT_ID"
+```
+
 Wire framing:
 
 - local websocket: one JSON-RPC message per websocket frame
@@ -328,13 +338,15 @@ Params:
 
 ## Filesystem RPCs
 
-Filesystem methods use absolute paths and return JSON-RPC errors for invalid
-or unavailable paths:
+Filesystem methods use canonical `file:` URIs and return JSON-RPC errors for
+invalid or unavailable paths. For compatibility, requests also accept native
+absolute path strings and normalize them to `file:` URIs:
 
 - `fs/readFile`
 - `fs/writeFile`
 - `fs/createDirectory`
 - `fs/getMetadata`
+- `fs/canonicalize`
 - `fs/readDirectory`
 - `fs/remove`
 - `fs/copy`
