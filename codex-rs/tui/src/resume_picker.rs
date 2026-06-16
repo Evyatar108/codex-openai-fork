@@ -696,6 +696,7 @@ struct PickerState {
     sort_key: ThreadSortKey,
     inline_error: Option<String>,
     loaded_page_count: usize,
+    // SANDBOX PATCH: /resume paints the first page DB-only, then repairs with one lazy scan.
     pending_first_page_reconcile: Option<usize>,
     expanded_thread_id: Option<ThreadId>,
     transcript_previews: HashMap<ThreadId, TranscriptPreviewState>,
@@ -1317,6 +1318,7 @@ impl PickerState {
             cwd_filter: self.active_cwd_filter(),
             provider_filter: self.provider_filter.clone(),
             sort_key: self.sort_key,
+            // SANDBOX PATCH: avoid filesystem scan/repair on initial /resume paint.
             load_mode: ThreadListLoadMode::StateDbOnly,
         }));
     }
@@ -1340,6 +1342,7 @@ impl PickerState {
                 self.loaded_page_count = self.loaded_page_count.saturating_add(1);
                 self.ingest_page(page);
                 if self.loaded_page_count == 1 {
+                    // SANDBOX PATCH: lazily reconcile only after the DB-backed first page is visible.
                     self.schedule_first_page_reconcile();
                 }
                 self.complete_pending_page_down();
@@ -1435,6 +1438,7 @@ impl PickerState {
     }
 
     fn replace_rows_with_reconciled_first_page(&mut self, page: PickerPage) {
+        // SANDBOX PATCH: first-page repair replaces rows without losing the selected session.
         let selected_key = self.selected_row_key();
         self.all_rows.clear();
         self.filtered_rows.clear();
@@ -1728,6 +1732,7 @@ impl PickerState {
         }
         let request_token = self.allocate_request_token();
         self.pending_first_page_reconcile = Some(request_token);
+        // SANDBOX PATCH: perform the slower scan/repair path after the initial page.
         (self.picker_loader)(PickerLoadRequest::ReconcileFirstPage(PageLoadRequest {
             cursor: None,
             request_token,

@@ -45,6 +45,7 @@ const ALIASES: &[Alias] = &[
         legacy_key: "codex_hooks",
         feature: Feature::CodexHooks,
     },
+    // SANDBOX PATCH: legacy user-message styling key maps to the canonical feature gate.
     Alias {
         legacy_key: "style_user_messages",
         feature: Feature::UserMessageStyling,

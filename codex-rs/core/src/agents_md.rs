@@ -38,6 +38,7 @@ pub(crate) const HIERARCHICAL_AGENTS_MESSAGE: &str =
 pub const DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
 /// Preferred local override for AGENTS.md instructions.
 pub const LOCAL_AGENTS_MD_FILENAME: &str = "AGENTS.override.md";
+// SANDBOX PATCH: default-off CLAUDE.md fallback when AutoLoadClaudeMd is enabled.
 const CLAUDE_MD_FILENAME: &str = "CLAUDE.md";
 
 /// When both `Config::instructions` and AGENTS.md docs are present, they will
@@ -334,6 +335,7 @@ impl<'a> AgentsMdManager<'a> {
     }
 
     fn candidate_filenames(&self) -> Vec<String> {
+        // SANDBOX PATCH: AutoLoadClaudeMd appends CLAUDE.md after explicit AGENTS fallbacks.
         let auto_load_claude_md = self.config.features.enabled(Feature::AutoLoadClaudeMd);
         let mut names: Vec<String> = Vec::with_capacity(
             2 + self.config.project_doc_fallback_filenames.len()

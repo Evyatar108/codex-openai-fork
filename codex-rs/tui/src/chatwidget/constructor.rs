@@ -35,6 +35,7 @@ impl ChatWidget {
         let mut config = config;
         config.model = model.clone();
         let prevent_idle_sleep = config.features.enabled(Feature::PreventIdleSleep);
+        // SANDBOX PATCH: initialize process-global user-message styling from the feature gate.
         crate::style::install_user_message_styling(
             config.features.enabled(Feature::UserMessageStyling),
         );

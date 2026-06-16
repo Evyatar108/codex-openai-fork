@@ -41,6 +41,7 @@ pub(crate) struct AgentPickerThreadEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AgentMetadata {
+    // SANDBOX PATCH: collaborator history cells prefer human labels over raw thread ids.
     /// Human-friendly nickname shown in rendered tool-call rows.
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
@@ -472,6 +473,7 @@ fn agent_label_line(agent: AgentLabel<'_>) -> Line<'static> {
 
 fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
+    // SANDBOX PATCH: spawn/wait/result rows render cached agent names and roles.
     let display_name = agent
         .display_name
         .map(str::trim)

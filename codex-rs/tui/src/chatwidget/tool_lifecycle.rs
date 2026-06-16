@@ -137,6 +137,7 @@ impl ChatWidget {
                 .filter(|role| !role.is_empty())
                 .map(str::to_string);
             if agent_name.is_some() || agent_role.is_some() {
+                // SANDBOX PATCH: keep collaborator display metadata available before thread-list refresh.
                 // Cache the spawn-time display name so later wait/result cells do not fall back
                 // to a raw thread id before the app-server thread list has refreshed.
                 self.set_collab_agent_metadata(thread_id, agent_name, agent_role);

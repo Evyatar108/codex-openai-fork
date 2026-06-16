@@ -125,6 +125,7 @@ impl<S: EventSource + Default> EventBroker<S> {
 pub struct CrosstermEventSource(pub crossterm::event::EventStream);
 
 #[cfg(windows)]
+// SANDBOX PATCH: Windows input reader reasserts console mode before each read.
 pub struct CrosstermEventSource {
     rx: mpsc::UnboundedReceiver<EventResult>,
     shutdown: Arc<AtomicBool>,
@@ -253,6 +254,7 @@ fn wait_for_windows_console_input(shutdown: &AtomicBool) -> std::io::Result<bool
 
 #[cfg(windows)]
 fn prepare_windows_input_mode_before_read() {
+    // SANDBOX PATCH: self-heal Windows console input mode before crossterm reads.
     let input_mode = match super::read_console_input_mode() {
         Ok(input_mode) => input_mode,
         Err(err) => {
@@ -377,6 +379,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
 
     /// Map a crossterm event to a [`TuiEvent`], skipping events we don't use (mouse events, etc.).
     fn map_crossterm_event(&mut self, event: Event) -> Option<TuiEvent> {
+        // SANDBOX PATCH: console-mode tracer records redacted input-event breadcrumbs.
         super::console_mode_trace::record_crossterm_event(&event);
         match event {
             Event::Key(key_event) => {

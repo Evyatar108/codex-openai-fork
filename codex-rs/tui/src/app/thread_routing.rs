@@ -1070,6 +1070,8 @@ impl App {
         self.chat_widget
             .set_initial_user_message_submit_suppressed(/*suppressed*/ true);
         self.chat_widget.handle_thread_session(session);
+        // SANDBOX PATCH: retained transcript viewport needs the same batch replay guard
+        // as terminal-resize reflow so resume first paint does not repaint per cell.
         let should_buffer_initial_replay = !turns.is_empty()
             && (self.terminal_resize_reflow_enabled()
                 || self.retained_transcript_viewport_enabled());
@@ -1261,6 +1263,7 @@ impl App {
         snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
     ) {
+        // SANDBOX PATCH: retained transcript viewport replays thread snapshots in one batch.
         let should_buffer_replay = (self.terminal_resize_reflow_enabled()
             || self.retained_transcript_viewport_enabled())
             && (!snapshot.turns.is_empty() || !snapshot.events.is_empty());
@@ -1389,6 +1392,7 @@ impl App {
         );
         match event {
             ThreadBufferedEvent::Notification(notification) => {
+                // SANDBOX PATCH: Windows console-mode tracer records redacted action context.
                 crate::tui::console_mode_trace::record_server_notification(&notification);
                 self.cache_collab_receiver_threads_for_notification(&notification);
                 self.chat_widget

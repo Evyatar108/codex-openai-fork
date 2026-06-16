@@ -1,3 +1,4 @@
+// SANDBOX PATCH: Windows console-mode tracer for diagnosing input-mode regressions.
 use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
