@@ -22,7 +22,9 @@ use chrono::Duration;
 use chrono::Utc;
 use codex_login::default_client::create_client;
 use serde::Deserialize;
+use serde::Serialize;
 use std::path::Path;
+use std::path::PathBuf;
 
 #[allow(unused_imports)]
 use crate::version::CODEX_CLI_VERSION;
@@ -130,6 +132,21 @@ async fn fetch_latest_github_release_version() -> anyhow::Result<String> {
         .json::<ReleaseInfo>()
         .await?;
     extract_version_from_latest_tag(&latest_tag_name)
+}
+
+pub async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<()> {
+    let version_file = version_filepath(config);
+    let mut info = match read_version_info(&version_file) {
+        Ok(info) => info,
+        Err(_) => return Ok(()),
+    };
+    info.dismissed_version = Some(version.to_string());
+    let json_line = format!("{}\n", serde_json::to_string(&info)?);
+    if let Some(parent) = version_file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(version_file, json_line).await?;
+    Ok(())
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.
