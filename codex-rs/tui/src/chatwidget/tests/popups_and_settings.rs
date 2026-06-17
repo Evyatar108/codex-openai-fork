@@ -2845,7 +2845,7 @@ async fn reasoning_accept_opens_context_tier_for_two_tier_model() {
     let (model, effort) = events
         .iter()
         .find_map(|event| match event {
-            AppEvent::OpenContextTierPopup { model, effort } => Some((model.clone(), *effort)),
+            AppEvent::OpenContextTierPopup { model, effort } => Some((model.clone(), effort.clone())),
             _ => None,
         })
         .expect("expected context-tier popup event");

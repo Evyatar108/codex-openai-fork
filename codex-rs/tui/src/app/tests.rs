@@ -1260,6 +1260,7 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
     );
     assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
     Ok(())
+    })
 }
 
 #[tokio::test]
@@ -1295,6 +1296,7 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
         })
     );
     Ok(())
+    })
 }
 
 #[tokio::test]
@@ -1434,6 +1436,7 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
         })
     );
     Ok(())
+    })
 }
 
 #[test]
@@ -4616,6 +4619,15 @@ async fn retained_transcript_main_view_renders_visible_tail_snapshot() {
     assert_app_snapshot!("retained_transcript_main_view_tail", rendered);
 }
 
+fn tall_table_like_active_cell(row_count: usize) -> Box<dyn HistoryCell> {
+    Box::new(StreamingAgentTailCell::new(
+        (0..row_count)
+            .map(|index| Line::from(format!("| active table row {index:02} | value |")).into())
+            .collect(),
+        /*is_first_line*/ true,
+    ))
+}
+
 #[tokio::test]
 async fn retained_transcript_main_view_keeps_recent_committed_text_above_tall_active_tail_snapshot()
 {
@@ -4692,19 +4704,9 @@ async fn initial_replay_buffer_is_enabled_without_retained_transcript() {
     app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(3);
 
     app.begin_initial_history_replay_buffer();
-    for index in 0..5 {
-        App::buffer_initial_history_replay_display_lines(
-            app.initial_history_replay_buffer
-                .as_mut()
-                .expect("initial replay buffer active"),
-            vec![Line::from(format!("line {index}")).into()],
-            /*max_rows*/ 3,
-        );
-    }
 
-    assert!(saw_begin);
-    assert!(saw_end);
-    Ok(())
+    assert!(app.initial_history_replay_buffer.is_some());
+    assert!(!app.suppress_retained_transcript_replay_frames);
 }
 
 #[tokio::test]
@@ -5996,7 +5998,15 @@ async fn interrupt_without_active_turn_is_treated_as_handled() {
 
 #[tokio::test]
 async fn override_turn_context_sends_thread_settings_update() {
-    Box::pin(async {
+    std::thread::Builder::new()
+        .name("override-turn-context-settings-update".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build test runtime");
+            runtime.block_on(async {
         let mut app = make_test_app().await;
         let mut app_server =
             crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
@@ -6225,6 +6235,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
         thread_id: inactive_thread_id.to_string(),
         thread_settings: ThreadSettings {
             cwd: test_absolute_path("/tmp/thread-settings"),
+            context_tier: None,
             approval_policy: AskForApproval::OnRequest,
             approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::AutoReview,
             sandbox_policy: codex_app_server_protocol::SandboxPolicy::ReadOnly {

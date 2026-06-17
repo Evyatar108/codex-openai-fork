@@ -3301,6 +3301,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             model: Some(REQUESTED_MODEL.to_string()),
             reasoning_effort: Some(REQUESTED_REASONING_EFFORT),
             agents_states: HashMap::new(),
+            spawned_agent_name: None,
+            spawned_agent_role: None,
         }
     );
 
@@ -3329,6 +3331,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         model,
         reasoning_effort,
         agents_states,
+        spawned_agent_name: _,
+        spawned_agent_role: _,
     } = spawn_completed
     else {
         unreachable!("loop ensures we break on collab agent tool call items");
@@ -3690,6 +3694,8 @@ config_file = "./custom-role.toml"
         model,
         reasoning_effort,
         agents_states,
+        spawned_agent_name: _,
+        spawned_agent_role: _,
     } = spawn_completed
     else {
         unreachable!("loop ensures we break on collab agent tool call items");

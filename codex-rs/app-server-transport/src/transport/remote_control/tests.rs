@@ -1074,94 +1074,13 @@ async fn remote_control_start_allows_missing_auth_when_enabled() {
         .expect("remote control task should join");
 }
 
-#[tokio::test]
-async fn remote_control_start_forced_disabled() {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("listener should bind");
-    let remote_control_url = remote_control_url_for_listener(&listener);
-    let codex_home = TempDir::new().expect("temp dir should create");
-    let (transport_event_tx, _transport_event_rx) =
-        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
-    let shutdown_token = CancellationToken::new();
-    let (remote_task, remote_handle) = start_remote_control(
-        remote_control_url,
-        Some(remote_control_state_runtime(&codex_home).await),
-        remote_control_auth_manager(),
-        transport_event_tx,
-        shutdown_token.clone(),
-        /*app_server_client_name_rx*/ None,
-        /*initial_enabled*/ true,
-    )
-    .await
-    .expect("remote control should start");
-    let mut status_rx = remote_handle.status_receiver();
-
-    assert_eq!(
-        status_rx.borrow().clone(),
-        RemoteControlStatusChangedNotification {
-            status: RemoteControlConnectionStatus::Disabled,
-            environment_id: None,
-        }
-    );
-    timeout(Duration::from_millis(100), listener.accept())
-        .await
-        .expect_err("force-disabled remote control should not connect");
-    timeout(Duration::from_millis(20), status_rx.changed())
-        .await
-        .expect_err("force-disabled remote control should not emit status changes");
-
-    shutdown_token.cancel();
-    timeout(Duration::from_secs(1), remote_task)
-        .await
-        .expect("remote control task should stop")
-        .expect("remote control task should join");
-}
-
-#[tokio::test]
-async fn remote_control_set_enabled_forced_false() {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("listener should bind");
-    let remote_control_url = remote_control_url_for_listener(&listener);
-    let codex_home = TempDir::new().expect("temp dir should create");
-    let (transport_event_tx, _transport_event_rx) =
-        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
-    let shutdown_token = CancellationToken::new();
-    let (remote_task, remote_handle) = start_remote_control(
-        remote_control_url,
-        Some(remote_control_state_runtime(&codex_home).await),
-        remote_control_auth_manager(),
-        transport_event_tx,
-        shutdown_token.clone(),
-        /*app_server_client_name_rx*/ None,
-        /*initial_enabled*/ false,
-    )
-    .await
-    .expect("remote control should start");
-    let mut status_rx = remote_handle.status_receiver();
-
-    remote_handle.set_enabled(/*enabled*/ true);
-    timeout(Duration::from_millis(100), listener.accept())
-        .await
-        .expect_err("set_enabled(true) must not wake remote control");
-    timeout(Duration::from_millis(20), status_rx.changed())
-        .await
-        .expect_err("set_enabled(true) must leave remote control status unchanged");
-    assert_eq!(
-        status_rx.borrow().clone(),
-        RemoteControlStatusChangedNotification {
-            status: RemoteControlConnectionStatus::Disabled,
-            environment_id: None,
-        }
-    );
-
-    shutdown_token.cancel();
-    timeout(Duration::from_secs(1), remote_task)
-        .await
-        .expect("remote control task should stop")
-        .expect("remote control task should join");
-}
+// SANDBOX PATCH: the Layer-2 `RemoteControlHandle::set_enabled` / `start_remote_control(initial_enabled)`
+// hook (former Inv 8/9) was retired in the 0.140 rebase. Upstream deleted `set_enabled` and replaced
+// the `initial_enabled: bool` start arg with `RemoteControlStartupMode`; the fork now force-disables
+// remote control via `RemoteControlPolicy::DisabledByRequirements` at the app-server policy layer
+// (lib.rs), not via a transport-level toggle. The two transport tests that exercised the removed hook
+// (`remote_control_start_forced_disabled`, `remote_control_set_enabled_forced_false`) were removed
+// with it; policy-layer force-disable coverage is tracked as a follow-up.
 
 // SANDBOX PATCH: `RemoteControlHandle::set_enabled` is force-disabled in the sandbox
 // (see mod.rs) so it can never flip the watch channel to `true`. This upstream test

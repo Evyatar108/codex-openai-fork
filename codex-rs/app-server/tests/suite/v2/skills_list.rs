@@ -777,6 +777,7 @@ async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<(
             model: None,
             model_provider: None,
             service_tier: None,
+            context_tier: None,
             cwd: None,
             runtime_workspace_roots: None,
             approval_policy: None,
