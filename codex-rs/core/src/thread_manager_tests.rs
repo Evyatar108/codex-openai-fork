@@ -1099,10 +1099,13 @@ async fn thread_manager_passes_copilot_provider_to_models_manager() {
         auth_manager,
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, /*state_db*/ None),
         /*state_db*/ None,
         TEST_INSTALLATION_ID.to_string(),
+        /*attestation_provider*/ None,
     );
 
     let default_model = manager

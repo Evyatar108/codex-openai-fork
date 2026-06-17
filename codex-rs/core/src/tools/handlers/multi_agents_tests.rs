@@ -1166,7 +1166,7 @@ async fn spawn_agent_limit_error_lists_open_agent_context() {
         .await
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
-    session.conversation_id = root.thread_id;
+    session.thread_id = root.thread_id;
     turn.config = Arc::new(config);
 
     let session = Arc::new(session);
@@ -1224,7 +1224,7 @@ async fn multi_agent_v2_spawn_limit_error_lists_open_task_context() {
         .await
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
-    session.conversation_id = root.thread_id;
+    session.thread_id = root.thread_id;
     turn.config = Arc::new(config);
 
     let session = Arc::new(session);
@@ -2537,7 +2537,7 @@ async fn spawn_agent_rejects_from_subagent_context() {
     session.services.agent_control = manager.agent_control();
 
     turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id: session.conversation_id,
+        parent_thread_id: session.thread_id,
         depth: 1,
         agent_path: None,
         agent_nickname: None,
@@ -4358,7 +4358,7 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
         AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-        empty_extension_registry(),
+        codex_extension_api::empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, state_db.clone()),
@@ -4644,7 +4644,7 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
 async fn build_agent_spawn_config_preserves_base_user_instructions() {
     let (_session, mut turn) = make_session_and_context().await;
     let mut base_config = (*turn.config).clone();
-    base_config.user_instructions = Some("base-user".to_string());
+    base_config.base_instructions = Some("base-user".to_string());
     turn.user_instructions = Some("resolved-user".to_string());
     turn.config = Arc::new(base_config.clone());
     let base_instructions = BaseInstructions {
@@ -4653,7 +4653,7 @@ async fn build_agent_spawn_config_preserves_base_user_instructions() {
 
     let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
 
-    assert_eq!(config.user_instructions, base_config.user_instructions);
+    assert_eq!(config.base_instructions, base_config.base_instructions);
 }
 
 #[tokio::test]
@@ -4746,6 +4746,7 @@ async fn build_agent_spawn_config_scope_override_wins_over_project_layer_enable(
         ConfigLayerSource::User {
             file: AbsolutePathBuf::try_from(base_config.codex_home.join(CONFIG_TOML_FILE))
                 .expect("abs path"),
+            profile: None,
         },
         toml::Value::Table(toml::map::Map::new()),
     );
@@ -4797,6 +4798,7 @@ async fn build_agent_spawn_config_scope_override_wins_over_session_flags_layer_e
         ConfigLayerSource::User {
             file: AbsolutePathBuf::try_from(base_config.codex_home.join(CONFIG_TOML_FILE))
                 .expect("abs path"),
+            profile: None,
         },
         toml::Value::Table(toml::map::Map::new()),
     );

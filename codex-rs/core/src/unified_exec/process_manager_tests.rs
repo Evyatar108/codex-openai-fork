@@ -45,6 +45,7 @@ fn test_exec_request(
         ExecExpiration::DefaultTimeout,
         ExecCapturePolicy::ShellTool,
         SandboxType::None,
+        /*windows_sandbox_workspace_roots*/ Vec::new(),
         turn.windows_sandbox_level,
         /*windows_sandbox_private_desktop*/ false,
         turn.permission_profile(),
@@ -96,7 +97,11 @@ async fn spawn_background_process_inner(
                 &request,
                 /*tty*/ false,
                 Box::new(NoopSpawnLifecycle),
-                turn.environment.as_ref().expect("turn environment"),
+                turn.environments
+                    .primary()
+                    .expect("turn environment")
+                    .environment
+                    .as_ref(),
                 output_artifact.clone(),
             )
             .await?,
@@ -112,6 +117,8 @@ async fn spawn_background_process_inner(
         notified: Arc::clone(&notified),
         call_id: context.call_id,
         process_id,
+        cwd: turn.cwd.clone(),
+        initial_exec_command_active: Arc::new(AtomicBool::new(false)),
         hook_command: cmd.to_string(),
         tty: false,
         network_approval: None,

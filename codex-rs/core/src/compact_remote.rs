@@ -466,8 +466,7 @@ mod tests {
             crate::session::tests::make_session_and_context().await;
         session.services.model_client = ModelClient::new(
             Some(session.services.auth_manager.clone()),
-            session.conversation_id,
-            /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+            session.thread_id(),
             create_oss_provider_with_base_url(
                 "test",
                 &format!("{}/v1", server.uri()),
@@ -478,6 +477,7 @@ mod tests {
             /*enable_request_compression*/ false,
             /*include_timing_metrics*/ false,
             /*beta_features_header*/ None,
+            /*attestation_provider*/ None,
         );
         turn_context.provider = codex_model_provider::create_model_provider(
             create_copilot_provider(),
@@ -503,7 +503,7 @@ mod tests {
             },
         ];
         session
-            .record_into_history(&seeded_history, &turn_context)
+            .record_conversation_items(&turn_context, &seeded_history)
             .await;
         let history_before = session.clone_history().await.raw_items().to_vec();
 
@@ -512,6 +512,7 @@ mod tests {
         run_remote_compact_task_inner(
             &session,
             &turn_context,
+            /*turn_state*/ None,
             InitialContextInjection::DoNotInject,
             CompactionTrigger::Manual,
             CompactionReason::UserRequested,

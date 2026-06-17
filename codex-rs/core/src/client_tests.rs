@@ -580,7 +580,7 @@ fn model_client_with_counting_attestation(
     } else {
         (
             None,
-            create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses),
+            create_oss_provider_with_base_url("oss", "https://example.com/v1", WireApi::Responses),
         )
     };
     let model_client = ModelClient::new(

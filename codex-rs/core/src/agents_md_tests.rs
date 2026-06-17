@@ -1,4 +1,7 @@
 use super::*;
+fn candidate_filenames_owned(cfg: &crate::config::Config) -> Vec<String> {
+    candidate_filenames(cfg).into_iter().map(str::to_string).collect()
+}
 use crate::config::ConfigBuilder;
 use crate::environment_selection::ResolvedTurnEnvironments;
 use crate::session::turn_context::TurnEnvironment;
@@ -380,8 +383,7 @@ async fn candidate_filenames_appends_claude_md_when_configured_and_dedups() {
         &[CLAUDE_MD_LITERAL],
     )
     .await;
-    let manager = AgentsMdManager::new(&cfg);
-    let candidates = manager.candidate_filenames();
+    let candidates = candidate_filenames_owned(&cfg);
     assert_eq!(
         candidates
             .iter()
@@ -397,8 +399,7 @@ async fn candidate_filenames_appends_claude_md_when_configured_and_dedups() {
         &[CLAUDE_MD_LITERAL, CLAUDE_MD_LITERAL],
     )
     .await;
-    let manager = AgentsMdManager::new(&cfg);
-    let candidates = manager.candidate_filenames();
+    let candidates = candidate_filenames_owned(&cfg);
     assert_eq!(
         candidates
             .iter()
@@ -413,8 +414,7 @@ async fn candidate_filenames_omits_claude_md_when_not_configured() {
     const CLAUDE_MD_LITERAL: &str = "CLAUDE.md";
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
-    let manager = AgentsMdManager::new(&cfg);
-    let candidates = manager.candidate_filenames();
+    let candidates = candidate_filenames_owned(&cfg);
     assert_eq!(
         candidates
             .iter()
@@ -430,8 +430,7 @@ async fn candidate_filenames_omits_claude_md_when_not_configured() {
         &["WORKFLOW.md"],
     )
     .await;
-    let manager = AgentsMdManager::new(&cfg);
-    let candidates = manager.candidate_filenames();
+    let candidates = candidate_filenames_owned(&cfg);
     assert_eq!(
         candidates
             .iter()
@@ -454,10 +453,9 @@ async fn candidate_filenames_appends_claude_md_when_feature_enabled() {
     cfg.features
         .enable(Feature::AutoLoadClaudeMd)
         .expect("test config should allow CLAUDE.md auto-load");
-    let manager = AgentsMdManager::new(&cfg);
 
     assert_eq!(
-        manager.candidate_filenames(),
+        candidate_filenames_owned(&cfg),
         vec![
             LOCAL_AGENTS_MD_FILENAME.to_string(),
             DEFAULT_AGENTS_MD_FILENAME.to_string(),

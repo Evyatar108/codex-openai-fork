@@ -241,6 +241,7 @@ mod tests {
                 },
             },
             personality: None,
+            context_tier: None,
         }
     }
 }

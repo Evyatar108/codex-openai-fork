@@ -765,6 +765,7 @@ mod thread_processor_behavior_tests {
             forked_from_thread_id: None,
             parent_thread_id: None,
             thread_source: None,
+            context_tier: None,
         };
 
         assert_eq!(

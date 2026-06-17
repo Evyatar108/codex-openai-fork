@@ -3285,6 +3285,7 @@ async fn set_rate_limits_retains_previous_credits() {
         developer_instructions: config.developer_instructions.clone(),
         loaded_agents_md: None,
         service_tier: None,
+        model_context_tier: None,
         personality: config.personality,
         base_instructions: config
             .base_instructions
@@ -3393,6 +3394,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         developer_instructions: config.developer_instructions.clone(),
         loaded_agents_md: None,
         service_tier: None,
+        model_context_tier: None,
         personality: config.personality,
         base_instructions: config
             .base_instructions
@@ -3926,6 +3928,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
         developer_instructions: config.developer_instructions.clone(),
         loaded_agents_md: None,
         service_tier: None,
+        model_context_tier: None,
         personality: config.personality,
         base_instructions: config
             .base_instructions
@@ -4779,6 +4782,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         developer_instructions: config.developer_instructions.clone(),
         loaded_agents_md: None,
         service_tier: None,
+        model_context_tier: None,
         personality: config.personality,
         base_instructions: config
             .base_instructions
@@ -4891,6 +4895,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         developer_instructions: config.developer_instructions.clone(),
         loaded_agents_md: None,
         service_tier: None,
+        model_context_tier: None,
         personality: config.personality,
         base_instructions: config
             .base_instructions
@@ -5138,6 +5143,7 @@ async fn make_session_with_config_and_rx(
         developer_instructions: config.developer_instructions.clone(),
         loaded_agents_md: None,
         service_tier: None,
+        model_context_tier: None,
         personality: config.personality,
         base_instructions: config
             .base_instructions
@@ -5243,6 +5249,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         developer_instructions: config.developer_instructions.clone(),
         loaded_agents_md: None,
         service_tier: None,
+        model_context_tier: None,
         personality: config.personality,
         base_instructions: config
             .base_instructions
@@ -6920,6 +6927,7 @@ where
         developer_instructions: config.developer_instructions.clone(),
         loaded_agents_md: None,
         service_tier: None,
+        model_context_tier: None,
         personality: config.personality,
         base_instructions: config
             .base_instructions
