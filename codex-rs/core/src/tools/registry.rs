@@ -579,18 +579,6 @@ impl ToolRegistry {
                         ToolCallOutcome::Completed { success: true },
                     )
                     .await;
-                    if let Err(err) = invocation
-                        .session
-                        .goal_runtime_apply(GoalRuntimeEvent::ToolCompleted {
-                            turn_context: invocation.turn.as_ref(),
-                            tool_name: tool_name.name.as_str(),
-                        })
-                        .await
-                    {
-                        warn!(
-                            "failed to account thread goal progress after synthetic PreToolUse response: {err}"
-                        );
-                    }
                     return Ok(AnyToolResult {
                         call_id: synthetic_call_id,
                         payload: synthetic_payload,

@@ -52,7 +52,7 @@ impl BackgroundOutputArtifact {
 
         Some(Arc::new(Self::new_for_path(Self::path_for_session(
             &turn.config.codex_home,
-            &session.conversation_id.to_string(),
+            &session.thread_id().to_string(),
             call_id,
             process_id,
         ))))

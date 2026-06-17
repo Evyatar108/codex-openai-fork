@@ -236,12 +236,12 @@ impl ChatWidget {
             if supports_context_tier {
                 tx.send(AppEvent::OpenContextTierPopup {
                     model: model_for_action.clone(),
-                    effort: effort_for_action,
+                    effort: effort_for_action.clone(),
                 });
             } else {
                 tx.send(AppEvent::PersistModelSelection {
                     model: model_for_action.clone(),
-                    effort: effort_for_action,
+                    effort: effort_for_action.clone(),
                 });
             }
         })]
@@ -341,12 +341,12 @@ impl ChatWidget {
             if supports_context_tier {
                 tx.send(AppEvent::OpenContextTierPopup {
                     model: model.clone(),
-                    effort,
+                    effort: effort.clone(),
                 });
             } else {
                 tx.send(AppEvent::PersistModelSelection {
                     model: model.clone(),
-                    effort,
+                    effort: effort.clone(),
                 });
             }
         })];
@@ -380,7 +380,7 @@ impl ChatWidget {
 
     /// Open a popup to choose the reasoning effort (stage 2) for the given model.
     pub(crate) fn open_reasoning_popup(&mut self, preset: ModelPreset) {
-        let default_effort = preset.default_reasoning_effort;
+        let default_effort = preset.default_reasoning_effort.clone();
         // SANDBOX PATCH: Knob B — capture two-tier support before `preset` fields move.
         let supports_context_tier = preset.supports_context_window_tier_selection();
         let supported = preset.supported_reasoning_efforts;
@@ -502,12 +502,12 @@ impl ChatWidget {
                     if supports_context_tier {
                         tx.send(AppEvent::OpenContextTierPopup {
                             model: model_for_action.clone(),
-                            effort: choice_effort,
+                            effort: choice_effort.clone(),
                         });
                     } else {
                         tx.send(AppEvent::PersistModelSelection {
                             model: model_for_action.clone(),
-                            effort: choice_effort,
+                            effort: choice_effort.clone(),
                         });
                     }
                 }

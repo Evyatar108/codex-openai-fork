@@ -9,7 +9,8 @@ use codex_otel::TURN_MEMORY_METRIC;
 use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
+use crate::session::TurnInput;
 use codex_protocol::protocol::SessionSource;
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
@@ -20,8 +21,9 @@ use opentelemetry_sdk::metrics::data::ResourceMetrics;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
-fn notification(task_id: i32, exit_code: i32) -> ResponseInputItem {
-    ResponseInputItem::Message {
+fn notification(task_id: i32, exit_code: i32) -> TurnInput {
+    TurnInput::ResponseItem(ResponseItem::Message {
+        id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
             text: format!(
@@ -29,15 +31,16 @@ fn notification(task_id: i32, exit_code: i32) -> ResponseInputItem {
             ),
         }],
         phase: None,
-    }
+    })
 }
 
 fn notification_with_artifact(
     task_id: i32,
     exit_code: i32,
     output_artifact_path: &str,
-) -> ResponseInputItem {
-    ResponseInputItem::Message {
+) -> TurnInput {
+    TurnInput::ResponseItem(ResponseItem::Message {
+        id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
             text: format!(
@@ -45,22 +48,23 @@ fn notification_with_artifact(
             ),
         }],
         phase: None,
-    }
+    })
 }
 
-fn message(text: &str) -> ResponseInputItem {
-    ResponseInputItem::Message {
+fn message(text: &str) -> TurnInput {
+    TurnInput::ResponseItem(ResponseItem::Message {
+        id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
             text: text.to_string(),
         }],
         phase: None,
-    }
+    })
 }
 
-fn text(item: &ResponseInputItem) -> &str {
-    let ResponseInputItem::Message { content, .. } = item else {
-        panic!("expected message item");
+fn text(item: &TurnInput) -> &str {
+    let TurnInput::ResponseItem(ResponseItem::Message { content, .. }) = item else {
+        panic!("expected response item message");
     };
     let [ContentItem::InputText { text }] = content.as_slice() else {
         panic!("expected single input text item");

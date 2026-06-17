@@ -11,7 +11,8 @@ use crate::unified_exec::NoopSpawnLifecycle;
 use crate::unified_exec::UnifiedExecContext;
 use codex_features::Feature;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
+use crate::session::TurnInput;
 use codex_sandboxing::SandboxType;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -144,20 +145,30 @@ async fn spawn_background_process_inner(
     Ok(process_id)
 }
 
-async fn wait_for_queued_next_turn_items(session: &Session) -> Vec<ResponseInputItem> {
+async fn wait_for_queued_next_turn_items(session: &Session) -> Vec<TurnInput> {
     for _ in 0..50 {
-        if session.has_queued_response_items_for_next_turn().await {
-            return session.take_queued_response_items_for_next_turn().await;
+        if session
+            .input_queue
+            .has_queued_response_items_for_next_turn()
+            .await
+        {
+            return session
+                .input_queue
+                .take_queued_response_items_for_next_turn()
+                .await;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    session.take_queued_response_items_for_next_turn().await
+    session
+        .input_queue
+        .take_queued_response_items_for_next_turn()
+        .await
 }
 
-fn input_text(item: &ResponseInputItem) -> &str {
-    let ResponseInputItem::Message { role, content, .. } = item else {
-        panic!("expected message item");
+fn input_text(item: &TurnInput) -> &str {
+    let TurnInput::ResponseItem(ResponseItem::Message { role, content, .. }) = item else {
+        panic!("expected response item message");
     };
     assert_eq!(role, "user");
     let [ContentItem::InputText { text }] = content.as_slice() else {
@@ -536,6 +547,7 @@ async fn background_process_notification_wakes_idle_session() -> anyhow::Result<
         if session.active_turn.lock().await.is_some() {
             assert!(
                 session
+                    .input_queue
                     .take_queued_response_items_for_next_turn()
                     .await
                     .is_empty(),

@@ -27,7 +27,8 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::WidgetRef;
 use tokio_stream::StreamExt;
 
-const RELEASE_NOTES_URL: &str = "https://github.com/openai/codex/releases/latest";
+// SANDBOX PATCH: redirect upstream openai/codex release-notes link to the fork.
+const RELEASE_NOTES_URL: &str = "https://github.com/gim-home/codex/releases/latest";
 
 pub(crate) enum UpdatePromptOutcome {
     Continue,

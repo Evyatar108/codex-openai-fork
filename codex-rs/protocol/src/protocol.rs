@@ -460,7 +460,6 @@ pub struct ThreadSettingsOverrides {
     /// Updated context-window tier (`default | long_context`). `None` leaves the
     /// existing value unchanged.
     // SANDBOX PATCH: Knob B context-window tier. See patch-surface §14.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_tier: Option<ContextWindowTier>,
 
     /// Updated reasoning summary preference (honored only for reasoning-capable models).

@@ -22,13 +22,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use codex_copilot::CopilotAuth;
 use codex_copilot::CopilotHeaderSource;
 use codex_login::default_client::build_reqwest_client;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::ModelsCacheIdentity;
 use codex_models_manager::manager::ModelsEndpointClient;
+use codex_models_manager::manager::ModelsEndpointFuture;
 use codex_models_manager::model_info::BASE_INSTRUCTIONS;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::error::CodexErr;
@@ -163,7 +163,6 @@ impl CopilotModelsEndpoint {
     }
 }
 
-#[async_trait]
 impl ModelsEndpointClient for CopilotModelsEndpoint {
     fn has_command_auth(&self) -> bool {
         // Copilot sessions provide their own per-request auth via
@@ -182,71 +181,73 @@ impl ModelsEndpointClient for CopilotModelsEndpoint {
         )
     }
 
-    async fn uses_codex_backend(&self) -> bool {
-        false
+    fn uses_codex_backend(&self) -> ModelsEndpointFuture<'_, bool> {
+        Box::pin(async move { false })
     }
 
-    async fn list_models(
-        &self,
-        _client_version: &str,
-    ) -> CoreResult<(Vec<ModelInfo>, Option<String>)> {
-        let url = format!("{}{}", self.base_url.trim_end_matches('/'), MODELS_PATH);
+    fn list_models<'a>(
+        &'a self,
+        _client_version: &'a str,
+    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
+        Box::pin(async move {
+            let url = format!("{}{}", self.base_url.trim_end_matches('/'), MODELS_PATH);
 
-        let auth = self.copilot_auth().await?;
-        let header_source = CopilotHeaderSource::new(auth)
-            .await
-            .map_err(|err| CodexErr::Fatal(format!("copilot header source: {err}")))?;
-        let mut headers = HeaderMap::new();
-        header_source.inject(&mut headers);
-        // The base CopilotHeaderSource caches request-id-style headers from
-        // construction time. /models is a one-shot GET, so reusing the cached
-        // values is fine; the per-request mutation hook (used for streaming
-        // Responses turns) is not relevant here.
+            let auth = self.copilot_auth().await?;
+            let header_source = CopilotHeaderSource::new(auth)
+                .await
+                .map_err(|err| CodexErr::Fatal(format!("copilot header source: {err}")))?;
+            let mut headers = HeaderMap::new();
+            header_source.inject(&mut headers);
+            // The base CopilotHeaderSource caches request-id-style headers from
+            // construction time. /models is a one-shot GET, so reusing the cached
+            // values is fine; the per-request mutation hook (used for streaming
+            // Responses turns) is not relevant here.
 
-        let client = build_reqwest_client();
-        let request = client.get(&url).headers(headers);
+            let client = build_reqwest_client();
+            let request = client.get(&url).headers(headers);
 
-        let response = timeout(MODELS_REFRESH_TIMEOUT, request.send())
-            .await
-            .map_err(|_| CodexErr::Timeout)?
-            .map_err(|err| CodexErr::Fatal(format!("copilot /models request: {err}")))?;
+            let response = timeout(MODELS_REFRESH_TIMEOUT, request.send())
+                .await
+                .map_err(|_| CodexErr::Timeout)?
+                .map_err(|err| CodexErr::Fatal(format!("copilot /models request: {err}")))?;
 
-        let status = response.status();
-        let etag = response
-            .headers()
-            .get(http::header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
+            let status = response.status();
+            let etag = response
+                .headers()
+                .get(http::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
 
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(CodexErr::Fatal(format!(
-                "copilot /models returned {status}: {}",
-                truncate(&body, 256)
-            )));
-        }
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(CodexErr::Fatal(format!(
+                    "copilot /models returned {status}: {}",
+                    truncate(&body, 256)
+                )));
+            }
 
-        let body: CopilotModelsResponse = response
-            .json()
-            .await
-            .map_err(|err| CodexErr::Fatal(format!("copilot /models decode: {err}")))?;
+            let body: CopilotModelsResponse = response
+                .json()
+                .await
+                .map_err(|err| CodexErr::Fatal(format!("copilot /models decode: {err}")))?;
 
-        let bundled = bundled_models_response()
-            .map(|resp| resp.models)
-            .unwrap_or_default();
+            let bundled = bundled_models_response()
+                .map(|resp| resp.models)
+                .unwrap_or_default();
 
-        let anthropic_enabled = anthropic_models_resolved();
-        let models = body
-            .data
-            .into_iter()
-            .filter(|entry| is_chat_responses_picker_entry(entry, anthropic_enabled))
-            .map(|entry| translate_entry(entry, &bundled, anthropic_enabled))
-            .collect::<Vec<_>>();
+            let anthropic_enabled = anthropic_models_resolved();
+            let models = body
+                .data
+                .into_iter()
+                .filter(|entry| is_chat_responses_picker_entry(entry, anthropic_enabled))
+                .map(|entry| translate_entry(entry, &bundled, anthropic_enabled))
+                .collect::<Vec<_>>();
 
-        if models.is_empty() {
-            warn!("copilot /models returned no /responses-capable, picker-enabled chat models");
-        }
-        Ok((models, etag))
+            if models.is_empty() {
+                warn!("copilot /models returned no /responses-capable, picker-enabled chat models");
+            }
+            Ok((models, etag))
+        })
     }
 }
 
@@ -466,7 +467,7 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
     {
         Some(ReasoningEffort::Medium)
     } else {
-        supported_reasoning_levels.first().map(|p| p.effort)
+        supported_reasoning_levels.first().map(|p| p.effort.clone())
     };
 
     ModelInfo {
@@ -500,6 +501,7 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
         context_window,
         max_context_window,
         auto_compact_token_limit: None,
+        comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
@@ -507,6 +509,10 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
         supports_search_tool: false,
         // SANDBOX PATCH: D-001 per-model chat-completions wire-route hint.
         wire_route,
+        use_responses_lite: false,
+        auto_review_model_override: None,
+        tool_mode: None,
+        multi_agent_version: None,
     }
 }
 

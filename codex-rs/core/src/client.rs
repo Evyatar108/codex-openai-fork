@@ -1618,9 +1618,10 @@ impl ModelClientSession {
                     &client_setup.api_provider,
                     prompt,
                     model_info,
-                    effort,
+                    effort.clone(),
                     summary,
                     service_tier,
+                    responses_metadata,
                 )?;
                 let responses_body = serde_json::to_value(&request).map_err(|err| {
                     CodexErr::Fatal(format!("serialize chat request body: {err}"))
@@ -1635,7 +1636,7 @@ impl ModelClientSession {
                 // request param (not a D-002 opt-in gate), so the "keep the
                 // dispatch arm gate-free" rule is unaffected.
                 let reasoning_effort = effort
-                    .or(model_info.default_reasoning_level)
+                    .or(model_info.default_reasoning_level.clone())
                     .map(|level| level.to_string());
                 crate::chat_transport::stream_chat_completions(
                     responses_body,

@@ -158,6 +158,7 @@ fn sample_thread_start_response() -> ClientResponsePayload {
         sandbox: AppServerSandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
+        context_tier: None,
     })
 }
 

@@ -44,9 +44,9 @@ use codex_otel::TURN_MEMORY_METRIC;
 use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_otel::TURN_TOKEN_USAGE_METRIC;
 use codex_otel::TURN_TOOL_CALL_METRIC;
-// SANDBOX PATCH: ContentItem + ResponseInputItem retained for coalesce_background_notifications.
+// SANDBOX PATCH: ContentItem + ResponseItem retained for coalesce_background_notifications
+// (background-completion notifications flow as TurnInput::ResponseItem since the 0.140 rebase).
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -117,9 +117,7 @@ pub(crate) fn interrupted_turn_history_marker(
     }
 }
 
-pub(crate) fn coalesce_background_notifications(
-    items: Vec<ResponseInputItem>,
-) -> Vec<ResponseInputItem> {
+pub(crate) fn coalesce_background_notifications(items: Vec<TurnInput>) -> Vec<TurnInput> {
     let total_notifications = items
         .iter()
         .filter(|item| background_notification_task(item).is_some())
@@ -162,8 +160,8 @@ struct BackgroundNotificationTask {
     output_artifact_path: Option<String>,
 }
 
-fn background_notification_task(item: &ResponseInputItem) -> Option<BackgroundNotificationTask> {
-    let ResponseInputItem::Message { role, content, .. } = item else {
+fn background_notification_task(item: &TurnInput) -> Option<BackgroundNotificationTask> {
+    let TurnInput::ResponseItem(ResponseItem::Message { role, content, .. }) = item else {
         return None;
     };
     if role != "user" || content.len() != 1 {
@@ -188,7 +186,7 @@ fn background_notification_task(item: &ResponseInputItem) -> Option<BackgroundNo
 
 fn coalesced_background_notification_message(
     notifications: &[BackgroundNotificationTask],
-) -> ResponseInputItem {
+) -> TurnInput {
     let mut tasks = String::new();
     for notification in notifications {
         tasks.push_str("<task><task_id>");
@@ -211,11 +209,12 @@ fn coalesced_background_notification_message(
     let text = format!(
         "<task_notification><status>completed</status><summary>{summary}</summary><tasks>{tasks}</tasks></task_notification>"
     );
-    ResponseInputItem::Message {
+    TurnInput::ResponseItem(ResponseItem::Message {
+        id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text }],
         phase: None,
-    }
+    })
 }
 
 fn xml_tag_value<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
@@ -454,23 +453,18 @@ impl Session {
             .lock()
             .await
             .clear_turn(&turn_context.sub_id);
-
-        if let Err(err) = self
-            .goal_runtime_apply(GoalRuntimeEvent::TurnStarted {
-                turn_context: turn_context.as_ref(),
-                token_usage: token_usage_at_turn_start.clone(),
-            })
-            .await
-        {
-            warn!("failed to apply goal runtime turn-start event: {err}");
-        }
-        // SANDBOX PATCH: BackgroundProcessNotification — coalesce background-job tool results
-        // before re-entering the turn loop so consecutive background notifications dedup.
-        // Upstream removed take_queued_response_items_for_next_turn; background-job results
-        // now flow through get_pending_input.
-        let pending_items = coalesce_background_notifications(
-            self.input_queue.get_pending_input(&self.active_turn).await,
-        );
+        // SANDBOX PATCH: BackgroundProcessNotification — drain the session-level next-turn
+        // stash FIRST (background-job completions queued between turns by async_watcher),
+        // then append upstream's active-turn pending + mailbox input, and coalesce the whole
+        // interleaved sequence so consecutive background notifications dedup. Draining the
+        // idle stash only here (not inside the general get_pending_input) keeps background
+        // completions from leaking into an already-active turn.
+        let mut pending_items = self
+            .input_queue
+            .take_queued_response_items_for_next_turn()
+            .await;
+        pending_items.extend(self.input_queue.get_pending_input(&self.active_turn).await);
+        let pending_items = coalesce_background_notifications(pending_items);
         let turn_state = {
             let mut active = self.active_turn.lock().await;
             let turn = active.get_or_insert_with(ActiveTurn::default);
@@ -584,13 +578,21 @@ impl Session {
     /// Starts a regular turn with the provided sub-id when pending work should wake an idle
     /// session.
     ///
-    /// The turn is created only when there is mailbox mail marked with `trigger_turn`, and only
-    /// if the session is currently idle.
+    /// The turn is created when there is mailbox mail marked with `trigger_turn` OR a
+    /// background-completion notification queued for the next turn (SANDBOX PATCH: P14), and
+    /// only if the session is currently idle.
     pub(crate) async fn maybe_start_turn_for_pending_work_with_sub_id(
         self: &Arc<Self>,
         sub_id: String,
     ) {
-        if !self.input_queue.has_trigger_turn_mailbox_items().await {
+        // SANDBOX PATCH: P14 — also wake for queued background-completion notifications,
+        // not just trigger-turn mailbox items.
+        if !self
+            .input_queue
+            .has_queued_response_items_for_next_turn()
+            .await
+            && !self.input_queue.has_trigger_turn_mailbox_items().await
+        {
             return;
         }
 
@@ -896,12 +898,6 @@ impl Session {
         };
         if !cleared_active_turn {
             return;
-        }
-        if let Err(err) = self
-            .goal_runtime_apply(GoalRuntimeEvent::MaybeContinueIfIdle)
-            .await
-        {
-            warn!("failed to apply goal runtime maybe-continue event: {err}");
         }
 
         // SANDBOX PATCH: US-001 — feature-gated turn-end re-check for background-process

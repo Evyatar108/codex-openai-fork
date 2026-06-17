@@ -1160,6 +1160,7 @@ impl Session {
         let submission = Submission {
             id: self.next_internal_sub_id(),
             op: Op::WakePendingWork,
+            client_user_message_id: None,
             trace: current_span_w3c_trace_context(),
         };
         if self.tx_sub.send(submission).await.is_err() {

@@ -146,8 +146,7 @@ impl McpConnectionManager {
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
         // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
         mcp_notifications_enabled: bool,
-    ) -> (Self, CancellationToken) {
-        let cancel_token = CancellationToken::new();
+    ) -> Self {
         let mut required_servers = mcp_servers
             .iter()
             .filter(|(_, server)| server.enabled() && server.required())
@@ -276,7 +275,7 @@ impl McpConnectionManager {
             sampling_requests,
             // SANDBOX PATCH: invariant 25 (mcp-server-notifications)
             mcp_notifications_enabled: mcp_notifications_enabled_flag,
-            startup_cancellation_token: cancel_token.clone(),
+            startup_cancellation_token: startup_cancellation_token.clone(),
         };
         tokio::spawn(async move {
             let outcomes = join_set.join_all().await;
@@ -300,7 +299,7 @@ impl McpConnectionManager {
                 })
                 .await;
         });
-        (manager, cancel_token)
+        manager
     }
 
     /// Waits for every required server and reports their startup failures together.

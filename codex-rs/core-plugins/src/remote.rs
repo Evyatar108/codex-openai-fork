@@ -724,7 +724,7 @@ pub async fn fetch_remote_plugin_share_context(
 // Replant recipe: see docs/implementation/patch-surface.md §15.
 pub fn group_remote_installed_plugins_by_marketplaces(
     _plugins: &[RemoteInstalledPlugin],
-    _visible_scopes: &[RemotePluginScope],
+    _visible_marketplaces: &[&str],
 ) -> Vec<RemoteMarketplace> {
     Vec::new()
 }

@@ -1866,9 +1866,9 @@ async fn try_run_sampling_request(
         .config
         .codex_home
         .join(crate::rollout::SESSIONS_SUBDIR)
-        .join(sess.conversation_id.to_string());
+        .join(sess.thread_id().to_string());
     let mut diag_tracker = Some(codex_stream_diagnostics::StreamCutTracker::new(
-        sess.conversation_id.to_string(),
+        sess.thread_id().to_string(),
         turn_context.sub_id.clone(),
         diag_session_dir.to_path_buf(),
     ));

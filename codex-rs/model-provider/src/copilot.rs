@@ -7,7 +7,6 @@ mod gated_models_manager;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use codex_api::CoreAuthProvider;
 use codex_api::Provider;
 use codex_api::SharedAuthProvider;
@@ -28,6 +27,7 @@ use tracing::warn;
 use crate::copilot::gated_models_manager::GatedModelsManager;
 use crate::copilot_models_endpoint::CopilotModelsEndpoint;
 use crate::provider::ModelProvider;
+use crate::provider::ModelProviderFuture;
 use crate::provider::ProviderAccountResult;
 use crate::provider::ProviderAccountState;
 
@@ -81,7 +81,6 @@ impl CopilotModelProvider {
     }
 }
 
-#[async_trait]
 impl ModelProvider for CopilotModelProvider {
     fn info(&self) -> &ModelProviderInfo {
         &self.info
@@ -91,10 +90,10 @@ impl ModelProvider for CopilotModelProvider {
         self.auth_manager.clone()
     }
 
-    async fn auth(&self) -> Option<CodexAuth> {
+    fn auth(&self) -> ModelProviderFuture<'_, Option<CodexAuth>> {
         // Copilot sessions do not surface a CodexAuth; api_auth() attaches the
         // Copilot-specific authorization header directly.
-        None
+        Box::pin(async move { None })
     }
 
     fn account_state(&self) -> ProviderAccountResult {
@@ -145,34 +144,38 @@ impl ModelProvider for CopilotModelProvider {
         )))
     }
 
-    async fn api_provider(&self) -> CodexResult<Provider> {
+    fn api_provider(&self) -> ModelProviderFuture<'_, CodexResult<Provider>> {
         // Copilot sessions do not require a CodexAuth for provider
         // construction, so skip the default trait path's self.auth().await.
-        self.info().to_api_provider(/*auth_mode*/ None)
+        Box::pin(async move {
+            self.info().to_api_provider(/*auth_mode*/ None)
+        })
     }
 
-    async fn api_auth(&self) -> CodexResult<SharedAuthProvider> {
-        if !self.info.is_copilot_trusted() {
-            // SANDBOX PATCH: fail-closed. The copilot wire still sends Copilot-session
-            // metadata headers (x-initiator, copilot-integration-id, editor-plugin-version,
-            // ...) via CopilotHeaderSource on every request. If the base_url points at a
-            // non-Copilot host, silently dropping only the Authorization header would leak
-            // those metadata headers to an untrusted origin. Refuse to proceed.
-            warn!(
-                "Copilot provider base_url override detected; refusing to build auth (would leak Copilot session headers to non-Copilot host)"
-            );
-            return Err(CodexErr::Fatal(
-                "Copilot provider base_url override not allowed: must point to api.githubcopilot.com".to_string(),
-            ));
-        }
+    fn api_auth(&self) -> ModelProviderFuture<'_, CodexResult<SharedAuthProvider>> {
+        Box::pin(async move {
+            if !self.info.is_copilot_trusted() {
+                // SANDBOX PATCH: fail-closed. The copilot wire still sends Copilot-session
+                // metadata headers (x-initiator, copilot-integration-id, editor-plugin-version,
+                // ...) via CopilotHeaderSource on every request. If the base_url points at a
+                // non-Copilot host, silently dropping only the Authorization header would leak
+                // those metadata headers to an untrusted origin. Refuse to proceed.
+                warn!(
+                    "Copilot provider base_url override detected; refusing to build auth (would leak Copilot session headers to non-Copilot host)"
+                );
+                return Err(CodexErr::Fatal(
+                    "Copilot provider base_url override not allowed: must point to api.githubcopilot.com".to_string(),
+                ));
+            }
 
-        let copilot_auth = self.get_or_init_copilot_auth().await?;
-        let source = CopilotHeaderSource::new(copilot_auth)
-            .await
-            .map_err(|e| CodexErr::Fatal(e.to_string()))?;
-        Ok(Arc::new(
-            CoreAuthProvider::new_legacy(None, None).with_copilot(Arc::new(source)),
-        ))
+            let copilot_auth = self.get_or_init_copilot_auth().await?;
+            let source = CopilotHeaderSource::new(copilot_auth)
+                .await
+                .map_err(|e| CodexErr::Fatal(e.to_string()))?;
+            let provider: SharedAuthProvider =
+                Arc::new(CoreAuthProvider::new_legacy(None, None).with_copilot(Arc::new(source)));
+            Ok(provider)
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]

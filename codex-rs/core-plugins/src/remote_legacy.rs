@@ -95,15 +95,6 @@ pub enum RemotePluginFetchError {
     },
 }
 
-// SANDBOX PATCH: return empty list — no HTTP requests to /plugins/list.
-// Remote plugin catalog is a ChatGPT feature; copilot-api does not use it.
-pub async fn fetch_remote_plugin_status(
-    _config: &RemotePluginServiceConfig,
-    _auth: Option<&CodexAuth>,
-) -> Result<Vec<RemotePluginStatusSummary>, RemotePluginFetchError> {
-    Ok(Vec::new())
-}
-
 // SANDBOX PATCH: return empty list — no HTTP requests to /plugins/featured.
 pub async fn fetch_remote_featured_plugin_ids(
     _config: &RemotePluginServiceConfig,

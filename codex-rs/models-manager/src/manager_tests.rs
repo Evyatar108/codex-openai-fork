@@ -118,66 +118,7 @@ impl TestModelsEndpoint {
         self.fetch_count.load(Ordering::SeqCst)
     }
 
-#[derive(Debug)]
-struct TestExternalApiKeyAuth;
-
-#[async_trait]
-impl ExternalAuth for TestExternalApiKeyAuth {
-    fn auth_mode(&self) -> AuthMode {
-        AuthMode::ApiKey
-    }
-
-    async fn resolve(&self) -> std::io::Result<Option<ExternalAuthTokens>> {
-        Ok(Some(ExternalAuthTokens::access_token_only(
-            "test-external-api-key",
-        )))
-    }
-
-    async fn refresh(
-        &self,
-        _context: ExternalAuthRefreshContext,
-    ) -> std::io::Result<ExternalAuthTokens> {
-        Ok(ExternalAuthTokens::access_token_only(
-            "test-external-api-key",
-        ))
-    }
-}
-
-#[derive(Debug)]
-struct TestUnresolvedExternalApiKeyAuth;
-
-#[async_trait]
-impl ExternalAuth for TestUnresolvedExternalApiKeyAuth {
-    fn auth_mode(&self) -> AuthMode {
-        AuthMode::ApiKey
-    }
-
-    async fn refresh(
-        &self,
-        _context: ExternalAuthRefreshContext,
-    ) -> std::io::Result<ExternalAuthTokens> {
-        Err(std::io::Error::other("unresolved test auth"))
-    }
-}
-
-#[async_trait]
-impl ModelsEndpointClient for TestModelsEndpoint {
-    fn has_command_auth(&self) -> bool {
-        self.has_command_auth
-    }
-
-    fn cache_identity(&self) -> Option<ModelsCacheIdentity> {
-        self.cache_identity.clone()
-    }
-
-    async fn uses_codex_backend(&self) -> bool {
-        self.uses_codex_backend
-    }
-
-    async fn list_models(
-        &self,
-        _client_version: &str,
-    ) -> CoreResult<(Vec<ModelInfo>, Option<String>)> {
+    async fn list_models(&self) -> CoreResult<(Vec<ModelInfo>, Option<String>)> {
         self.fetch_count.fetch_add(1, Ordering::SeqCst);
         let models = self
             .responses

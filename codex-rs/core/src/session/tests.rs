@@ -102,6 +102,7 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use crate::session::TurnInput;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::CompactedItem;
@@ -8854,14 +8855,15 @@ async fn background_completion_queued_during_active_turn_wakes_after_turn_finish
 
     // ... and a background process completes while it is running, queuing its completion
     // notification for the next turn (the watcher's wake-op no-ops because a turn is active).
-    let queued_item = ResponseInputItem::Message {
+    let queued_item = TurnInput::ResponseItem(ResponseItem::Message {
+        id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
             text: "<task_notification><task_id>1</task_id><status>completed</status></task_notification>"
                 .to_string(),
         }],
         phase: None,
-    };
+    });
     sess.input_queue
         .queue_response_items_for_next_turn(vec![queued_item])
         .await;
@@ -8872,7 +8874,8 @@ async fn background_completion_queued_during_active_turn_wakes_after_turn_finish
         .await;
 
     assert!(
-        sess.take_queued_response_items_for_next_turn()
+        sess.input_queue
+            .take_queued_response_items_for_next_turn()
             .await
             .is_empty(),
         "the queued background completion should be drained by the turn-end wake; a seam \

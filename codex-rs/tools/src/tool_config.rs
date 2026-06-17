@@ -181,6 +181,8 @@ pub struct ToolsConfig {
     pub available_models: Vec<ModelPreset>,
     pub shell_type: ConfigShellToolType,
     pub shell_command_backend: ShellCommandBackendConfig,
+    // SANDBOX PATCH: feature-mode for unified-exec shell mode resolution (P9 / Windows Git Bash).
+    pub unified_exec_feature_mode: UnifiedExecFeatureMode,
     pub unified_exec_shell_mode: UnifiedExecShellMode,
     pub environment_mode: ToolEnvironmentMode,
     pub allow_login_shell: bool,
@@ -297,6 +299,8 @@ impl ToolsConfig {
             } else {
                 ShellCommandBackendConfig::Classic
             };
+        // SANDBOX PATCH: feature-mode for unified-exec shell mode resolution (P9).
+        let unified_exec_feature_mode = unified_exec_feature_mode_for_features(features);
         let unified_exec_enabled = features.enabled(Feature::UnifiedExec);
         let model_shell_type = match model_info.shell_type {
             ConfigShellToolType::UnifiedExec if !unified_exec_enabled => {
@@ -334,6 +338,7 @@ impl ToolsConfig {
             available_models: available_models.to_vec(),
             shell_type,
             shell_command_backend,
+            unified_exec_feature_mode,
             unified_exec_shell_mode: UnifiedExecShellMode::Direct,
             environment_mode: ToolEnvironmentMode::Single,
             allow_login_shell: true,
@@ -458,7 +463,7 @@ impl ToolsConfig {
         main_execve_wrapper_exe: Option<&PathBuf>,
     ) -> Self {
         self.unified_exec_shell_mode = UnifiedExecShellMode::for_session(
-            self.shell_command_backend,
+            self.unified_exec_feature_mode,
             user_shell_type,
             shell_zsh_path,
             main_execve_wrapper_exe,

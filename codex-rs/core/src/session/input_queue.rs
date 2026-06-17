@@ -29,6 +29,13 @@ pub(crate) struct TurnInputQueue {
 pub(crate) struct InputQueue {
     mailbox_tx: watch::Sender<()>,
     mailbox_pending_mails: Mutex<VecDeque<InterAgentCommunication>>,
+    // SANDBOX PATCH: P14 BackgroundProcessNotification — session-level stash for turn
+    // inputs (background-completion `<task_notification>` messages) produced between
+    // turns by `unified_exec::async_watcher`. Drained at the start of the next turn in
+    // `tasks::start_task` and used by the pending-work wake predicate. Upstream 0.140
+    // reworked the input queue around `TurnInput` and dropped this fork field; it is
+    // re-planted here adapted to `Vec<TurnInput>`. See docs/implementation/patch-surface.md §15.
+    idle_pending_input: Mutex<Vec<TurnInput>>,
 }
 
 impl InputQueue {
@@ -37,7 +44,24 @@ impl InputQueue {
         Self {
             mailbox_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            idle_pending_input: Mutex::new(Vec::new()),
         }
+    }
+
+    // SANDBOX PATCH: P14 — stash turn inputs to inject at the start of the next turn.
+    pub(crate) async fn queue_response_items_for_next_turn(&self, items: Vec<TurnInput>) {
+        self.idle_pending_input.lock().await.extend(items);
+    }
+
+    // SANDBOX PATCH: P14 — drain the next-turn stash. Called only from `tasks::start_task`
+    // so background completions never leak into an already-active turn.
+    pub(crate) async fn take_queued_response_items_for_next_turn(&self) -> Vec<TurnInput> {
+        std::mem::take(&mut *self.idle_pending_input.lock().await)
+    }
+
+    // SANDBOX PATCH: P14 — pending-work wake predicate input.
+    pub(crate) async fn has_queued_response_items_for_next_turn(&self) -> bool {
+        !self.idle_pending_input.lock().await.is_empty()
     }
 
     pub(crate) async fn subscribe_mailbox(&self) -> watch::Receiver<()> {

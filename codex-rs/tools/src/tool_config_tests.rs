@@ -6,8 +6,47 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 
 use super::*;
+
+// SANDBOX PATCH: local `model_info()` test helper. Upstream's 0.140 module split moved the
+// shared helper into `image_detail::tests`, which is not reachable from `tool_config::tests`;
+// re-plant it here (mirrors image_detail_tests.rs) so the fork's tool-config tests still build.
+fn model_info() -> ModelInfo {
+    serde_json::from_value(json!({
+        "slug": "test-model",
+        "display_name": "Test Model",
+        "description": null,
+        "supported_reasoning_levels": [],
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": true,
+        "priority": 1,
+        "availability_nux": null,
+        "upgrade": null,
+        "base_instructions": "base",
+        "model_messages": null,
+        "supports_reasoning_summaries": false,
+        "default_reasoning_summary": "auto",
+        "support_verbosity": false,
+        "default_verbosity": null,
+        "apply_patch_tool_type": null,
+        "truncation_policy": {
+            "mode": "bytes",
+            "limit": 10000
+        },
+        "supports_parallel_tool_calls": false,
+        "supports_image_detail_original": true,
+        "context_window": null,
+        "auto_compact_token_limit": null,
+        "effective_context_window_percent": 95,
+        "experimental_supported_tools": [],
+        "input_modalities": ["text", "image"],
+        "supports_search_tool": false
+    }))
+    .expect("deserialize test model")
+}
 
 fn model_with_shell_type(shell_type: ConfigShellToolType) -> ModelInfo {
     ModelInfo {
@@ -182,6 +221,23 @@ fn request_user_input_modes_follow_default_mode_feature() {
 fn unified_exec_shell_mode_uses_zsh_fork_only_when_all_inputs_match() {
     let exe = std::env::current_exe().expect("current exe path");
     let shell = exe.clone();
+
+    // SANDBOX PATCH: re-plant the shared `tools_config` setup the 0.140 module split dropped.
+    let model_info = model_info();
+    let available_models = Vec::new();
+    let features = Features::with_defaults();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::SubAgent(SubAgentSource::Other(
+            "agent_job:test".to_string(),
+        )),
+        permission_profile: &PermissionProfile::Disabled,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
 
     let mode = UnifiedExecShellMode::for_session(
         UnifiedExecFeatureMode::ZshFork,

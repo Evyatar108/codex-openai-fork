@@ -18,6 +18,7 @@ use super::process::UnifiedExecProcess;
 use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::session::TurnInput;
 use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
 use crate::tools::events::ToolEventFailure;
@@ -209,7 +210,9 @@ pub(crate) fn spawn_exit_watcher(
                 });
                 session_ref
                     .input_queue
-                    .queue_response_items_for_next_turn(vec![message])
+                    .queue_response_items_for_next_turn(vec![TurnInput::ResponseItem(
+                        message.into(),
+                    )])
                     .await;
                 session_ref.request_pending_work_wake().await;
             }

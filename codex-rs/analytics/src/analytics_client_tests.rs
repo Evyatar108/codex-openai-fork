@@ -216,6 +216,7 @@ fn sample_thread_start_response(
         sandbox: AppServerSandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
+        context_tier: None,
     })
 }
 
@@ -3942,6 +3943,8 @@ async fn turn_event_counts_completed_tool_items() {
             model: Some("gpt-5".to_string()),
             reasoning_effort: None,
             agents_states: Default::default(),
+            spawned_agent_name: None,
+            spawned_agent_role: None,
         },
         ThreadItem::SubAgentActivity {
             id: "sub-agent-activity-1".to_string(),

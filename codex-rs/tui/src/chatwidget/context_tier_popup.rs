@@ -54,11 +54,12 @@ impl ChatWidget {
                 .map(|tokens| format!("{} token context window", format_token_window(tokens)));
 
             let model_for_action = model.clone();
+            let effort_for_action = effort.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                 tx.send(AppEvent::UpdateContextTier(Some(tier)));
                 tx.send(AppEvent::PersistModelSelection {
                     model: model_for_action.clone(),
-                    effort,
+                    effort: effort_for_action.clone(),
                 });
                 tx.send(AppEvent::PersistContextTier(Some(tier)));
             })];

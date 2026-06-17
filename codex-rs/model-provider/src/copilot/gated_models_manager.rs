@@ -4,10 +4,10 @@ use std::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 
-use async_trait::async_trait;
 use codex_login::AuthManager;
 use codex_models_manager::ModelsManagerConfig;
 use codex_models_manager::manager::ModelsManager;
+use codex_models_manager::manager::ModelsManagerFuture;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::model_info;
@@ -94,21 +94,30 @@ impl GatedModelsManager {
     }
 }
 
-#[async_trait]
 impl ModelsManager for GatedModelsManager {
-    async fn list_models(&self, refresh_strategy: RefreshStrategy) -> Vec<ModelPreset> {
-        let catalog = self.raw_model_catalog(refresh_strategy).await;
-        self.build_available_models(catalog.models)
+    fn list_models(
+        &self,
+        refresh_strategy: RefreshStrategy,
+    ) -> ModelsManagerFuture<'_, Vec<ModelPreset>> {
+        Box::pin(async move {
+            let catalog = self.raw_model_catalog(refresh_strategy).await;
+            self.build_available_models(catalog.models)
+        })
     }
 
-    async fn raw_model_catalog(&self, refresh_strategy: RefreshStrategy) -> ModelsResponse {
-        let mut catalog = self.inner.raw_model_catalog(refresh_strategy).await;
-        catalog.models = self.filter_model_infos(catalog.models);
-        catalog
+    fn raw_model_catalog(
+        &self,
+        refresh_strategy: RefreshStrategy,
+    ) -> ModelsManagerFuture<'_, ModelsResponse> {
+        Box::pin(async move {
+            let mut catalog = self.inner.raw_model_catalog(refresh_strategy).await;
+            catalog.models = self.filter_model_infos(catalog.models);
+            catalog
+        })
     }
 
-    async fn get_remote_models(&self) -> Vec<ModelInfo> {
-        self.filter_model_infos(self.inner.get_remote_models().await)
+    fn get_remote_models(&self) -> ModelsManagerFuture<'_, Vec<ModelInfo>> {
+        Box::pin(async move { self.filter_model_infos(self.inner.get_remote_models().await) })
     }
 
     fn try_get_remote_models(&self) -> Result<Vec<ModelInfo>, TryLockError> {
@@ -130,40 +139,50 @@ impl ModelsManager for GatedModelsManager {
         Ok(self.build_available_models(remote_models))
     }
 
-    async fn get_default_model(
-        &self,
-        model: &Option<String>,
+    fn get_default_model<'a>(
+        &'a self,
+        model: &'a Option<String>,
         refresh_strategy: RefreshStrategy,
-    ) -> String {
-        if let Some(model) = model.as_ref() {
-            if self.keep_model_slug(model) {
-                let info = self
-                    .inner
-                    .get_model_info(model, &ModelsManagerConfig::default())
-                    .await;
-                if self.keep_model(&info) {
-                    return model.clone();
+    ) -> ModelsManagerFuture<'a, String> {
+        Box::pin(async move {
+            if let Some(model) = model.as_ref() {
+                if self.keep_model_slug(model) {
+                    let info = self
+                        .inner
+                        .get_model_info(model, &ModelsManagerConfig::default())
+                        .await;
+                    if self.keep_model(&info) {
+                        return model.clone();
+                    }
                 }
             }
-        }
 
-        Self::default_model_from_presets(self.list_models(refresh_strategy).await)
+            Self::default_model_from_presets(self.list_models(refresh_strategy).await)
+        })
     }
 
-    async fn get_model_info(&self, model: &str, config: &ModelsManagerConfig) -> ModelInfo {
-        if self.keep_model_slug(model) {
-            let info = self.inner.get_model_info(model, config).await;
-            if self.keep_model(&info) {
-                return info;
+    fn get_model_info<'a>(
+        &'a self,
+        model: &'a str,
+        config: &'a ModelsManagerConfig,
+    ) -> ModelsManagerFuture<'a, ModelInfo> {
+        Box::pin(async move {
+            if self.keep_model_slug(model) {
+                let info = self.inner.get_model_info(model, config).await;
+                if self.keep_model(&info) {
+                    return info;
+                }
             }
-        }
-        let fallback =
-            Self::default_model_from_presets(self.list_models(RefreshStrategy::Offline).await);
-        model_info::with_config_overrides(model_info::model_info_from_slug(&fallback), config)
+            let fallback =
+                Self::default_model_from_presets(self.list_models(RefreshStrategy::Offline).await);
+            model_info::with_config_overrides(model_info::model_info_from_slug(&fallback), config)
+        })
     }
 
-    async fn refresh_if_new_etag(&self, etag: String) {
-        self.inner.refresh_if_new_etag(etag).await;
+    fn refresh_if_new_etag(&self, etag: String) -> ModelsManagerFuture<'_, ()> {
+        Box::pin(async move {
+            self.inner.refresh_if_new_etag(etag).await;
+        })
     }
 }
 
@@ -229,6 +248,11 @@ mod tests {
             used_fallback_model_metadata: false,
             supports_search_tool: false,
             wire_route,
+            comp_hash: None,
+            use_responses_lite: false,
+            auto_review_model_override: None,
+            tool_mode: None,
+            multi_agent_version: None,
         }
     }
 

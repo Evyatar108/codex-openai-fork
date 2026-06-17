@@ -247,7 +247,6 @@ pub(crate) fn thread_settings_from_core_snapshot(
         collaboration_mode,
         personality,
     }
-    }
 }
 
 #[cfg(test)]

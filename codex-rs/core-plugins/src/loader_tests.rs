@@ -521,10 +521,28 @@ fn root_str(root: &std::path::Path) -> String {
     root.display().to_string()
 }
 
+// SANDBOX PATCH: helper to drive the production object-level substitution
+// (`apply_plugin_root_substitution`) directly. The old JSON-based
+// `normalize_plugin_mcp_server_value` was retired in the v0.140.0 rebase in
+// favor of the parse-then-substitute path (`apply_plugin_root_substitution`
+// on each parsed server object; `apply_plugin_root_substitution_to_contents`
+// on the raw document before upstream's `parse_plugin_mcp_config`).
+fn substituted_server(
+    root: &std::path::Path,
+    value: serde_json::Value,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut object = match value {
+        serde_json::Value::Object(object) => object,
+        _ => panic!("expected a JSON object"),
+    };
+    crate::mcp_substitution::apply_plugin_root_substitution(root, &mut object);
+    object
+}
+
 #[test]
 fn normalize_substitutes_claude_plugin_root_in_args() {
     let (_tmp, root) = make_substitution_root();
-    let normalized = normalize_plugin_mcp_server_value(
+    let normalized = substituted_server(
         root.as_path(),
         serde_json::json!({
             "command": "node",
@@ -541,7 +559,7 @@ fn normalize_substitutes_claude_plugin_root_in_args() {
 #[test]
 fn normalize_substitutes_codex_plugin_root_alias_in_args() {
     let (_tmp, root) = make_substitution_root();
-    let normalized = normalize_plugin_mcp_server_value(
+    let normalized = substituted_server(
         root.as_path(),
         serde_json::json!({
             "command": "node",
@@ -558,7 +576,7 @@ fn normalize_substitutes_codex_plugin_root_alias_in_args() {
 #[test]
 fn normalize_substitutes_in_command_and_env_values() {
     let (_tmp, root) = make_substitution_root();
-    let normalized = normalize_plugin_mcp_server_value(
+    let normalized = substituted_server(
         root.as_path(),
         serde_json::json!({
             "command": "${CLAUDE_PLUGIN_ROOT}/bin/server",
@@ -591,7 +609,7 @@ fn normalize_substitutes_in_command_and_env_values() {
 #[test]
 fn normalize_leaves_env_vars_array_names_untouched() {
     let (_tmp, root) = make_substitution_root();
-    let normalized = normalize_plugin_mcp_server_value(
+    let normalized = substituted_server(
         root.as_path(),
         serde_json::json!({
             "command": "x",
@@ -612,7 +630,7 @@ fn normalize_preserves_absolute_cwd_with_placeholder_args() {
     } else {
         "/fixed/elsewhere"
     };
-    let normalized = normalize_plugin_mcp_server_value(
+    let normalized = substituted_server(
         root.as_path(),
         serde_json::json!({
             "command": "node",
@@ -626,27 +644,31 @@ fn normalize_preserves_absolute_cwd_with_placeholder_args() {
     );
 }
 
+// SANDBOX PATCH: the v0.140.0 parse-then-substitute re-plant retired the fork's
+// legacy relative-`cwd` -> `plugin_root.join(cwd)` rewrite that the old
+// `normalize_plugin_mcp_server_value` performed. `apply_plugin_root_substitution`
+// only substitutes `${CLAUDE_PLUGIN_ROOT}` / `${CODEX_PLUGIN_ROOT}` tokens, so a
+// relative `cwd` carrying no placeholder is now left verbatim.
 #[test]
-fn normalize_preserves_legacy_relative_cwd_rewrite() {
+fn normalize_leaves_relative_cwd_without_placeholder_untouched() {
     let (_tmp, root) = make_substitution_root();
-    let normalized = normalize_plugin_mcp_server_value(
+    let normalized = substituted_server(
         root.as_path(),
         serde_json::json!({
             "command": "node",
             "cwd": "subdir",
         }),
     );
-    let expected = root.join("subdir").display().to_string();
     assert_eq!(
         normalized.get("cwd").expect("cwd present"),
-        &serde_json::json!(expected),
+        &serde_json::json!("subdir"),
     );
 }
 
 #[test]
 fn normalize_handles_substituted_cwd_without_double_join() {
     let (_tmp, root) = make_substitution_root();
-    let normalized = normalize_plugin_mcp_server_value(
+    let normalized = substituted_server(
         root.as_path(),
         serde_json::json!({
             "command": "node",
@@ -663,7 +685,7 @@ fn normalize_handles_substituted_cwd_without_double_join() {
 #[test]
 fn normalize_ignores_unknown_placeholder() {
     let (_tmp, root) = make_substitution_root();
-    let normalized = normalize_plugin_mcp_server_value(
+    let normalized = substituted_server(
         root.as_path(),
         serde_json::json!({
             "command": "node",

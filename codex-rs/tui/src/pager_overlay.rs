@@ -19,7 +19,6 @@ use std::io::Result;
 use std::sync::Arc;
 
 use crate::chatwidget::ActiveCellTranscriptKey;
-use crate::chatwidget::committed_transcript::CachedRenderable;
 use crate::chatwidget::committed_transcript::render_committed_cells;
 use crate::history_cell::HistoryCell;
 use crate::key_hint;
@@ -40,6 +39,7 @@ use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::buffer::Cell;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;

@@ -23,11 +23,11 @@ const HAPPY_DAEMON_CONTROL_URL: &str = "HAPPY_DAEMON_CONTROL_URL";
 const PARENT_SESSION_ID_PATTERN: &str = "^[A-Za-z0-9_-]{1,128}$";
 
 // SANDBOX PATCH: plugin-scope-axis — fork-only handler.
-// Trait migrated from old ToolHandler+ToolKind to new ToolExecutor<ToolInvocation>+CoreToolRuntime
-// shape (rebase-resume v0.135.0). Replant recipe: docs/implementation/patch-surface.md §15.
+// Trait migrated from old ToolHandler+ToolKind to ToolExecutor<ToolInvocation>+CoreToolRuntime
+// shape; handle() uses the upstream manual-RPITIT Box::pin pattern (async_trait removed upstream
+// in #27304 during the v0.140.0 rebase). Replant recipe: docs/implementation/patch-surface.md §15.
 pub struct SpawnTopLevelSessionHandler;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for SpawnTopLevelSessionHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(TOOL_NAME)
@@ -37,13 +37,12 @@ impl ToolExecutor<ToolInvocation> for SpawnTopLevelSessionHandler {
         create_spawn_top_level_session_tool()
     }
 
-    async fn handle(
-        &self,
-        invocation: ToolInvocation,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        handle_spawn_top_level_session(invocation)
-            .await
-            .map(boxed_tool_output)
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async move {
+            handle_spawn_top_level_session(invocation)
+                .await
+                .map(boxed_tool_output)
+        })
     }
 }
 
