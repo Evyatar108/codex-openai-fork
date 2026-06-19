@@ -112,6 +112,7 @@ pub(crate) fn interrupted_turn_history_marker(
                     text: marker.render(),
                 }],
                 phase: None,
+                metadata: None,
             })
         }
     }
@@ -214,6 +215,7 @@ fn coalesced_background_notification_message(
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text }],
         phase: None,
+        metadata: None,
     })
 }
 

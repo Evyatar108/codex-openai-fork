@@ -31,6 +31,7 @@ fn notification(task_id: i32, exit_code: i32) -> TurnInput {
             ),
         }],
         phase: None,
+        metadata: None,
     })
 }
 
@@ -48,6 +49,7 @@ fn notification_with_artifact(
             ),
         }],
         phase: None,
+        metadata: None,
     })
 }
 
@@ -59,6 +61,7 @@ fn message(text: &str) -> TurnInput {
             text: text.to_string(),
         }],
         phase: None,
+        metadata: None,
     })
 }
 

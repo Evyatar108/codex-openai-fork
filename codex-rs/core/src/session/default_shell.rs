@@ -75,7 +75,6 @@ mod tests {
         shell::Shell {
             shell_type,
             shell_path: PathBuf::from(path),
-            shell_snapshot: shell::empty_shell_snapshot_receiver(),
         }
     }
 

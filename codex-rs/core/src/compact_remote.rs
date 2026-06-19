@@ -352,7 +352,7 @@ pub(crate) fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
         ResponseItem::Message { .. } => false,
         ResponseItem::AgentMessage { .. } => true,
         ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => true,
-        ResponseItem::CompactionTrigger => false,
+        ResponseItem::CompactionTrigger { .. } => false,
         ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::FunctionCall { .. }
@@ -411,29 +411,38 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
 
 fn rewritten_output_for_context_window(item: &ResponseItem) -> Option<ResponseItem> {
     Some(match item {
-        ResponseItem::FunctionCallOutput { call_id, output } => ResponseItem::FunctionCallOutput {
+        ResponseItem::FunctionCallOutput {
+            call_id,
+            output,
+            metadata,
+        } => ResponseItem::FunctionCallOutput {
             call_id: call_id.clone(),
             output: truncated_output_payload(output),
+            metadata: metadata.clone(),
         },
         ResponseItem::CustomToolCallOutput {
             call_id,
             name,
             output,
+            metadata,
         } => ResponseItem::CustomToolCallOutput {
             call_id: call_id.clone(),
             name: name.clone(),
             output: truncated_output_payload(output),
+            metadata: metadata.clone(),
         },
         ResponseItem::ToolSearchOutput {
             call_id,
             status,
             execution,
+            metadata,
             ..
         } => ResponseItem::ToolSearchOutput {
             call_id: call_id.clone(),
             status: status.clone(),
             execution: execution.clone(),
             tools: Vec::new(),
+            metadata: metadata.clone(),
         },
         _ => return None,
     })
@@ -492,6 +501,7 @@ mod tests {
                     text: "before compact".to_string(),
                 }],
                 phase: None,
+                metadata: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -500,6 +510,7 @@ mod tests {
                     text: "assistant reply".to_string(),
                 }],
                 phase: None,
+                metadata: None,
             },
         ];
         session

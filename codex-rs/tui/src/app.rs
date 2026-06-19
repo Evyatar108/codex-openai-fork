@@ -12,6 +12,7 @@ use crate::app_event::FeedbackCategory;
 use crate::app_event::HistoryLookupResponse;
 use crate::app_event::PermissionProfileSelection;
 use crate::app_event::PluginLocation;
+use crate::app_event::PluginRemoteSectionError;
 use crate::app_event::RateLimitRefreshOrigin;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
@@ -104,8 +105,10 @@ use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::MergeStrategy;
 use codex_app_server_protocol::PluginInstallParams;
 use codex_app_server_protocol::PluginInstallResponse;
+use codex_app_server_protocol::PluginListMarketplaceKind;
 use codex_app_server_protocol::PluginListParams;
 use codex_app_server_protocol::PluginListResponse;
+use codex_app_server_protocol::PluginMarketplaceEntry;
 use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallParams;
@@ -1266,16 +1269,8 @@ See the Codex keymap documentation for supported actions and examples."
             tui::console_mode_trace::set_rollout_path(rollout_path.as_deref());
             tui::console_mode_trace::record_tui_event(&event);
         }
-        let terminal_resize_reflow_enabled = self.terminal_resize_reflow_enabled();
-        if self.should_handle_draw_pre_render()
-            && matches!(event, TuiEvent::Draw | TuiEvent::Resize)
-        {
+        if matches!(event, TuiEvent::Draw | TuiEvent::Resize) {
             self.handle_draw_pre_render(tui)?;
-        } else if matches!(event, TuiEvent::Draw | TuiEvent::Resize) {
-            let size = tui.terminal.size()?;
-            if size != tui.terminal.last_known_screen_size {
-                self.refresh_status_line();
-            }
         }
 
         if self.overlay.is_some() {
@@ -1346,10 +1341,7 @@ See the Codex keymap documentation for supported actions and examples."
     pub(super) fn show_shutdown_feedback(&mut self, tui: &mut tui::Tui) -> Result<()> {
         self.disable_ambient_pet_before_shutdown(tui)?;
         self.chat_widget.show_shutdown_in_progress();
-        let terminal_resize_reflow_enabled = self.terminal_resize_reflow_enabled();
-        if self.should_handle_draw_pre_render() {
-            self.handle_draw_pre_render(tui)?;
-        }
+        self.handle_draw_pre_render(tui)?;
         self.chat_widget.pre_draw_tick();
         self.render_chat_widget_frame(tui)?;
         Ok(())
@@ -1390,7 +1382,7 @@ See the Codex keymap documentation for supported actions and examples."
                 }
             })?;
         } else {
-            tui.draw(desired_height, |frame| {
+            tui.draw_with_resize_reflow(desired_height, |frame| {
                 let area = frame.area();
                 rendered_area = area;
                 self.chat_widget.render(area, frame.buffer);

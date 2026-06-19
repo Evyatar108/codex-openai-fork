@@ -113,6 +113,7 @@ impl AssistantMessageItem {
             role: "assistant".to_string(),
             content: Vec::new(),
             phase: None,
+            metadata: None,
         }
     }
 
@@ -127,6 +128,7 @@ impl AssistantMessageItem {
                 text: self.text.clone(),
             }],
             phase: None,
+            metadata: None,
         })
     }
 }
@@ -305,6 +307,7 @@ async fn run_chat_stream(
             namespace: None,
             arguments: accum.arguments,
             call_id: accum.call_id.unwrap_or_default(),
+            metadata: None,
         };
         if tx_event
             .send(Ok(ResponseEvent::OutputItemDone(item)))

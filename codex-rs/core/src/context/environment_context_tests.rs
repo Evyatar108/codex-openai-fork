@@ -23,7 +23,6 @@ fn fake_shell(shell_type: ShellType, shell_path: &str) -> crate::shell::Shell {
     crate::shell::Shell {
         shell_type,
         shell_path: PathBuf::from(shell_path),
-        shell_snapshot: crate::shell::empty_shell_snapshot_receiver(),
     }
 }
 

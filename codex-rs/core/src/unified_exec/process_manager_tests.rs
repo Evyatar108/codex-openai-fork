@@ -6,13 +6,14 @@ use crate::session::session::Session;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::make_session_and_context_with_feature;
 use crate::session::turn_context::TurnContext;
+use crate::session::TurnInput;
 use crate::state::ActiveTurn;
+use crate::unified_exec::clamp_yield_time;
 use crate::unified_exec::NoopSpawnLifecycle;
 use crate::unified_exec::UnifiedExecContext;
 use codex_features::Feature;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use crate::session::TurnInput;
 use codex_sandboxing::SandboxType;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -255,7 +256,7 @@ fn env_overlay_for_exec_server_keeps_runtime_changes_only() {
 }
 
 #[test]
-fn exec_server_params_use_env_policy_overlay_contract() {
+fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
     let cwd: codex_utils_absolute_path::AbsolutePathBuf = std::env::current_dir()
         .expect("current dir")
         .try_into()
@@ -304,6 +305,7 @@ fn exec_server_params_use_env_policy_overlay_contract() {
         exec_server_params_for_request(/*process_id*/ 123, &request, /*tty*/ true);
 
     assert_eq!(params.process_id.as_str(), "123");
+    assert_eq!(params.cwd, PathUri::from_abs_path(&request.cwd));
     assert!(params.env_policy.is_some());
     assert_eq!(
         params.env,
@@ -317,6 +319,32 @@ fn exec_server_params_use_env_policy_overlay_contract() {
 #[test]
 fn exec_server_process_id_matches_unified_exec_process_id() {
     assert_eq!(exec_server_process_id(/*process_id*/ 4321), "4321");
+}
+
+#[cfg(windows)]
+#[test]
+fn initial_exec_yield_time_uses_windows_floor() {
+    let above_max_yield_time_ms = crate::unified_exec::MAX_YIELD_TIME_MS + 1;
+
+    assert_eq!(
+        clamp_yield_time(/*yield_time_ms*/ 1_000),
+        crate::unified_exec::WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS
+    );
+    assert_eq!(clamp_yield_time(/*yield_time_ms*/ 10_000), 10_000);
+    assert_eq!(
+        clamp_yield_time(/*yield_time_ms*/ above_max_yield_time_ms),
+        crate::unified_exec::MAX_YIELD_TIME_MS
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn initial_exec_yield_time_has_no_platform_floor() {
+    assert_eq!(clamp_yield_time(/*yield_time_ms*/ 1_000), 1_000);
+    assert_eq!(
+        clamp_yield_time(/*yield_time_ms*/ 1),
+        crate::unified_exec::MIN_YIELD_TIME_MS
+    );
 }
 
 #[tokio::test]
@@ -364,9 +392,10 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         cwd: turn.cwd.clone(),
         #[allow(deprecated)]
         sandbox_cwd: turn.cwd.clone(),
-        environment: turn
+        turn_environment: turn
             .environments
-            .primary_environment()
+            .primary()
+            .cloned()
             .expect("primary environment"),
         shell_mode: codex_tools::UnifiedExecShellMode::Direct,
         network: None,
