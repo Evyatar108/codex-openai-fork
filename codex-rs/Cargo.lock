@@ -3151,6 +3151,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-happy"
+version = "0.141.0-copilot-api.1"
+dependencies = [
+ "aes-gcm",
+ "crypto_box",
+ "ed25519-dalek",
+ "sha2 0.10.9",
+ "xsalsa20poly1305",
+]
+
+[[package]]
 name = "codex-home"
 version = "0.141.0-copilot-api.1"
 dependencies = [
@@ -13300,7 +13311,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -15627,6 +15638,19 @@ name = "xmlparser"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
+
+[[package]]
+name = "xsalsa20poly1305"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02a6dad357567f81cd78ee75f7c61f1b30bb2fe4390be8fb7c69e2ac8dffb6c7"
+dependencies = [
+ "aead",
+ "poly1305",
+ "salsa20",
+ "subtle",
+ "zeroize",
+]
 
 [[package]]
 name = "xz2"
