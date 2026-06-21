@@ -129,6 +129,9 @@ members = [
     # SANDBOX PATCH: opt-in stream-cut diagnostics overlay crate (gated by CODEX_STREAM_TRACE=1).
     # Patch-surface §14 invariant 26; see docs/implementation/patch-surface.md.
     "../../../../codex-rs-overlay/codex-stream-diagnostics",
+    # SANDBOX PATCH: native Rust Happy protocol client overlay crate (remote_session feature, default-off).
+    # Patch-surface §14; see docs/implementation/patch-surface.md.
+    "../../../../codex-rs-overlay/codex-happy",
 ]
 resolver = "2"
 
@@ -164,6 +167,8 @@ codex-backend-client = { path = "backend-client" }
 codex-chatgpt = { path = "chatgpt" }
 codex-cli = { path = "cli" }
 codex-copilot = { path = "../../../../codex-rs-overlay/codex-copilot" }
+# SANDBOX PATCH: native Rust Happy protocol client overlay crate (remote_session feature, default-off).
+codex-happy = { path = "../../../../codex-rs-overlay/codex-happy" }
 codex-client = { path = "codex-client" }
 codex-collaboration-mode-templates = { path = "collaboration-mode-templates" }
 codex-cloud-config = { path = "cloud-config" }
@@ -305,6 +310,10 @@ color-eyre = "0.6.3"
 constant_time_eq = "0.3.1"
 crossbeam-channel = "0.5.15"
 crypto_box = { version = "0.9.1", features = ["seal"] }
+# SANDBOX PATCH: net-new E2EE deps for the codex-happy overlay (remote_session feature, default-off).
+# Byte-compatible with packages/happy-cli/src/api/encryption.ts; registered in patch-surface §4 (US-008).
+aes-gcm = "0.10"
+xsalsa20poly1305 = "0.9"
 crossterm = "0.28.1"
 csv = "1.3.1"
 ctor = "0.6.3"
