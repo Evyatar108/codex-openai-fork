@@ -3155,9 +3155,14 @@ name = "codex-happy"
 version = "0.141.0-copilot-api.1"
 dependencies = [
  "aes-gcm",
+ "base64 0.22.1",
  "crypto_box",
+ "dirs",
  "ed25519-dalek",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "xsalsa20poly1305",
 ]
 
