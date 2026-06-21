@@ -3261,6 +3261,7 @@ name = "codex-invariant-tests"
 version = "0.141.0-copilot-api.1"
 dependencies = [
  "async-channel",
+ "codex-app-server-client",
  "codex-features",
  "codex-mcp-notification-bridge",
  "codex-protocol",

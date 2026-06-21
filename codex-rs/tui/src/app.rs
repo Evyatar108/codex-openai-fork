@@ -81,6 +81,8 @@ use crate::version::CODEX_CLI_VERSION;
 use crate::workspace_command::AppServerWorkspaceCommandRunner;
 use crate::workspace_command::WorkspaceCommandRunner;
 use codex_ansi_escape::ansi_escape_line;
+// SANDBOX PATCH: remote_session — event type cloned into the Happy overlay tap (US-005).
+use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
@@ -587,6 +589,12 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
+    // SANDBOX PATCH: remote_session — optional secondary sink that fans every
+    // AppServerEvent out to the Happy overlay client. `None` in vanilla; set by
+    // `codex_happy::attach` when the `remote_session` feature is enabled (US-005/US-006).
+    // `UnboundedSender` so the tee never backpressures or hangs the TUI event loop;
+    // the overlay owns all buffering, reconnect, and drop policy on its side.
+    happy_tap: Option<mpsc::UnboundedSender<AppServerEvent>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1067,6 +1075,8 @@ See the Codex keymap documentation for supported actions and examples."
             pending_startup_thread_start,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
+            // SANDBOX PATCH: remote_session — no Happy overlay tap in vanilla.
+            happy_tap: None,
         };
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);
@@ -1201,7 +1211,16 @@ See the Codex keymap documentation for supported actions and examples."
                     }
                     app_server_event = app_server.next_event(), if listen_for_app_server_events => {
                         match app_server_event {
-                            Some(event) => app.handle_app_server_event(&app_server, event).await,
+                            Some(event) => {
+                                // SANDBOX PATCH: remote_session — fan out to the Happy
+                                // overlay sink before local handling. The tap is an
+                                // `UnboundedSender`, so this never backpressures or hangs
+                                // the TUI event loop; a closed/absent tap is a no-op.
+                                if let Some(tap) = app.happy_tap.as_ref() {
+                                    let _ = tap.send(event.clone());
+                                }
+                                app.handle_app_server_event(&app_server, event).await
+                            }
                             None => {
                                 listen_for_app_server_events = false;
                                 tracing::warn!("app-server event stream closed");

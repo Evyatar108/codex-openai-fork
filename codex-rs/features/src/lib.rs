@@ -164,6 +164,11 @@ pub enum Feature {
     // SANDBOX PATCH: opt-in Windows Git Bash default-shell detector.
     /// Detect Git Bash as the Windows default session shell. Default off.
     WindowsGitBashShell,
+    // SANDBOX PATCH: opt-in gate for mirroring this session to the Happy mobile app.
+    /// Mirror this Codex session to the Happy mobile app over the Happy wire
+    /// protocol (end-to-end encrypted). Default off; opt in via `/experimental`,
+    /// `-c features.remote_session=true`, `--enable remote_session`, or `/remote on`.
+    RemoteSession,
     /// Enable CSV-backed agent job tools.
     SpawnCsv,
     /// Enable apps.
@@ -1040,6 +1045,19 @@ pub const FEATURES: &[FeatureSpec] = &[
             name: "Anthropic models",
             menu_description: "Enable Claude-via-Copilot model options.",
             announcement: "Anthropic models can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: opt-in gate for the native Happy remote-session overlay.
+    // Default off; the launcher emits `-c features.remote_session=<bool>` and the
+    // `/remote on|off` command toggles it live (also settable from `/experimental`).
+    FeatureSpec {
+        id: Feature::RemoteSession,
+        key: "remote_session",
+        stage: Stage::Experimental {
+            name: "Remote session",
+            menu_description: "Mirror this Codex session to the Happy mobile app (end-to-end encrypted).",
+            announcement: "Remote session mirroring can now be enabled from /experimental. Restart Codex after enabling it.",
         },
         default_enabled: false,
     },
