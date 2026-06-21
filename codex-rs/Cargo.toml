@@ -314,6 +314,11 @@ crypto_box = { version = "0.9.1", features = ["seal"] }
 # Byte-compatible with packages/happy-cli/src/api/encryption.ts; registered in patch-surface §4 (US-008).
 aes-gcm = "0.10"
 xsalsa20poly1305 = "0.9"
+# SANDBOX PATCH: net-new audited Socket.IO transport dep for the codex-happy overlay
+# (remote_session feature, default-off). Drives the happy-server /v1/updates session client
+# (US-004); registered in patch-surface §4 + audit_network_calls.sh (US-008). The non-optional
+# native-tls dep resolves to schannel on Windows (no openssl/vendored-TLS build).
+rust_socketio = { version = "0.6", features = ["async"] }
 crossterm = "0.28.1"
 csv = "1.3.1"
 ctor = "0.6.3"
