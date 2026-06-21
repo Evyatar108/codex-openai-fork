@@ -35,6 +35,11 @@ use serde_json::Value;
 /// in-band stream error that must abort the turn instead of silently blanking.
 pub(crate) enum TranslatedSseEvent {
     Chat(ChatStreamEvent),
+    /// SANDBOX PATCH: D-001 reasoning capture. A chunk of Claude chain-of-thought
+    /// decoded from the non-standard `choices[].delta.reasoning_text` field that
+    /// Copilot streams for Anthropic models. Kept on this core-owned event (NOT on
+    /// the overlay `ChatStreamEvent`) so the overlay parser stays untouched.
+    ReasoningDelta(String),
     StreamError(String),
 }
 
@@ -239,6 +244,21 @@ fn decode_openai_structured_content(value: &Value, events: &mut Vec<TranslatedSs
         return;
     };
     let delta = choice.get("delta");
+
+    // SANDBOX PATCH: D-001 reasoning capture. Copilot streams Claude chain-of-thought
+    // as a non-standard `delta.reasoning_text` String; the SAME chunk carries
+    // `delta.content: ""` (empty string, not an array), so the overlay `ChatSseParser`
+    // emits nothing and the array branch below early-returns. Surface the reasoning
+    // here, BEFORE that early-return, and skip empty chunks. This is the only emitter
+    // of reasoning, so there is no double-emit with the overlay parser.
+    if let Some(reasoning) = delta
+        .and_then(|d| d.get("reasoning_text"))
+        .and_then(Value::as_str)
+        && !reasoning.is_empty()
+    {
+        events.push(TranslatedSseEvent::ReasoningDelta(reasoning.to_string()));
+    }
+
     let Some(parts) = delta
         .and_then(|d| d.get("content"))
         .and_then(Value::as_array)
@@ -299,18 +319,36 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    /// Collects only the `Chat` events, panicking on any in-band stream error.
-    fn parse_chat(sse: &str) -> Vec<ChatStreamEvent> {
+    /// Collects raw translated events (chat + reasoning), panicking on any in-band
+    /// stream error.
+    fn parse_translated(sse: &str) -> Vec<TranslatedSseEvent> {
         let mut parser = AnthropicSseParser::new();
         let mut events = parser.push(sse.as_bytes());
         events.extend(parser.finish());
         events
+    }
+
+    /// Collects only the `Chat` events, panicking on any in-band stream error.
+    fn parse_chat(sse: &str) -> Vec<ChatStreamEvent> {
+        parse_translated(sse)
             .into_iter()
-            .map(|event| match event {
-                TranslatedSseEvent::Chat(chat) => chat,
+            .filter_map(|event| match event {
+                TranslatedSseEvent::Chat(chat) => Some(chat),
+                TranslatedSseEvent::ReasoningDelta(_) => None,
                 TranslatedSseEvent::StreamError(message) => {
                     panic!("unexpected stream error: {message}")
                 }
+            })
+            .collect()
+    }
+
+    /// Collects only the reasoning chunks (one `String` per `ReasoningDelta`).
+    fn collect_reasoning(sse: &str) -> Vec<String> {
+        parse_translated(sse)
+            .into_iter()
+            .filter_map(|event| match event {
+                TranslatedSseEvent::ReasoningDelta(text) => Some(text),
+                _ => None,
             })
             .collect()
     }
@@ -500,6 +538,9 @@ mod tests {
         match &events[0] {
             TranslatedSseEvent::StreamError(message) => assert_eq!(message, "Overloaded"),
             TranslatedSseEvent::Chat(event) => panic!("expected stream error, got {event:?}"),
+            TranslatedSseEvent::ReasoningDelta(text) => {
+                panic!("expected stream error, got reasoning {text:?}")
+            }
         }
     }
 
@@ -516,12 +557,66 @@ mod tests {
         events.extend(parser.push(&bytes[split..]));
         let chat: Vec<ChatStreamEvent> = events
             .into_iter()
-            .map(|event| match event {
-                TranslatedSseEvent::Chat(chat) => chat,
+            .filter_map(|event| match event {
+                TranslatedSseEvent::Chat(chat) => Some(chat),
+                TranslatedSseEvent::ReasoningDelta(_) => None,
                 TranslatedSseEvent::StreamError(message) => panic!("unexpected error: {message}"),
             })
             .collect();
         assert_eq!(chat, vec![ChatStreamEvent::ContentDelta("😀".to_string())]);
+    }
+
+    // SANDBOX PATCH: D-001 reasoning capture tests.
+
+    #[test]
+    fn reasoning_text_chunks_surface_one_reasoning_delta_each() {
+        // Mirrors the live probe shape: `delta.content: ""` (empty string) plus
+        // `delta.reasoning_text` carrying the chain-of-thought chunk.
+        let sse = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning_text\":\"Let\"}}]}\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning_text\":\" me den\"}}]}\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning_text\":\"ote x\"}}]}\n",
+        );
+        let reasoning = collect_reasoning(sse);
+        // Exactly one ReasoningDelta per chunk, concatenating to the full CoT.
+        assert_eq!(
+            reasoning,
+            vec![
+                "Let".to_string(),
+                " me den".to_string(),
+                "ote x".to_string()
+            ]
+        );
+        assert_eq!(reasoning.concat(), "Let me denote x");
+        // The empty-string `content` yields no chat (content/tool/finish) events.
+        assert_eq!(parse_chat(sse), Vec::<ChatStreamEvent>::new());
+    }
+
+    #[test]
+    fn reasoning_chunk_is_not_double_emitted_by_overlay_parser() {
+        // AC2: the SAME `content:""`+`reasoning_text` chunk must yield NOTHING from
+        // the overlay `ChatSseParser` (it owns the OpenAI string-content shape), so
+        // the core reasoning capture is the single emitter and never double-renders.
+        let line = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning_text\":\"Let\"}}]}\n";
+        let overlay_events = codex_copilot::ChatSseParser::new().push(line.as_bytes());
+        assert!(
+            overlay_events.is_empty(),
+            "overlay parser must drop the reasoning chunk, got {overlay_events:?}"
+        );
+        // And the core reasoning parser emits exactly the one reasoning chunk.
+        assert_eq!(collect_reasoning(line), vec!["Let".to_string()]);
+    }
+
+    #[test]
+    fn empty_reasoning_text_chunk_is_skipped() {
+        // AC4 (parser level): a `reasoning_effort=none`-shaped chunk (empty
+        // reasoning_text) yields no ReasoningDelta, and an ordinary string-content
+        // chunk likewise produces no reasoning.
+        let sse = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning_text\":\"\"}}]}\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n",
+        );
+        assert!(collect_reasoning(sse).is_empty());
     }
 
     #[test]

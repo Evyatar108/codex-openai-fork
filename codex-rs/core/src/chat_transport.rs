@@ -39,6 +39,7 @@ use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelWireRoute;
 use codex_protocol::protocol::TokenUsage;
@@ -133,6 +134,70 @@ impl AssistantMessageItem {
     }
 }
 
+/// SANDBOX PATCH: D-001 reasoning capture. Accumulates streamed Claude
+/// chain-of-thought (Copilot's non-standard `delta.reasoning_text`) into the
+/// reasoning-item lifecycle the session state machine requires: an
+/// `OutputItemAdded(Reasoning)` (active reasoning item opened) BEFORE the first
+/// `ReasoningContentDelta` — without an open item the turn loop hits
+/// `error_or_panic("ReasoningRawContentDelta without active item")`
+/// (`session/turn.rs`) — and a closing `OutputItemDone(Reasoning)` carrying the
+/// full CoT as a `ReasoningItemContent::ReasoningText` so it persists to the
+/// rollout (`should_serialize_reasoning_content`). The reasoning item MUST close
+/// before the assistant `Message` (or any `FunctionCall`) item opens, since
+/// `OutputItemAdded` replaces the active item. The same `id` is reused for open
+/// and close. `encrypted_content` is `None` on this unsigned plaintext path but is
+/// never assumed plaintext-only, so the future signed fast-follow can populate it
+/// without reworking this lifecycle. Once closed the item never reopens, so a late
+/// straggler reasoning chunk (one network read straddling the last reasoning line
+/// and the first content line) can never resurrect it after the message opened.
+#[derive(Default)]
+struct ReasoningMessageItem {
+    id: Option<String>,
+    text: String,
+    closed: bool,
+}
+
+impl ReasoningMessageItem {
+    fn is_open(&self) -> bool {
+        self.id.is_some() && !self.closed
+    }
+
+    /// Marks the reasoning item open and returns the empty reasoning item to send
+    /// as `OutputItemAdded`. `content`/`encrypted_content` are `None` at open; the
+    /// full CoT text is attached at `finish()`.
+    fn open(&mut self) -> ResponseItem {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.id = Some(id.clone());
+        ResponseItem::Reasoning {
+            id,
+            summary: Vec::new(),
+            content: None,
+            encrypted_content: None,
+            metadata: None,
+        }
+    }
+
+    /// Returns the finalized reasoning item (full accumulated CoT) to send as
+    /// `OutputItemDone`, or `None` when the item is not open (never opened, or
+    /// already closed). Marks the item closed so it never reopens.
+    fn finish(&mut self) -> Option<ResponseItem> {
+        if !self.is_open() {
+            return None;
+        }
+        let id = self.id.clone()?;
+        self.closed = true;
+        Some(ResponseItem::Reasoning {
+            id,
+            summary: Vec::new(),
+            content: Some(vec![ReasoningItemContent::ReasoningText {
+                text: self.text.clone(),
+            }]),
+            encrypted_content: None,
+            metadata: None,
+        })
+    }
+}
+
 /// Stream a turn for a chat-routed (Claude-via-Copilot) model.
 ///
 /// `responses_body` is the serialized `ResponsesApiRequest` core already builds;
@@ -210,6 +275,9 @@ async fn run_chat_stream(
     let mut anthropic_parser = AnthropicSseParser::new();
     let mut tools: BTreeMap<i64, ToolAccumulator> = BTreeMap::new();
     let mut message = AssistantMessageItem::default();
+    // SANDBOX PATCH: D-001 reasoning capture. Accumulates Claude chain-of-thought
+    // streamed off `delta.reasoning_text`, emitting the reasoning-item lifecycle.
+    let mut reasoning = ReasoningMessageItem::default();
     let mut usage: Option<ChatUsage> = None;
     let mut finish_reason: Option<String> = None;
 
@@ -225,6 +293,7 @@ async fn run_chat_stream(
                         event,
                         &mut tools,
                         &mut message,
+                        &mut reasoning,
                         &mut usage,
                         &mut finish_reason,
                         &tx_event,
@@ -243,6 +312,7 @@ async fn run_chat_stream(
                     anthropic_parser.push(&bytes),
                     &mut tools,
                     &mut message,
+                    &mut reasoning,
                     &mut usage,
                     &mut finish_reason,
                     &tx_event,
@@ -266,6 +336,7 @@ async fn run_chat_stream(
             event,
             &mut tools,
             &mut message,
+            &mut reasoning,
             &mut usage,
             &mut finish_reason,
             &tx_event,
@@ -279,12 +350,20 @@ async fn run_chat_stream(
         anthropic_parser.finish(),
         &mut tools,
         &mut message,
+        &mut reasoning,
         &mut usage,
         &mut finish_reason,
         &tx_event,
     )
     .await
     {
+        return;
+    }
+
+    // SANDBOX PATCH: D-001 reasoning capture. Close any reasoning item still open at
+    // stream finish (a pure-reasoning turn with no content/tool would leave it open),
+    // before the assistant message and tool-call items are finalized.
+    if !close_reasoning_if_open(&mut reasoning, &tx_event).await {
         return;
     }
 
@@ -339,6 +418,7 @@ async fn handle_translated_events(
     events: Vec<TranslatedSseEvent>,
     tools: &mut BTreeMap<i64, ToolAccumulator>,
     message: &mut AssistantMessageItem,
+    reasoning: &mut ReasoningMessageItem,
     usage: &mut Option<ChatUsage>,
     finish_reason: &mut Option<String>,
     tx_event: &mpsc::Sender<Result<ResponseEvent>>,
@@ -346,7 +426,50 @@ async fn handle_translated_events(
     for event in events {
         match event {
             TranslatedSseEvent::Chat(chat) => {
-                if !handle_event(chat, tools, message, usage, finish_reason, tx_event).await {
+                if !handle_event(
+                    chat,
+                    tools,
+                    message,
+                    reasoning,
+                    usage,
+                    finish_reason,
+                    tx_event,
+                )
+                .await
+                {
+                    return false;
+                }
+            }
+            // SANDBOX PATCH: D-001 reasoning capture. Open the reasoning item on the
+            // first delta (so the session has an active item for the
+            // `ReasoningContentDelta`), accumulate the full CoT, and stream the chunk.
+            // A late straggler after the item has been closed (a content/tool event
+            // already finalized it) is dropped rather than reopened — closing the
+            // reasoning item before the assistant message is the load-bearing
+            // ordering invariant.
+            TranslatedSseEvent::ReasoningDelta(text) => {
+                if reasoning.closed {
+                    continue;
+                }
+                if !reasoning.is_open() {
+                    let item = reasoning.open();
+                    if tx_event
+                        .send(Ok(ResponseEvent::OutputItemAdded(item)))
+                        .await
+                        .is_err()
+                    {
+                        return false;
+                    }
+                }
+                reasoning.text.push_str(&text);
+                if tx_event
+                    .send(Ok(ResponseEvent::ReasoningContentDelta {
+                        delta: text,
+                        content_index: 0,
+                    }))
+                    .await
+                    .is_err()
+                {
                     return false;
                 }
             }
@@ -361,18 +484,42 @@ async fn handle_translated_events(
     true
 }
 
+/// SANDBOX PATCH: D-001 reasoning capture. Emits `OutputItemDone(Reasoning)` for an
+/// open reasoning item, closing it before the next item (assistant message or
+/// function call) opens. A no-op when no reasoning item is open. Returns `false`
+/// when the consumer dropped (send failed) so the caller can stop.
+async fn close_reasoning_if_open(
+    reasoning: &mut ReasoningMessageItem,
+    tx_event: &mpsc::Sender<Result<ResponseEvent>>,
+) -> bool {
+    if let Some(item) = reasoning.finish() {
+        return tx_event
+            .send(Ok(ResponseEvent::OutputItemDone(item)))
+            .await
+            .is_ok();
+    }
+    true
+}
+
 /// Maps one neutral [`ChatStreamEvent`] into `ResponseEvent`(s). Returns `false`
 /// when the consumer dropped (send failed) so the caller can stop.
 async fn handle_event(
     event: ChatStreamEvent,
     tools: &mut BTreeMap<i64, ToolAccumulator>,
     message: &mut AssistantMessageItem,
+    reasoning: &mut ReasoningMessageItem,
     usage: &mut Option<ChatUsage>,
     finish_reason: &mut Option<String>,
     tx_event: &mpsc::Sender<Result<ResponseEvent>>,
 ) -> bool {
     match event {
         ChatStreamEvent::ContentDelta(text) => {
+            // SANDBOX PATCH: D-001 reasoning capture. Close any open reasoning item
+            // BEFORE the assistant message opens — `OutputItemAdded(Message)` replaces
+            // the active item, so the reasoning item must already be finalized.
+            if !close_reasoning_if_open(reasoning, tx_event).await {
+                return false;
+            }
             // SANDBOX PATCH: D-001. Open the assistant message item on the first
             // text delta so the session state machine has an active item to attach
             // the `OutputTextDelta` to (otherwise `session/turn.rs` hits
@@ -399,6 +546,13 @@ async fn handle_event(
             name,
             arguments,
         } => {
+            // SANDBOX PATCH: D-001 reasoning capture. Close any open reasoning item
+            // BEFORE a function-call item is finalized (tool-only turns produce no
+            // assistant text, so the reasoning item would otherwise stay active when
+            // the `FunctionCall` item arrives).
+            if !close_reasoning_if_open(reasoning, tx_event).await {
+                return false;
+            }
             let accum = tools.entry(index).or_default();
             if id.is_some() {
                 accum.call_id = id;
@@ -529,6 +683,7 @@ mod tests {
         let (tx_event, mut rx_event) = mpsc::channel::<Result<ResponseEvent>>(16);
         let mut tools: BTreeMap<i64, ToolAccumulator> = BTreeMap::new();
         let mut message = AssistantMessageItem::default();
+        let mut reasoning = ReasoningMessageItem::default();
         let mut usage: Option<ChatUsage> = None;
         let mut finish_reason: Option<String> = None;
 
@@ -538,6 +693,7 @@ mod tests {
                     ChatStreamEvent::ContentDelta(delta.to_string()),
                     &mut tools,
                     &mut message,
+                    &mut reasoning,
                     &mut usage,
                     &mut finish_reason,
                     &tx_event,
@@ -601,5 +757,293 @@ mod tests {
         let message = AssistantMessageItem::default();
         assert!(!message.is_open());
         assert!(message.finish().is_none());
+    }
+
+    // SANDBOX PATCH: D-001 reasoning capture tests.
+
+    /// AC5: the closing reasoning item carries the full CoT as a
+    /// `ReasoningItemContent::ReasoningText` (so `should_serialize_reasoning_content`
+    /// persists it), with `encrypted_content: None` on the unsigned path. The open
+    /// item carries no content yet, and the item never reopens once closed.
+    #[test]
+    fn reasoning_item_close_carries_reasoning_text_for_persistence() {
+        let mut reasoning = ReasoningMessageItem::default();
+        match reasoning.open() {
+            ResponseItem::Reasoning {
+                content,
+                encrypted_content,
+                summary,
+                ..
+            } => {
+                assert_eq!(content, None);
+                assert_eq!(encrypted_content, None);
+                assert!(summary.is_empty());
+            }
+            other => panic!("expected Reasoning open item, got {other:?}"),
+        }
+        reasoning.text.push_str("step one ");
+        reasoning.text.push_str("step two");
+        match reasoning.finish().expect("reasoning should be open") {
+            ResponseItem::Reasoning {
+                content,
+                encrypted_content,
+                ..
+            } => {
+                assert_eq!(
+                    content,
+                    Some(vec![ReasoningItemContent::ReasoningText {
+                        text: "step one step two".to_string(),
+                    }])
+                );
+                assert_eq!(encrypted_content, None);
+            }
+            other => panic!("expected Reasoning done item, got {other:?}"),
+        }
+        // Already closed: never reopens.
+        assert!(reasoning.finish().is_none());
+    }
+
+    /// AC3: a reasoning-then-content turn emits the reasoning lifecycle
+    /// (`OutputItemAdded(Reasoning)` → `ReasoningContentDelta`(s) →
+    /// `OutputItemDone(Reasoning)`) entirely BEFORE the assistant message
+    /// (`OutputItemAdded(Message)` → `OutputTextDelta` → `OutputItemDone(Message)`).
+    #[tokio::test]
+    async fn reasoning_then_content_emits_reasoning_lifecycle_before_message() {
+        let (tx_event, mut rx_event) = mpsc::channel::<Result<ResponseEvent>>(32);
+        let mut tools: BTreeMap<i64, ToolAccumulator> = BTreeMap::new();
+        let mut message = AssistantMessageItem::default();
+        let mut reasoning = ReasoningMessageItem::default();
+        let mut usage: Option<ChatUsage> = None;
+        let mut finish_reason: Option<String> = None;
+
+        // Reasoning arrives first (anthropic-decoder path).
+        assert!(
+            handle_translated_events(
+                vec![
+                    TranslatedSseEvent::ReasoningDelta("Let me ".to_string()),
+                    TranslatedSseEvent::ReasoningDelta("think.".to_string()),
+                ],
+                &mut tools,
+                &mut message,
+                &mut reasoning,
+                &mut usage,
+                &mut finish_reason,
+                &tx_event,
+            )
+            .await
+        );
+        // Then assistant text (overlay-decoder path) closes the reasoning item first.
+        assert!(
+            handle_event(
+                ChatStreamEvent::ContentDelta("Answer".to_string()),
+                &mut tools,
+                &mut message,
+                &mut reasoning,
+                &mut usage,
+                &mut finish_reason,
+                &tx_event,
+            )
+            .await
+        );
+        // End-of-stream finalize, mirroring `run_chat_stream`.
+        assert!(close_reasoning_if_open(&mut reasoning, &tx_event).await);
+        let done = message.finish().expect("assistant message should be open");
+        tx_event
+            .send(Ok(ResponseEvent::OutputItemDone(done)))
+            .await
+            .expect("send done");
+        drop(tx_event);
+
+        let mut events = Vec::new();
+        while let Some(event) = rx_event.recv().await {
+            events.push(event.expect("event"));
+        }
+
+        assert!(matches!(
+            &events[0],
+            ResponseEvent::OutputItemAdded(ResponseItem::Reasoning { .. })
+        ));
+        assert!(matches!(
+            &events[1],
+            ResponseEvent::ReasoningContentDelta { delta, content_index: 0 } if delta == "Let me "
+        ));
+        assert!(matches!(
+            &events[2],
+            ResponseEvent::ReasoningContentDelta { delta, content_index: 0 } if delta == "think."
+        ));
+        match &events[3] {
+            ResponseEvent::OutputItemDone(ResponseItem::Reasoning {
+                content,
+                encrypted_content,
+                ..
+            }) => {
+                assert_eq!(
+                    content,
+                    &Some(vec![ReasoningItemContent::ReasoningText {
+                        text: "Let me think.".to_string(),
+                    }])
+                );
+                assert_eq!(encrypted_content, &None);
+            }
+            other => panic!("expected OutputItemDone(Reasoning), got {other:?}"),
+        }
+        assert!(matches!(
+            &events[4],
+            ResponseEvent::OutputItemAdded(ResponseItem::Message { .. })
+        ));
+        assert!(matches!(&events[5], ResponseEvent::OutputTextDelta(t) if t == "Answer"));
+        assert!(matches!(
+            &events[6],
+            ResponseEvent::OutputItemDone(ResponseItem::Message { .. })
+        ));
+        // The reasoning item is opened exactly once.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    ResponseEvent::OutputItemAdded(ResponseItem::Reasoning { .. })
+                ))
+                .count(),
+            1,
+        );
+    }
+
+    /// AC14: a reasoning-then-tool-call turn (no assistant text) closes the
+    /// reasoning item BEFORE the `FunctionCall` item is finalized, so
+    /// `session/turn.rs` never sees a function item while the reasoning item is
+    /// still the active item. No assistant message item is synthesized.
+    #[tokio::test]
+    async fn reasoning_then_tool_call_closes_reasoning_before_function_call() {
+        let (tx_event, mut rx_event) = mpsc::channel::<Result<ResponseEvent>>(32);
+        let mut tools: BTreeMap<i64, ToolAccumulator> = BTreeMap::new();
+        let mut message = AssistantMessageItem::default();
+        let mut reasoning = ReasoningMessageItem::default();
+        let mut usage: Option<ChatUsage> = None;
+        let mut finish_reason: Option<String> = None;
+
+        assert!(
+            handle_translated_events(
+                vec![TranslatedSseEvent::ReasoningDelta(
+                    "plan the call".to_string()
+                )],
+                &mut tools,
+                &mut message,
+                &mut reasoning,
+                &mut usage,
+                &mut finish_reason,
+                &tx_event,
+            )
+            .await
+        );
+        assert!(
+            handle_event(
+                ChatStreamEvent::ToolCallDelta {
+                    index: 0,
+                    id: Some("call_1".to_string()),
+                    name: Some("get_time".to_string()),
+                    arguments: "{}".to_string(),
+                },
+                &mut tools,
+                &mut message,
+                &mut reasoning,
+                &mut usage,
+                &mut finish_reason,
+                &tx_event,
+            )
+            .await
+        );
+        // Finalize exactly as `run_chat_stream` does at end of stream.
+        assert!(close_reasoning_if_open(&mut reasoning, &tx_event).await);
+        assert!(message.finish().is_none());
+        for accum in tools.into_values() {
+            let item = ResponseItem::FunctionCall {
+                id: None,
+                name: accum.name.unwrap_or_default(),
+                namespace: None,
+                arguments: accum.arguments,
+                call_id: accum.call_id.unwrap_or_default(),
+                metadata: None,
+            };
+            tx_event
+                .send(Ok(ResponseEvent::OutputItemDone(item)))
+                .await
+                .expect("send function call");
+        }
+        drop(tx_event);
+
+        let mut events = Vec::new();
+        while let Some(event) = rx_event.recv().await {
+            events.push(event.expect("event"));
+        }
+
+        let reasoning_done = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    ResponseEvent::OutputItemDone(ResponseItem::Reasoning { .. })
+                )
+            })
+            .expect("reasoning item closed");
+        let function_done = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    ResponseEvent::OutputItemDone(ResponseItem::FunctionCall { .. })
+                )
+            })
+            .expect("function call finalized");
+        assert!(
+            reasoning_done < function_done,
+            "reasoning must close before the function call; events: {events:?}"
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemAdded(ResponseItem::Message { .. })
+                | ResponseEvent::OutputItemDone(ResponseItem::Message { .. })
+        )));
+    }
+
+    /// AC4 (transport level): a turn with zero reasoning chunks emits NO reasoning
+    /// events at all.
+    #[tokio::test]
+    async fn no_reasoning_chunks_emit_no_reasoning_events() {
+        let (tx_event, mut rx_event) = mpsc::channel::<Result<ResponseEvent>>(16);
+        let mut tools: BTreeMap<i64, ToolAccumulator> = BTreeMap::new();
+        let mut message = AssistantMessageItem::default();
+        let mut reasoning = ReasoningMessageItem::default();
+        let mut usage: Option<ChatUsage> = None;
+        let mut finish_reason: Option<String> = None;
+
+        assert!(
+            handle_event(
+                ChatStreamEvent::ContentDelta("Hi".to_string()),
+                &mut tools,
+                &mut message,
+                &mut reasoning,
+                &mut usage,
+                &mut finish_reason,
+                &tx_event,
+            )
+            .await
+        );
+        assert!(close_reasoning_if_open(&mut reasoning, &tx_event).await);
+        drop(tx_event);
+
+        let mut events = Vec::new();
+        while let Some(event) = rx_event.recv().await {
+            events.push(event.expect("event"));
+        }
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                ResponseEvent::OutputItemAdded(ResponseItem::Reasoning { .. })
+                    | ResponseEvent::OutputItemDone(ResponseItem::Reasoning { .. })
+                    | ResponseEvent::ReasoningContentDelta { .. }
+            )),
+            "no reasoning events expected, got {events:?}"
+        );
     }
 }
