@@ -3159,10 +3159,13 @@ dependencies = [
  "crypto_box",
  "dirs",
  "ed25519-dalek",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
+ "wiremock",
  "xsalsa20poly1305",
 ]
 
