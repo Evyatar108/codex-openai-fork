@@ -1,3 +1,19 @@
+// SANDBOX PATCH: conscious test-debt retirement (rebase-0140/0141 follow-up).
+// The 0.140 rebase squash re-took this file from upstream, deferring ~18 fork-era
+// tool-plan tests. Decision after the 0.141 rebase: RETIRE, do not re-author. Rationale:
+//   * None were security-critical.
+//   * The fork's only tool-plan divergence (the plugin-scope-axis SubAgent spawn gate,
+//     "spawn_agent is not available from subagent sessions") is covered by
+//     `spawn_agent_rejects_agent_spawner_subagent_context` and
+//     `multi_agent_v2_spawn_agent_rejects_from_subagent_context` in
+//     `core/src/tools/handlers/multi_agents_tests.rs`.
+//   * The surviving fork-flavored tool-plan behaviors (multi-agent v1/v2 family
+//     selection, code-mode executor exposure, plugin-install discovery gating,
+//     unified-exec/zsh-fork composition, request_user_input experimental gate) are
+//     covered by the current upstream-aligned tests in this file.
+//   * The remainder were generic upstream tool-plan features (environments, view_image,
+//     image generation, mcp resources, request_permissions, namespace hiding,
+//     build_specs) now covered by upstream's reorganized 0.141 tests.
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

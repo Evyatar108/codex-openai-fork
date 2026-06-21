@@ -1080,7 +1080,73 @@ async fn remote_control_start_allows_missing_auth_when_enabled() {
 // remote control via `RemoteControlPolicy::DisabledByRequirements` at the app-server policy layer
 // (lib.rs), not via a transport-level toggle. The two transport tests that exercised the removed hook
 // (`remote_control_start_forced_disabled`, `remote_control_set_enabled_forced_false`) were removed
-// with it; policy-layer force-disable coverage is tracked as a follow-up.
+// with it; the policy-layer force-disable follow-up coverage now lives in
+// `policy_disabled_by_requirements_blocks_startup_and_runtime_enable` directly below.
+
+// SANDBOX PATCH: fork-owned regression guard for the policy-layer remote-control force-disable --
+// the replacement for the retired Layer-2 `set_enabled`/`initial_enabled` hook (former Invariants
+// 8/9; see AGENTS.override.md §"Remote control is force-disabled at THREE layers" and the note
+// above). Upstream's `managed_disable_overrides_startup_and_persisted_enablement` exercises the same
+// policy mechanism, but this fork-marked test pins the two privacy properties the fork depends on so a
+// future rebase that weakens `RemoteControlPolicy::DisabledByRequirements` is caught here:
+//   (1) startup under the policy never opens the websocket enrollment target: no backend contact and
+//       a `Disabled` status, the observable proxy for the internal `remote_control_target == None`; and
+//   (2) the enable RPC path stays policy-gated (`ensure_remote_control_allowed` on its first line), so
+//       a runtime toggle cannot flip `wss://chatgpt.com/...` enrollment back on.
+#[tokio::test]
+async fn policy_disabled_by_requirements_blocks_startup_and_runtime_enable() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let remote_control_url = remote_control_url_for_listener(&listener);
+    let codex_home = TempDir::new().expect("temp dir should create");
+    let state_db = remote_control_state_runtime(&codex_home).await;
+    let (transport_event_tx, _transport_event_rx) = mpsc::channel(CHANNEL_CAPACITY);
+    let shutdown_token = CancellationToken::new();
+
+    // Adversarial startup: the requested startup mode wants remote control ENABLED, but the policy
+    // must override that and keep it disabled.
+    let (remote_task, remote_handle) = start_remote_control(
+        RemoteControlStartConfig {
+            remote_control_url,
+            installation_id: TEST_INSTALLATION_ID.to_string(),
+            policy: RemoteControlPolicy::DisabledByRequirements,
+        },
+        Some(state_db.clone()),
+        remote_control_auth_manager(),
+        transport_event_tx,
+        shutdown_token.clone(),
+        /*app_server_client_name_rx*/ None,
+        RemoteControlStartupMode::EnabledEphemeral,
+    )
+    .await
+    .expect("remote control should start disabled under the policy");
+
+    // (1) The websocket enrollment target is never established: status is Disabled and no connection
+    // is attempted against the backend listener.
+    assert_eq!(
+        remote_handle.status().status,
+        RemoteControlConnectionStatus::Disabled
+    );
+    timeout(Duration::from_millis(100), listener.accept())
+        .await
+        .expect_err("policy force-disable must prevent backend enrollment contact");
+
+    // (2) The enable RPC path stays policy-gated, so a runtime toggle cannot re-enable enrollment.
+    assert_eq!(
+        remote_handle.ensure_remote_control_allowed(),
+        Err(RemoteControlDisabledByRequirements)
+    );
+    assert_eq!(
+        remote_handle
+            .enable_ephemeral()
+            .expect_err("policy force-disable must reject runtime enable"),
+        RemoteControlEnableError::DisabledByRequirements(RemoteControlDisabledByRequirements)
+    );
+
+    shutdown_token.cancel();
+    remote_task.await.expect("remote control task should join");
+}
 
 // SANDBOX PATCH: `RemoteControlHandle::set_enabled` is force-disabled in the sandbox
 // (see mod.rs) so it can never flip the watch channel to `true`. This upstream test
