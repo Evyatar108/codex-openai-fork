@@ -288,27 +288,8 @@ async fn run_chat_stream(
         };
         match chunk {
             Ok(Some(bytes)) => {
-                for event in parser.push(&bytes) {
-                    if !handle_event(
-                        event,
-                        &mut tools,
-                        &mut message,
-                        &mut reasoning,
-                        &mut usage,
-                        &mut finish_reason,
-                        &tx_event,
-                    )
-                    .await
-                    {
-                        return;
-                    }
-                }
-                // SANDBOX PATCH: D-001. Also decode the Anthropic Messages-API SSE
-                // shape (the overlay `ChatSseParser` only understands the OpenAI
-                // chat shape and silently drops Anthropic text blocks). The two
-                // shapes are disjoint, so feeding the same bytes to both yields at
-                // most one decoder's events per stream.
-                if !handle_translated_events(
+                if !drain_chat_chunk(
+                    parser.push(&bytes),
                     anthropic_parser.push(&bytes),
                     &mut tools,
                     &mut message,
@@ -331,22 +312,8 @@ async fn run_chat_stream(
             }
         }
     }
-    for event in parser.finish() {
-        if !handle_event(
-            event,
-            &mut tools,
-            &mut message,
-            &mut reasoning,
-            &mut usage,
-            &mut finish_reason,
-            &tx_event,
-        )
-        .await
-        {
-            return;
-        }
-    }
-    if !handle_translated_events(
+    if !drain_chat_chunk(
+        parser.finish(),
         anthropic_parser.finish(),
         &mut tools,
         &mut message,
@@ -407,6 +374,66 @@ async fn run_chat_stream(
             end_turn,
         }))
         .await;
+}
+
+/// SANDBOX PATCH: D-001. Drains one raw byte chunk through BOTH SSE parsers (the
+/// overlay `ChatSseParser`, which understands the OpenAI chat shape, and the core
+/// Anthropic decoder) in WIRE-FAITHFUL order. The two parsers split the wire by
+/// shape: assistant text / tool calls come from the overlay parser, while reasoning
+/// (`delta.reasoning_text`, with `delta.content:""`) and the Anthropic Messages
+/// shape come from the Anthropic decoder — so feeding the same bytes to both yields
+/// at most one decoder's meaningful events per stream.
+///
+/// The Anthropic decoder's events are handled FIRST because reasoning precedes
+/// assistant content/tool calls on the wire. When a single network read buffers BOTH
+/// the (first) reasoning line and the (first) content line, draining the overlay
+/// parser first would emit the content delta — opening the assistant message — before
+/// the reasoning item ever opened, violating the reasoning-before-content ordering
+/// invariant (and later nulling the active item, tripping
+/// `error_or_panic("OutputTextDelta without active item")`). Anthropic-first opens the
+/// reasoning item, then the overlay content delta closes it in wire order; it also
+/// preserves a trailing reasoning fragment that shares a read with the first content.
+/// Returns `false` when the consumer dropped or the stream errored, so the caller can
+/// stop.
+async fn drain_chat_chunk(
+    overlay_events: Vec<ChatStreamEvent>,
+    translated_events: Vec<TranslatedSseEvent>,
+    tools: &mut BTreeMap<i64, ToolAccumulator>,
+    message: &mut AssistantMessageItem,
+    reasoning: &mut ReasoningMessageItem,
+    usage: &mut Option<ChatUsage>,
+    finish_reason: &mut Option<String>,
+    tx_event: &mpsc::Sender<Result<ResponseEvent>>,
+) -> bool {
+    if !handle_translated_events(
+        translated_events,
+        tools,
+        message,
+        reasoning,
+        usage,
+        finish_reason,
+        tx_event,
+    )
+    .await
+    {
+        return false;
+    }
+    for event in overlay_events {
+        if !handle_event(
+            event,
+            tools,
+            message,
+            reasoning,
+            usage,
+            finish_reason,
+            tx_event,
+        )
+        .await
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Routes the Anthropic decoder's [`TranslatedSseEvent`]s: chat events reuse the
@@ -484,21 +511,32 @@ async fn handle_translated_events(
     true
 }
 
-/// SANDBOX PATCH: D-001 reasoning capture. Emits `OutputItemDone(Reasoning)` for an
-/// open reasoning item, closing it before the next item (assistant message or
-/// function call) opens. A no-op when no reasoning item is open. Returns `false`
-/// when the consumer dropped (send failed) so the caller can stop.
+/// SANDBOX PATCH: D-001 reasoning capture. Closes-and-SEALS the reasoning item at a
+/// content/tool boundary (or stream finish): emits `OutputItemDone(Reasoning)` if an
+/// item is open, then marks the accumulator permanently sealed so a reasoning delta
+/// arriving AFTERWARDS can never (re)open a reasoning item behind the assistant
+/// message. `drain_chat_chunk`'s anthropic-first ordering already guarantees reasoning
+/// opens before same-read content; the unconditional seal is defense-in-depth for a
+/// wire that violates the reasoning-precedes-content contract (it turns a would-be
+/// ordering violation — and the consumer-side `error_or_panic` — into a safe drop of
+/// the stray late reasoning). Returns `false` when the consumer dropped (send failed)
+/// so the caller can stop.
 async fn close_reasoning_if_open(
     reasoning: &mut ReasoningMessageItem,
     tx_event: &mpsc::Sender<Result<ResponseEvent>>,
 ) -> bool {
-    if let Some(item) = reasoning.finish() {
-        return tx_event
+    let sent = if let Some(item) = reasoning.finish() {
+        tx_event
             .send(Ok(ResponseEvent::OutputItemDone(item)))
             .await
-            .is_ok();
-    }
-    true
+            .is_ok()
+    } else {
+        true
+    };
+    // `finish()` already sets `closed` when an item was open; seal the never-opened
+    // case too, so a stray reasoning delta after content/tool is dropped, not opened.
+    reasoning.closed = true;
+    sent
 }
 
 /// Maps one neutral [`ChatStreamEvent`] into `ResponseEvent`(s). Returns `false`
@@ -1044,6 +1082,139 @@ mod tests {
                     | ResponseEvent::ReasoningContentDelta { .. }
             )),
             "no reasoning events expected, got {events:?}"
+        );
+    }
+
+    /// Regression for the same-read ordering hazard: when ONE network read buffers
+    /// both the first reasoning line and the first content line (reasoning not opened
+    /// in any prior read), the reasoning item MUST still open and close BEFORE the
+    /// assistant message. `drain_chat_chunk` guarantees this by draining the Anthropic
+    /// decoder (reasoning) before the overlay parser (content). With overlay-first
+    /// draining this fails — the message opens before the reasoning item, and a later
+    /// content delta would null the active item and trip `error_or_panic`.
+    #[tokio::test]
+    async fn single_read_with_reasoning_and_content_keeps_reasoning_first() {
+        let (tx_event, mut rx_event) = mpsc::channel::<Result<ResponseEvent>>(32);
+        let mut tools: BTreeMap<i64, ToolAccumulator> = BTreeMap::new();
+        let mut message = AssistantMessageItem::default();
+        let mut reasoning = ReasoningMessageItem::default();
+        let mut usage: Option<ChatUsage> = None;
+        let mut finish_reason: Option<String> = None;
+
+        // One buffer: a reasoning chunk (content:"" + reasoning_text) immediately
+        // followed by a content chunk (string content) — the realistic single-read
+        // coalesced case where reasoning has never been opened before.
+        let bytes = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning_text\":\"think\"}}]}\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Answer\"}}]}\n",
+        )
+        .as_bytes();
+
+        let mut overlay = ChatSseParser::new();
+        let mut anthropic = AnthropicSseParser::new();
+        assert!(
+            drain_chat_chunk(
+                overlay.push(bytes),
+                anthropic.push(bytes),
+                &mut tools,
+                &mut message,
+                &mut reasoning,
+                &mut usage,
+                &mut finish_reason,
+                &tx_event,
+            )
+            .await
+        );
+        assert!(close_reasoning_if_open(&mut reasoning, &tx_event).await);
+        if let Some(done) = message.finish() {
+            tx_event
+                .send(Ok(ResponseEvent::OutputItemDone(done)))
+                .await
+                .expect("send done");
+        }
+        drop(tx_event);
+
+        let mut events = Vec::new();
+        while let Some(event) = rx_event.recv().await {
+            events.push(event.expect("event"));
+        }
+
+        // The reasoning lifecycle fully precedes the assistant message.
+        assert!(matches!(
+            &events[0],
+            ResponseEvent::OutputItemAdded(ResponseItem::Reasoning { .. })
+        ));
+        assert!(matches!(
+            &events[1],
+            ResponseEvent::ReasoningContentDelta { delta, content_index: 0 } if delta == "think"
+        ));
+        assert!(matches!(
+            &events[2],
+            ResponseEvent::OutputItemDone(ResponseItem::Reasoning { .. })
+        ));
+        assert!(matches!(
+            &events[3],
+            ResponseEvent::OutputItemAdded(ResponseItem::Message { .. })
+        ));
+        assert!(matches!(&events[4], ResponseEvent::OutputTextDelta(t) if t == "Answer"));
+        assert!(matches!(
+            &events[5],
+            ResponseEvent::OutputItemDone(ResponseItem::Message { .. })
+        ));
+    }
+
+    /// Defense-in-depth for the seal: a reasoning delta arriving AFTER content has
+    /// started (a wire that violates the reasoning-precedes-content contract) is
+    /// DROPPED, not opened behind the assistant message — so `session/turn.rs` never
+    /// sees a reasoning item replace the active message item mid-text.
+    #[tokio::test]
+    async fn reasoning_delta_after_content_is_dropped_not_opened() {
+        let (tx_event, mut rx_event) = mpsc::channel::<Result<ResponseEvent>>(16);
+        let mut tools: BTreeMap<i64, ToolAccumulator> = BTreeMap::new();
+        let mut message = AssistantMessageItem::default();
+        let mut reasoning = ReasoningMessageItem::default();
+        let mut usage: Option<ChatUsage> = None;
+        let mut finish_reason: Option<String> = None;
+
+        // Content first (opens the message and seals reasoning), with NO prior reasoning.
+        assert!(
+            handle_event(
+                ChatStreamEvent::ContentDelta("ans".to_string()),
+                &mut tools,
+                &mut message,
+                &mut reasoning,
+                &mut usage,
+                &mut finish_reason,
+                &tx_event,
+            )
+            .await
+        );
+        // A stray reasoning delta afterwards must be dropped (the item is sealed).
+        assert!(
+            handle_translated_events(
+                vec![TranslatedSseEvent::ReasoningDelta("late".to_string())],
+                &mut tools,
+                &mut message,
+                &mut reasoning,
+                &mut usage,
+                &mut finish_reason,
+                &tx_event,
+            )
+            .await
+        );
+        drop(tx_event);
+
+        let mut events = Vec::new();
+        while let Some(event) = rx_event.recv().await {
+            events.push(event.expect("event"));
+        }
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                ResponseEvent::OutputItemAdded(ResponseItem::Reasoning { .. })
+                    | ResponseEvent::ReasoningContentDelta { .. }
+            )),
+            "stray late reasoning must be dropped, got {events:?}"
         );
     }
 }
