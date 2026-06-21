@@ -257,6 +257,13 @@ fn fork_visibility_features_are_experimental_and_disabled_by_default() {
             "Windows Git Bash shell",
             "Use Git Bash as the default Windows session shell when it is detected.",
         ),
+        // SANDBOX PATCH: remote-session mirroring is visible and default-off in `/experimental`.
+        (
+            Feature::RemoteSession,
+            "remote_session",
+            "Remote session",
+            "Mirror this Codex session to the Happy mobile app (end-to-end encrypted).",
+        ),
     ];
 
     for (feature, key, menu_name, menu_description) in expected {
