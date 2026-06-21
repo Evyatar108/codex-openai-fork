@@ -41,6 +41,9 @@ codex-features = { workspace = true }
 codex-feedback = { workspace = true }
 codex-file-search = { workspace = true }
 codex-git-utils = { workspace = true }
+# SANDBOX PATCH: remote_session — the Happy overlay attach layer wired at the
+# bounded app-server seam in src/app.rs (US-006). Default-off feature gate.
+codex-happy = { workspace = true }
 codex-login = { workspace = true }
 codex-message-history = { workspace = true }
 codex-model-provider = { workspace = true }

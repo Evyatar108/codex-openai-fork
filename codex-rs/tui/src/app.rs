@@ -1024,6 +1024,22 @@ See the Codex keymap documentation for supported actions and examples."
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
+        // SANDBOX PATCH: remote_session — attach the Happy overlay tap when the
+        // feature is enabled. `maybe_attach` returns `None` (plain vanilla
+        // codex) when the feature is off, a happy-cli daemon already owns the
+        // session, creds are absent, or the server is unreachable. All
+        // session/connect work runs in a background task, so the first
+        // interactive prompt is never blocked (US-006). Computed before the
+        // struct literal moves `config`.
+        let happy_tap = if config.features.enabled(Feature::RemoteSession) {
+            codex_happy::attach::maybe_attach(codex_happy::attach::AttachParams::new(
+                config.cwd.to_path_buf(),
+                CODEX_CLI_VERSION.to_string(),
+            ))
+        } else {
+            None
+        };
+
         let mut app = Self {
             model_catalog,
             session_telemetry: session_telemetry.clone(),
@@ -1075,8 +1091,10 @@ See the Codex keymap documentation for supported actions and examples."
             pending_startup_thread_start,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
-            // SANDBOX PATCH: remote_session — no Happy overlay tap in vanilla.
-            happy_tap: None,
+            // SANDBOX PATCH: remote_session — Happy overlay tap (US-006); see the
+            // `maybe_attach` computation above. `None` in vanilla and on every
+            // fallback path.
+            happy_tap,
         };
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);
