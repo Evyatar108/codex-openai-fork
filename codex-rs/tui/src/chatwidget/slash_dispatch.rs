@@ -379,6 +379,17 @@ impl ChatWidget {
                 let enabled = self.toggle_raw_output_mode_and_notify();
                 self.emit_raw_output_mode_changed(enabled);
             }
+            // SANDBOX PATCH: remote_session - bare `/remote` reports state + usage (US-009).
+            SlashCommand::Remote => {
+                let on = self.config.features.enabled(Feature::RemoteSession);
+                self.add_info_message(
+                    format!(
+                        "Remote session is currently {}.",
+                        if on { "on" } else { "off" }
+                    ),
+                    Some("Usage: /remote on | /remote off".to_string()),
+                );
+            }
             SlashCommand::Diff => {
                 self.add_diff_in_progress();
                 let tx = self.app_event_tx.clone();
@@ -698,6 +709,47 @@ impl ChatWidget {
                     self.emit_raw_output_mode_changed(/*enabled*/ false);
                 }
                 _ => self.add_error_message(RAW_USAGE.to_string()),
+            },
+            // SANDBOX PATCH: remote_session - `/remote on|off` flips the feature
+            // live via set_feature_enabled and attaches/detaches the Happy overlay
+            // mid-session. `on` attaches only when creds are present; otherwise it
+            // surfaces an onboarding hint and returns without attaching (the
+            // interactive self-onboard is a separate follow-up story). `off` drops
+            // the tap (the App's background task cancels approvals + closes the
+            // socket) without killing this codex session. (US-009.)
+            SlashCommand::Remote => match trimmed.to_ascii_lowercase().as_str() {
+                "on" => {
+                    self.set_feature_enabled(Feature::RemoteSession, true);
+                    if codex_happy::attach::credentials_ready() {
+                        self.add_info_message(
+                            "Remote session enabled - connecting this session to Happy."
+                                .to_string(),
+                            None,
+                        );
+                        self.app_event_tx
+                            .send(AppEvent::SetRemoteSession { enabled: true });
+                    } else {
+                        self.add_info_message(
+                            "Remote session enabled, but Happy isn't configured on this machine yet."
+                                .to_string(),
+                            Some(
+                                "Run `happy` once to onboard, then `/remote on` will connect this session."
+                                    .to_string(),
+                            ),
+                        );
+                    }
+                }
+                "off" => {
+                    self.set_feature_enabled(Feature::RemoteSession, false);
+                    self.add_info_message(
+                        "Remote session disabled - this codex session is now local-only."
+                            .to_string(),
+                        None,
+                    );
+                    self.app_event_tx
+                        .send(AppEvent::SetRemoteSession { enabled: false });
+                }
+                _ => self.add_error_message("Usage: /remote on | /remote off".to_string()),
             },
             SlashCommand::Rename if !trimmed.is_empty() => {
                 if !self.ensure_thread_rename_allowed() {
@@ -1044,6 +1096,8 @@ impl ChatWidget {
             | SlashCommand::Rollout
             | SlashCommand::Copy
             | SlashCommand::Raw
+            // SANDBOX PATCH: remote_session - /remote is a quick toggle, no modal (US-009).
+            | SlashCommand::Remote
             | SlashCommand::Vim
             | SlashCommand::Diff
             | SlashCommand::App

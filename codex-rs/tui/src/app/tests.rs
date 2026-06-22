@@ -4238,6 +4238,60 @@ async fn make_test_app_with_channels() -> (
 }
 
 #[tokio::test]
+async fn remote_session_toggle_attaches_then_detaches_without_killing_session() -> Result<()> {
+    // US-009: `/remote on` installs the Happy overlay tap (the session begins
+    // mirroring to mobile); `/remote off` drops it - the overlay's background task
+    // observes a closed receiver, cancels approvals, and closes the socket
+    // (stopping reconnect) - WITHOUT killing this in-process codex session;
+    // re-enabling re-attaches cleanly. Driven through the same `App` path the
+    // `AppEvent::SetRemoteSession` dispatch uses.
+    let mut app = make_test_app().await;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+
+    assert!(
+        app.happy_tap.is_none(),
+        "vanilla codex starts with no Happy tap"
+    );
+
+    // Detach mechanism (deterministic, no network): a live tap is dropped by
+    // `/remote off`, which closes the overlay's receiver - its teardown trigger -
+    // while leaving the codex session (the `App`) intact.
+    let (tap_tx, mut tap_rx) = tokio::sync::mpsc::unbounded_channel::<AppServerEvent>();
+    app.happy_tap = Some(tap_tx);
+    app.apply_remote_session_toggle(&app_server, /*enabled*/ false);
+    assert!(
+        app.happy_tap.is_none(),
+        "/remote off drops the Happy overlay tap"
+    );
+    assert!(
+        tap_rx.recv().await.is_none(),
+        "dropping the tap closes the overlay receiver (clean detach; codex stays alive)"
+    );
+
+    // Attach + re-attach. There is intentionally NO `.await` after these spawning
+    // calls, so on the current-thread test runtime the overlay's background
+    // establish task never polls - this unit test performs no network I/O.
+    app.apply_remote_session_toggle(&app_server, /*enabled*/ true);
+    assert!(
+        app.happy_tap.is_some(),
+        "/remote on installs the Happy overlay tap"
+    );
+    app.apply_remote_session_toggle(&app_server, /*enabled*/ false);
+    assert!(
+        app.happy_tap.is_none(),
+        "/remote off detaches again (the codex session is untouched)"
+    );
+    app.apply_remote_session_toggle(&app_server, /*enabled*/ true);
+    assert!(
+        app.happy_tap.is_some(),
+        "/remote on re-attaches cleanly after a prior /remote off"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_paste() -> Result<()>
 {
     let mut app = make_test_app().await;
