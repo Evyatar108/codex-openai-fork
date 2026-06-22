@@ -18,7 +18,7 @@ impl App {
     // `AppEvent::SetRemoteSession` arm so it is unit-testable without a `Tui`.
     //
     // The `happy_tap` field type (`Option<UnboundedSender<AppServerEvent>>`) is
-    // unchanged (invariant 52). On `enabled`, if no tap is installed, attach
+    // unchanged (invariant 54). On `enabled`, if no tap is installed, attach
     // (the overlay reuses the same bounded seam the constructor uses). On
     // disable, dropping the sender makes the overlay's background task observe a
     // closed `rx`, cancel pending approvals, and close the socket (stopping
