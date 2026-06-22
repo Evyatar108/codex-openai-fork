@@ -13,6 +13,37 @@ use codex_config::types::WindowsSandboxModeToml;
 const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
 impl App {
+    // SANDBOX PATCH: remote_session - apply a mid-session `/remote on|off` toggle
+    // by setting/dropping the Happy overlay tap (US-009). Extracted from the
+    // `AppEvent::SetRemoteSession` arm so it is unit-testable without a `Tui`.
+    //
+    // The `happy_tap` field type (`Option<UnboundedSender<AppServerEvent>>`) is
+    // unchanged (invariant 52). On `enabled`, if no tap is installed, attach
+    // (the overlay reuses the same bounded seam the constructor uses). On
+    // disable, dropping the sender makes the overlay's background task observe a
+    // closed `rx`, cancel pending approvals, and close the socket (stopping
+    // reconnect) WITHOUT killing this in-process codex session. The ChatWidget
+    // only sends `enabled: true` when Happy credentials are present.
+    pub(super) fn apply_remote_session_toggle(
+        &mut self,
+        app_server: &AppServerSession,
+        enabled: bool,
+    ) {
+        if enabled {
+            if self.happy_tap.is_none() {
+                self.happy_tap = codex_happy::attach::maybe_attach(
+                    codex_happy::attach::AttachParams::new(
+                        self.config.cwd.to_path_buf(),
+                        CODEX_CLI_VERSION.to_string(),
+                    ),
+                    app_server.request_handle(),
+                );
+            }
+        } else {
+            self.happy_tap = None;
+        }
+    }
+
     pub(super) async fn handle_event(
         &mut self,
         tui: &mut tui::Tui,
@@ -45,6 +76,10 @@ impl App {
             }
             AppEvent::RawOutputModeChanged { enabled } => {
                 self.apply_raw_output_mode(tui, enabled, /*notify*/ false);
+            }
+            // SANDBOX PATCH: remote_session - mid-session `/remote on|off` (US-009).
+            AppEvent::SetRemoteSession { enabled } => {
+                self.apply_remote_session_toggle(app_server, enabled);
             }
             AppEvent::ClearUiAndSubmitUserMessage { text } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;

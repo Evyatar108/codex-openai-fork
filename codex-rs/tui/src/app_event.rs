@@ -197,6 +197,15 @@ pub(crate) enum AppEvent {
         enabled: bool,
     },
 
+    // SANDBOX PATCH: remote_session - mid-session `/remote on|off` toggles the
+    // Happy overlay tap on `App` (US-009). The ChatWidget flips the feature +
+    // messages the user; the App owns the `happy_tap` lifecycle (set on `on`
+    // when creds are present, drop on `off`), so this carries the desired state
+    // across the ChatWidget -> App boundary.
+    SetRemoteSession {
+        enabled: bool,
+    },
+
     /// Clear the current context, start a fresh session, and submit an initial user message.
     ///
     /// This is the Plan Mode handoff path: the previous thread remains resumable, but the model

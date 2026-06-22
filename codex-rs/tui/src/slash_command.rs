@@ -48,6 +48,8 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
+    // SANDBOX PATCH: remote_session - per-session `/remote on|off` (US-009).
+    Remote,
     Usage,
     DebugConfig,
     Title,
@@ -103,6 +105,10 @@ impl SlashCommand {
             SlashCommand::Import => "import setup, this project, and recent chats from Claude Code",
             SlashCommand::Hooks => "view and manage lifecycle hooks",
             SlashCommand::Status => "show current session configuration and token usage",
+            // SANDBOX PATCH: remote_session - per-session /remote on|off (US-009).
+            SlashCommand::Remote => {
+                "connect or disconnect this session from Happy: /remote on | off"
+            }
             SlashCommand::Usage => "show account usage activity",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
             SlashCommand::Title => "configure which items appear in the terminal title",
@@ -167,6 +173,8 @@ impl SlashCommand {
                 | SlashCommand::Btw
                 | SlashCommand::Resume
                 | SlashCommand::SandboxReadRoot
+                // SANDBOX PATCH: remote_session - /remote takes an on|off arg (US-009).
+                | SlashCommand::Remote
         )
     }
 
@@ -236,6 +244,8 @@ impl SlashCommand {
             | SlashCommand::Exit
             | SlashCommand::Side
             | SlashCommand::Btw => true,
+            // SANDBOX PATCH: remote_session - /remote may toggle mid-task (US-009).
+            SlashCommand::Remote => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Agent | SlashCommand::MultiAgents => true,
