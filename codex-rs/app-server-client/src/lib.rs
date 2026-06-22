@@ -826,6 +826,66 @@ impl InProcessAppServerRequestHandle {
         serde_json::from_value(result)
             .map_err(|source| TypedRequestError::Deserialize { method, source })
     }
+
+    // SANDBOX PATCH: remote_session — allow a secondary in-process consumer (the
+    // Happy overlay, US-007) to resolve/reject server-originated requests (e.g.
+    // exec/patch approvals) from a cloned request handle. The cloneable handle
+    // already holds `command_tx`; these mirror the same `ClientCommand`s the
+    // owning `InProcessAppServerClient` sends. Registered in patch-surface.md §14.
+    pub async fn resolve_server_request(
+        &self,
+        request_id: RequestId,
+        result: JsonRpcResult,
+    ) -> IoResult<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(ClientCommand::ResolveServerRequest {
+                request_id,
+                result,
+                response_tx,
+            })
+            .await
+            .map_err(|_| {
+                IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "in-process app-server worker channel is closed",
+                )
+            })?;
+        response_rx.await.map_err(|_| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                "in-process app-server resolve channel is closed",
+            )
+        })?
+    }
+
+    // SANDBOX PATCH: remote_session — see `resolve_server_request` above (US-007).
+    pub async fn reject_server_request(
+        &self,
+        request_id: RequestId,
+        error: JSONRPCErrorError,
+    ) -> IoResult<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(ClientCommand::RejectServerRequest {
+                request_id,
+                error,
+                response_tx,
+            })
+            .await
+            .map_err(|_| {
+                IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "in-process app-server worker channel is closed",
+                )
+            })?;
+        response_rx.await.map_err(|_| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                "in-process app-server reject channel is closed",
+            )
+        })?
+    }
 }
 
 impl AppServerRequestHandle {
@@ -843,6 +903,39 @@ impl AppServerRequestHandle {
         match self {
             Self::InProcess(handle) => handle.request_typed(request).await,
             Self::Remote(handle) => handle.request_typed(request).await,
+        }
+    }
+
+    // SANDBOX PATCH: remote_session — enum passthrough so the Happy overlay
+    // (US-007) can resolve/reject approvals via the cloneable handle. The Remote
+    // arm is unsupported: the overlay attaches only to the local in-process
+    // app-server (a remote-driven TUI never attaches Happy). patch-surface.md §14.
+    pub async fn resolve_server_request(
+        &self,
+        request_id: RequestId,
+        result: JsonRpcResult,
+    ) -> IoResult<()> {
+        match self {
+            Self::InProcess(handle) => handle.resolve_server_request(request_id, result).await,
+            Self::Remote(_) => Err(IoError::new(
+                ErrorKind::Unsupported,
+                "resolve_server_request is not supported for the remote app-server handle",
+            )),
+        }
+    }
+
+    // SANDBOX PATCH: remote_session — see `resolve_server_request` above (US-007).
+    pub async fn reject_server_request(
+        &self,
+        request_id: RequestId,
+        error: JSONRPCErrorError,
+    ) -> IoResult<()> {
+        match self {
+            Self::InProcess(handle) => handle.reject_server_request(request_id, error).await,
+            Self::Remote(_) => Err(IoError::new(
+                ErrorKind::Unsupported,
+                "reject_server_request is not supported for the remote app-server handle",
+            )),
         }
     }
 }

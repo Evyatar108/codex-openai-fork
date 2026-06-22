@@ -1032,10 +1032,16 @@ See the Codex keymap documentation for supported actions and examples."
         // interactive prompt is never blocked (US-006). Computed before the
         // struct literal moves `config`.
         let happy_tap = if config.features.enabled(Feature::RemoteSession) {
-            codex_happy::attach::maybe_attach(codex_happy::attach::AttachParams::new(
-                config.cwd.to_path_buf(),
-                CODEX_CLI_VERSION.to_string(),
-            ))
+            // SANDBOX PATCH: remote_session — pass the cloneable app-server
+            // request handle so the overlay can drive inbound control (mobile
+            // turns/approvals/interrupt) via the same boundary the TUI uses (US-007).
+            codex_happy::attach::maybe_attach(
+                codex_happy::attach::AttachParams::new(
+                    config.cwd.to_path_buf(),
+                    CODEX_CLI_VERSION.to_string(),
+                ),
+                app_server.request_handle(),
+            )
         } else {
             None
         };
