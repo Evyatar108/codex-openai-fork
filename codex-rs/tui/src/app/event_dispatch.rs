@@ -5,12 +5,32 @@
 
 use super::resize_reflow::trailing_run_start;
 use super::*;
+use crate::app_event::RemoteSessionNoticeLevel;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
 const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
+
+// SANDBOX PATCH: remote_session - actionable, category-specific hint for a
+// diagnosed `/remote on` `AttachError` so the surfaced error tells the user what
+// to do next (US-009).
+fn remote_session_error_hint(err: &codex_happy::attach::AttachError) -> String {
+    use codex_happy::attach::AttachError;
+    match err {
+        AttachError::NoCredentials => {
+            "Run `/remote on` again to self-onboard, or install happy-cli.".to_string()
+        }
+        AttachError::NoDaemon => {
+            "Install happy-cli (the per-machine session server) and retry `/remote on`.".to_string()
+        }
+        AttachError::SessionCreateFailed(_) | AttachError::ConnectFailed(_) => {
+            "Check that the per-machine Happy daemon is healthy, then retry `/remote on`."
+                .to_string()
+        }
+    }
+}
 
 impl App {
     // SANDBOX PATCH: remote_session - apply a mid-session `/remote on|off` toggle
@@ -23,7 +43,13 @@ impl App {
     // disable, dropping the sender makes the overlay's background task observe a
     // closed `rx`, cancel pending approvals, and close the socket (stopping
     // reconnect) WITHOUT killing this in-process codex session. The ChatWidget
-    // only sends `enabled: true` when Happy credentials are present.
+    // only sends `enabled: true` after creds + daemon are ready (US-009).
+    //
+    // The toggle is driven ONLY by the `/remote on` INTENT, so it attaches
+    // LOUDLY via `maybe_attach_reporting`: a diagnosed `AttachError` is surfaced
+    // to the user (no silent vanilla fallback on intent). The constructor-time
+    // attach in `app.rs` stays silent (it passes no reporter) — the key
+    // intent-vs-startup behavioral split (US-002).
     pub(super) fn apply_remote_session_toggle(
         &mut self,
         app_server: &AppServerSession,
@@ -31,12 +57,24 @@ impl App {
     ) {
         if enabled {
             if self.happy_tap.is_none() {
-                self.happy_tap = codex_happy::attach::maybe_attach(
+                let tx = self.app_event_tx.clone();
+                let outcome: codex_happy::attach::AttachOutcomeSink = Box::new(move |result| {
+                    if let Err(err) = result {
+                        tx.send(AppEvent::RemoteSessionNotice {
+                            text: format!("Remote session could not start: {err}."),
+                            hint: Some(remote_session_error_hint(&err)),
+                            level: RemoteSessionNoticeLevel::Error,
+                            open_url: None,
+                        });
+                    }
+                });
+                self.happy_tap = codex_happy::attach::maybe_attach_reporting(
                     codex_happy::attach::AttachParams::new(
                         self.config.cwd.to_path_buf(),
                         CODEX_CLI_VERSION.to_string(),
                     ),
                     app_server.request_handle(),
+                    outcome,
                 );
             }
         } else {
@@ -80,6 +118,29 @@ impl App {
             // SANDBOX PATCH: remote_session - mid-session `/remote on|off` (US-009).
             AppEvent::SetRemoteSession { enabled } => {
                 self.apply_remote_session_toggle(app_server, enabled);
+            }
+            // SANDBOX PATCH: remote_session - surface a `/remote on` background-task
+            // status line (device-code / progress / diagnosed error) and, for a
+            // device-code notice, best-effort-open the verification URL (US-009).
+            AppEvent::RemoteSessionNotice {
+                text,
+                hint,
+                level,
+                open_url,
+            } => {
+                match level {
+                    RemoteSessionNoticeLevel::Info => self.chat_widget.add_info_message(text, hint),
+                    RemoteSessionNoticeLevel::Error => {
+                        let message = match hint {
+                            Some(hint) => format!("{text} {hint}"),
+                            None => text,
+                        };
+                        self.chat_widget.add_error_message(message);
+                    }
+                }
+                if let Some(url) = open_url {
+                    let _ = webbrowser::open(&url);
+                }
             }
             AppEvent::ClearUiAndSubmitUserMessage { text } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;

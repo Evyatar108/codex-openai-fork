@@ -38,6 +38,108 @@ const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 const USAGE_CHATGPT_LOGIN_REQUIRED: &str = "Sign in with ChatGPT to use /usage.";
 
+// SANDBOX PATCH: remote_session - bridge codex-happy onboard notices to AppEvents
+// so the `/remote on` background flow can surface device-code/progress lines
+// without touching `self` (US-009).
+struct RemoteOnNoticeBridge {
+    tx: crate::app_event_sender::AppEventSender,
+}
+
+impl codex_happy::remote_on::OnboardNoticeSink for RemoteOnNoticeBridge {
+    fn emit(&self, notice: codex_happy::remote_on::OnboardNotice) {
+        use codex_happy::remote_on::OnboardNotice;
+        let event = match notice {
+            OnboardNotice::DeviceCode {
+                user_code,
+                verification_uri,
+            } => AppEvent::RemoteSessionNotice {
+                text: format!(
+                    "To connect this machine to Happy, open {verification_uri} and enter code {user_code}."
+                ),
+                hint: Some("Opening your browser… waiting for authorization.".to_string()),
+                level: crate::app_event::RemoteSessionNoticeLevel::Info,
+                open_url: Some(verification_uri),
+            },
+            OnboardNotice::Progress(text) => AppEvent::RemoteSessionNotice {
+                text,
+                hint: None,
+                level: crate::app_event::RemoteSessionNoticeLevel::Info,
+                open_url: None,
+            },
+        };
+        self.tx.send(event);
+    }
+}
+
+// SANDBOX PATCH: remote_session - the `/remote on` background flow (US-009):
+// self-onboard when creds are absent (US-003), ensure the per-machine session
+// daemon is running (US-004), then send AppEvent::SetRemoteSession to attach (the
+// single attach path). Diagnosed failures (US-002) surface as RemoteSessionNotice
+// errors; codex does NOT silently fall back to vanilla on a `/remote on` intent.
+async fn remote_on_flow(tx: crate::app_event_sender::AppEventSender) {
+    use codex_happy::daemon_supervisor::SessionPlaneSupervisor as _;
+
+    let Some(home) = codex_happy::auth::happy_home_dir() else {
+        tx.send(remote_on_error(
+            "could not resolve the ~/.happy directory".to_string(),
+            "Set HAPPY_HOME_DIR or check your home directory.".to_string(),
+        ));
+        return;
+    };
+
+    // 1. Self-onboard if no credentials yet (no happy-cli required).
+    if !codex_happy::attach::has_credentials() {
+        let sink = RemoteOnNoticeBridge { tx: tx.clone() };
+        match codex_happy::remote_on::run_self_onboard(
+            &home,
+            codex_happy::onboard::GITHUB_BASE_URL,
+            codex_happy::onboard::GITHUB_API_BASE_URL,
+            &sink,
+        )
+        .await
+        {
+            Ok(_) => tx.send(AppEvent::RemoteSessionNotice {
+                text: "Onboarded to Happy.".to_string(),
+                hint: None,
+                level: crate::app_event::RemoteSessionNoticeLevel::Info,
+                open_url: None,
+            }),
+            Err(err) => {
+                tx.send(remote_on_error(
+                    format!("self-onboarding failed: {err}"),
+                    "Retry `/remote on`, or run `happy` once to onboard.".to_string(),
+                ));
+                return;
+            }
+        }
+    }
+
+    // 2. Ensure the per-machine session daemon is running (start-if-absent;
+    //    a Node-free machine surfaces NoDaemon — Plan Q1).
+    let supervisor = codex_happy::daemon_supervisor::NodeDaemonSupervisor::with_os_host(home);
+    if let Err(err) = supervisor.ensure_running().await {
+        tx.send(remote_on_error(
+            err.to_string(),
+            "Install happy-cli (the per-machine session server) and retry `/remote on`."
+                .to_string(),
+        ));
+        return;
+    }
+
+    // 3. Attach via the single attach path (loud on this intent).
+    tx.send(AppEvent::SetRemoteSession { enabled: true });
+}
+
+// SANDBOX PATCH: remote_session - build a diagnosed `/remote on` error notice (US-009).
+fn remote_on_error(text: String, hint: String) -> AppEvent {
+    AppEvent::RemoteSessionNotice {
+        text,
+        hint: Some(hint),
+        level: crate::app_event::RemoteSessionNoticeLevel::Error,
+        open_url: None,
+    }
+}
+
 impl ChatWidget {
     /// Dispatch a bare slash command and record its staged local-history entry.
     ///
@@ -720,24 +822,19 @@ impl ChatWidget {
             SlashCommand::Remote => match trimmed.to_ascii_lowercase().as_str() {
                 "on" => {
                     self.set_feature_enabled(Feature::RemoteSession, true);
-                    if codex_happy::attach::credentials_ready() {
-                        self.add_info_message(
-                            "Remote session enabled - connecting this session to Happy."
+                    self.add_info_message(
+                        "Enabling remote session…".to_string(),
+                        Some(
+                            "Onboarding (if needed) and starting the per-machine session server."
                                 .to_string(),
-                            None,
-                        );
-                        self.app_event_tx
-                            .send(AppEvent::SetRemoteSession { enabled: true });
-                    } else {
-                        self.add_info_message(
-                            "Remote session enabled, but Happy isn't configured on this machine yet."
-                                .to_string(),
-                            Some(
-                                "Run `happy` once to onboard, then `/remote on` will connect this session."
-                                    .to_string(),
-                            ),
-                        );
-                    }
+                        ),
+                    );
+                    // The device-flow poll + daemon bring-up can take minutes, so
+                    // drive them on a background task (the SlashCommand::Diff
+                    // precedent), surfacing progress + diagnosed errors via
+                    // AppEvents. On success the flow sends the EXISTING
+                    // AppEvent::SetRemoteSession to attach (the single attach path).
+                    tokio::spawn(remote_on_flow(self.app_event_tx.clone()));
                 }
                 "off" => {
                     self.set_feature_enabled(Feature::RemoteSession, false);

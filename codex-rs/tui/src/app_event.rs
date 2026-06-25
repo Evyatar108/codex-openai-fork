@@ -53,6 +53,15 @@ use codex_protocol::openai_models::ReasoningEffort;
 
 use crate::history_cell::HistoryCell;
 
+// SANDBOX PATCH: remote_session - severity for a `RemoteSessionNotice` so the
+// dispatcher routes it to add_info_message (progress/device-code) vs
+// add_error_message (a diagnosed `/remote on` failure) without a bare bool (US-009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteSessionNoticeLevel {
+    Info,
+    Error,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadGoalSetMode {
     ConfirmIfExists,
@@ -204,6 +213,18 @@ pub(crate) enum AppEvent {
     // across the ChatWidget -> App boundary.
     SetRemoteSession {
         enabled: bool,
+    },
+
+    // SANDBOX PATCH: remote_session - carry a `/remote on` status line from the
+    // self-onboard / daemon-supervise / attach background task back to the TUI
+    // (US-009). The task cannot touch `self`, so it sends this; the dispatcher
+    // surfaces `text`(+`hint`) via add_info_message / add_error_message and, when
+    // `open_url` is set (device-code), best-effort-opens the verification URL.
+    RemoteSessionNotice {
+        text: String,
+        hint: Option<String>,
+        level: RemoteSessionNoticeLevel,
+        open_url: Option<String>,
     },
 
     /// Clear the current context, start a fresh session, and submit an initial user message.
