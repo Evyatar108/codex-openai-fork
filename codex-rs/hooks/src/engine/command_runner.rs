@@ -133,3 +133,10 @@ fn default_shell_command() -> Command {
         command
     }
 }
+
+// The behavioral test exercises the Windows-only native-shell path, so the whole
+// module is Windows-gated to avoid dead code (unused imports / helper) on other
+// targets, which would fail `clippy --tests -D warnings` on the non-Windows CI leg.
+#[cfg(all(test, windows))]
+#[path = "command_runner_tests.rs"]
+mod tests;

@@ -3568,21 +3568,49 @@ pub(crate) fn emit_subagent_session_started(
     });
 }
 
+/// SANDBOX PATCH: on Windows, plugin hook commands must run through the native
+/// Windows shell (cmd.exe) rather than the user's POSIX session shell. codex
+/// substitutes a backslash Windows path for `${CLAUDE_PLUGIN_ROOT}` before the
+/// shell runs, and a POSIX shell (Bash/Zsh/Sh) mangles those backslashes during
+/// tokenization (and a bare `bash` resolves to WSL, a different filesystem
+/// namespace). Returns true when `session_shell` must NOT be used to run plugin
+/// hooks, so the hook runner falls back to the native shell. `cfg!(windows)` is a
+/// compile-time `false` off Windows, so the session shell is always used there.
+fn hook_shell_should_use_native(session_shell: &shell::Shell) -> bool {
+    cfg!(windows)
+        && matches!(
+            session_shell.shell_type,
+            shell::ShellType::Bash | shell::ShellType::Zsh | shell::ShellType::Sh
+        )
+}
+
+/// SANDBOX PATCH: derive the `(program, argv)` used to launch plugin hooks from the
+/// session shell. A POSIX session shell is skipped on Windows (see
+/// `hook_shell_should_use_native`), leaving the program empty so the hook runner
+/// falls back to the native shell (`cmd.exe /C`). On every other platform, and for
+/// native Windows shells (PowerShell/Cmd), the session shell is used unchanged.
+fn hook_shell_invocation(session_shell: Option<&shell::Shell>) -> (Option<String>, Vec<String>) {
+    session_shell
+        .filter(|session_shell| !hook_shell_should_use_native(session_shell))
+        .map(|session_shell| {
+            let mut argv = session_shell.derive_exec_args("", /*use_login_shell*/ false);
+            let program = argv.remove(0);
+            let _ = argv.pop();
+            (Some(program), argv)
+        })
+        .unwrap_or_default()
+}
+
 /// Builds the hook engine for one config snapshot, including any enabled plugin hooks.
 async fn build_hooks_for_config(
     config: &Config,
     plugins_manager: &PluginsManager,
     environment: Option<&TurnEnvironment>,
 ) -> Hooks {
-    let (hook_shell_program, hook_shell_argv) = environment
-        .and_then(|environment| environment.shell.as_ref())
-        .map(|shell| {
-            let mut argv = shell.derive_exec_args("", /*use_login_shell*/ false);
-            let program = argv.remove(0);
-            let _ = argv.pop();
-            (Some(program), argv)
-        })
-        .unwrap_or_default();
+    // SANDBOX PATCH: route plugin hooks through the native shell on Windows when the
+    // session shell is a POSIX shell; see `hook_shell_invocation`.
+    let (hook_shell_program, hook_shell_argv) =
+        hook_shell_invocation(environment.and_then(|environment| environment.shell.as_ref()));
     let plugins_input = config.plugins_config_input();
     let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
     let plugin_hook_sources = plugin_outcome.effective_plugin_hook_sources();
@@ -3604,3 +3632,9 @@ async fn build_hooks_for_config(
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+// SANDBOX PATCH: unit coverage for the Windows native-shell hook routing
+// (`hook_shell_should_use_native` / `hook_shell_invocation`).
+#[cfg(test)]
+#[path = "hook_shell_tests.rs"]
+mod hook_shell_tests;
