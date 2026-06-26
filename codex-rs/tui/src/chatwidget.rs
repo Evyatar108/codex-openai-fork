@@ -547,6 +547,11 @@ pub(crate) struct ChatWidget {
     status_account_display: Option<StatusAccountDisplay>,
     runtime_model_provider_base_url: Option<String>,
     pub(crate) remote_connection: Option<RemoteConnectionStatus>,
+    // SANDBOX PATCH: remote_session - retains the in-flight `/remote on`
+    // self-onboard cancel handle so `/remote off` (or a re-entrant `/remote on`)
+    // aborts the device-flow poll instead of letting it run until the device
+    // code expires. (US-009 cancellation delta.)
+    pub(crate) remote_on_cancel: Option<codex_happy::remote_on::OnboardCancel>,
     token_info: Option<TokenUsageInfo>,
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,

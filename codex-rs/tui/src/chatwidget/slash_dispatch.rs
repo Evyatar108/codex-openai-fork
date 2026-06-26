@@ -76,7 +76,10 @@ impl codex_happy::remote_on::OnboardNoticeSink for RemoteOnNoticeBridge {
 // daemon is running (US-004), then send AppEvent::SetRemoteSession to attach (the
 // single attach path). Diagnosed failures (US-002) surface as RemoteSessionNotice
 // errors; codex does NOT silently fall back to vanilla on a `/remote on` intent.
-async fn remote_on_flow(tx: crate::app_event_sender::AppEventSender) {
+async fn remote_on_flow(
+    tx: crate::app_event_sender::AppEventSender,
+    cancel: codex_happy::remote_on::OnboardCancelListener,
+) {
     use codex_happy::daemon_supervisor::SessionPlaneSupervisor as _;
 
     let Some(home) = codex_happy::auth::happy_home_dir() else {
@@ -95,6 +98,7 @@ async fn remote_on_flow(tx: crate::app_event_sender::AppEventSender) {
             codex_happy::onboard::GITHUB_BASE_URL,
             codex_happy::onboard::GITHUB_API_BASE_URL,
             &sink,
+            cancel,
         )
         .await
         {
@@ -104,6 +108,17 @@ async fn remote_on_flow(tx: crate::app_event_sender::AppEventSender) {
                 level: crate::app_event::RemoteSessionNoticeLevel::Info,
                 open_url: None,
             }),
+            // The user aborted onboarding (via `/remote off` or a re-entrant
+            // `/remote on`) — a clean info notice, not a diagnosed error.
+            Err(codex_happy::onboard::OnboardError::Cancelled) => {
+                tx.send(AppEvent::RemoteSessionNotice {
+                    text: "Remote onboarding cancelled.".to_string(),
+                    hint: None,
+                    level: crate::app_event::RemoteSessionNoticeLevel::Info,
+                    open_url: None,
+                });
+                return;
+            }
             Err(err) => {
                 tx.send(remote_on_error(
                     format!("self-onboarding failed: {err}"),
@@ -814,11 +829,13 @@ impl ChatWidget {
             },
             // SANDBOX PATCH: remote_session - `/remote on|off` flips the feature
             // live via set_feature_enabled and attaches/detaches the Happy overlay
-            // mid-session. `on` attaches only when creds are present; otherwise it
-            // surfaces an onboarding hint and returns without attaching (the
-            // interactive self-onboard is a separate follow-up story). `off` drops
-            // the tap (the App's background task cancels approvals + closes the
-            // socket) without killing this codex session. (US-009.)
+            // mid-session. `on` self-onboards via the GitHub device flow when creds
+            // are absent (US-002/003/004), supervises the per-machine daemon, then
+            // attaches; the in-flight onboard is cancellable — `on` retains an
+            // OnboardCancel handle that `/remote off` (or a re-entrant `/remote on`)
+            // aborts. `off` drops the tap (the App's background task cancels
+            // approvals + closes the socket) and aborts any in-flight onboard
+            // without killing this codex session. (US-009.)
             SlashCommand::Remote => match trimmed.to_ascii_lowercase().as_str() {
                 "on" => {
                     self.set_feature_enabled(Feature::RemoteSession, true);
@@ -829,15 +846,30 @@ impl ChatWidget {
                                 .to_string(),
                         ),
                     );
+                    // SANDBOX PATCH: remote_session - abort any prior in-flight
+                    // onboard, then retain a fresh cancel handle so `/remote off`
+                    // (or a re-entrant `/remote on`) can stop the device-flow poll.
+                    // (US-009 cancellation delta.)
+                    if let Some(previous) = self.remote_on_cancel.take() {
+                        previous.cancel();
+                    }
+                    let (cancel, listener) = codex_happy::remote_on::OnboardCancel::new();
+                    self.remote_on_cancel = Some(cancel);
                     // The device-flow poll + daemon bring-up can take minutes, so
                     // drive them on a background task (the SlashCommand::Diff
                     // precedent), surfacing progress + diagnosed errors via
                     // AppEvents. On success the flow sends the EXISTING
                     // AppEvent::SetRemoteSession to attach (the single attach path).
-                    tokio::spawn(remote_on_flow(self.app_event_tx.clone()));
+                    tokio::spawn(remote_on_flow(self.app_event_tx.clone(), listener));
                 }
                 "off" => {
                     self.set_feature_enabled(Feature::RemoteSession, false);
+                    // SANDBOX PATCH: remote_session - abort an in-flight
+                    // `/remote on` device-flow poll (no-op when none is running).
+                    // (US-009 cancellation delta.)
+                    if let Some(cancel) = self.remote_on_cancel.take() {
+                        cancel.cancel();
+                    }
                     self.add_info_message(
                         "Remote session disabled - this codex session is now local-only."
                             .to_string(),

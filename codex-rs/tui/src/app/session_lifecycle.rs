@@ -334,6 +334,10 @@ impl App {
             chat_widget.last_terminal_title = previous_terminal_title;
         }
         chat_widget.remote_connection = self.chat_widget.remote_connection.clone();
+        // SANDBOX PATCH: remote_session - move the in-flight `/remote on` cancel
+        // handle to the replacement widget so `/remote off` after a thread-switch/
+        // resume/fork still aborts the device-flow poll. (US-009 cancellation delta.)
+        chat_widget.remote_on_cancel = self.chat_widget.remote_on_cancel.take();
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
             chat_widget.set_collab_agent_metadata(
                 thread_id,

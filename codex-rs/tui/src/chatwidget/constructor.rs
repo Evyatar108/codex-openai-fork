@@ -126,6 +126,9 @@ impl ChatWidget {
             status_account_display,
             runtime_model_provider_base_url,
             remote_connection: None,
+            // SANDBOX PATCH: remote_session - no in-flight `/remote on` onboard
+            // at construction. (US-009 cancellation delta.)
+            remote_on_cancel: None,
             token_info: None,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),
             refreshing_status_outputs: Vec::new(),
