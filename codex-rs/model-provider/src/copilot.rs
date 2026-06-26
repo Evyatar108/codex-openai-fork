@@ -202,6 +202,18 @@ mod tests {
     use codex_login::AuthManager;
     use codex_login::CodexAuth;
     use codex_model_provider_info::create_copilot_provider;
+    use codex_models_manager::ModelsManagerConfig;
+    use codex_models_manager::manager::RefreshStrategy;
+    use codex_protocol::openai_models::ConfigShellToolType;
+    use codex_protocol::openai_models::ModelInfo;
+    use codex_protocol::openai_models::ModelPreset;
+    use codex_protocol::openai_models::ModelVisibility;
+    use codex_protocol::openai_models::ModelWireRoute;
+    use codex_protocol::openai_models::ModelsResponse;
+    use codex_protocol::openai_models::ReasoningEffortPreset;
+    use codex_protocol::openai_models::TruncationPolicyConfig;
+    use codex_protocol::openai_models::WebSearchToolType;
+    use codex_protocol::openai_models::default_input_modalities;
     use pretty_assertions::assert_eq;
     use reqwest::header::AUTHORIZATION;
     use reqwest::header::HeaderMap;
@@ -212,6 +224,7 @@ mod tests {
     use wiremock::matchers::path;
 
     use super::CopilotModelProvider;
+    use crate::anthropic_gate::install_anthropic_gate;
     use crate::provider::ModelProvider;
 
     struct TestTempDir {
@@ -262,6 +275,109 @@ mod tests {
             .expect("test copilot auth");
 
         (temp, Arc::new(auth))
+    }
+
+    fn test_model(slug: &str, wire_route: ModelWireRoute) -> ModelInfo {
+        ModelInfo {
+            slug: slug.to_string(),
+            display_name: slug.to_string(),
+            description: None,
+            default_reasoning_level: None,
+            supported_reasoning_levels: Vec::<ReasoningEffortPreset>::new(),
+            shell_type: ConfigShellToolType::ShellCommand,
+            visibility: ModelVisibility::List,
+            supported_in_api: true,
+            priority: 50,
+            additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            availability_nux: None,
+            upgrade: None,
+            base_instructions: String::new(),
+            model_messages: None,
+            supports_reasoning_summaries: false,
+            default_reasoning_summary: codex_protocol::config_types::ReasoningSummary::Auto,
+            support_verbosity: false,
+            default_verbosity: None,
+            apply_patch_tool_type: None,
+            web_search_tool_type: WebSearchToolType::Text,
+            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
+            supports_parallel_tool_calls: false,
+            supports_image_detail_original: false,
+            context_window: Some(100_000),
+            max_context_window: Some(100_000),
+            auto_compact_token_limit: None,
+            effective_context_window_percent: 95,
+            experimental_supported_tools: Vec::new(),
+            input_modalities: default_input_modalities(),
+            used_fallback_model_metadata: false,
+            supports_search_tool: false,
+            wire_route,
+            comp_hash: None,
+            use_responses_lite: false,
+            auto_review_model_override: None,
+            tool_mode: None,
+            multi_agent_version: None,
+        }
+    }
+
+    fn test_catalog() -> ModelsResponse {
+        ModelsResponse {
+            models: vec![
+                test_model("gpt-5.5", ModelWireRoute::ProviderDefault),
+                test_model("claude-opus-4.8", ModelWireRoute::ChatCompletions),
+            ],
+        }
+    }
+
+    fn preset_slugs(models: &[ModelPreset]) -> Vec<&str> {
+        models.iter().map(|model| model.model.as_str()).collect()
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn models_manager_replaces_persisted_anthropic_model_with_provider_default_when_gate_off()
+    {
+        install_anthropic_gate(false);
+        let temp = TestTempDir::new();
+        let model_provider = CopilotModelProvider::new(create_copilot_provider(), None);
+        let models_manager =
+            model_provider.models_manager(temp.path().to_path_buf(), Some(test_catalog()));
+
+        let configured_model = Some("claude-opus-4.8".to_string());
+        let selected_model = models_manager
+            .get_default_model(&configured_model, RefreshStrategy::Offline)
+            .await;
+        let model_info = models_manager
+            .get_model_info(&selected_model, &ModelsManagerConfig::default())
+            .await;
+
+        install_anthropic_gate(false);
+
+        assert_eq!(selected_model, "gpt-5.5");
+        assert_eq!(model_info.slug, "gpt-5.5");
+        assert_eq!(model_info.wire_route, ModelWireRoute::ProviderDefault);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn models_manager_catalog_branch_filters_anthropic_models_when_gate_off() {
+        install_anthropic_gate(false);
+        let temp = TestTempDir::new();
+        let model_provider = CopilotModelProvider::new(create_copilot_provider(), None);
+        let models_manager =
+            model_provider.models_manager(temp.path().to_path_buf(), Some(test_catalog()));
+
+        assert_eq!(
+            preset_slugs(&models_manager.list_models(RefreshStrategy::Offline).await),
+            vec!["gpt-5.5"]
+        );
+        assert_eq!(
+            preset_slugs(&models_manager.try_list_models().expect("try list")),
+            vec!["gpt-5.5"]
+        );
+
+        install_anthropic_gate(false);
     }
 
     #[tokio::test]

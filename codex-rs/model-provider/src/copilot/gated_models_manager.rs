@@ -145,15 +145,15 @@ impl ModelsManager for GatedModelsManager {
         refresh_strategy: RefreshStrategy,
     ) -> ModelsManagerFuture<'a, String> {
         Box::pin(async move {
-            if let Some(model) = model.as_ref() {
-                if self.keep_model_slug(model) {
-                    let info = self
-                        .inner
-                        .get_model_info(model, &ModelsManagerConfig::default())
-                        .await;
-                    if self.keep_model(&info) {
-                        return model.clone();
-                    }
+            if let Some(model) = model.as_ref()
+                && self.keep_model_slug(model)
+            {
+                let info = self
+                    .inner
+                    .get_model_info(model, &ModelsManagerConfig::default())
+                    .await;
+                if self.keep_model(&info) {
+                    return model.clone();
                 }
             }
 

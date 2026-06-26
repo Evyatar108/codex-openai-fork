@@ -580,6 +580,7 @@ mod chat_transport_tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn cache_identity_tracks_resolved_anthropic_gate() {
         let endpoint =
             CopilotModelsEndpoint::new("https://example.invalid".to_string(), Arc::default());
