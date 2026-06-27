@@ -2064,3 +2064,34 @@ fn text_only_items_unchanged() {
 
     assert_eq!(estimated, raw_len);
 }
+
+// SANDBOX PATCH: signed-CoT. A signed reasoning item carries model-visible PLAINTEXT
+// (`content`) alongside its signature (`encrypted_content`). The estimate must count
+// the plaintext (not only the small opaque signature) so the no-item-over-10K-tokens
+// bound holds in history estimation, not just at the request builder.
+#[test]
+fn signed_reasoning_counts_plaintext_not_only_signature() {
+    let plaintext = "x".repeat(4_000);
+    let signature = "s".repeat(100);
+    let signed = ResponseItem::Reasoning {
+        id: String::new(),
+        summary: Vec::new(),
+        content: Some(vec![ReasoningItemContent::ReasoningText {
+            text: plaintext.clone(),
+        }]),
+        encrypted_content: Some(signature.clone()),
+        metadata: None,
+    };
+
+    let estimated = estimate_response_item_model_visible_bytes(&signed);
+    let expected = (estimate_reasoning_length(plaintext.len()) + signature.len()) as i64;
+    assert_eq!(estimated, expected);
+
+    // The plaintext-aware estimate must be far larger than the signature-only
+    // estimate the opaque path would have produced (regression guard).
+    let signature_only = estimate_reasoning_length(signature.len()) as i64;
+    assert!(
+        estimated > signature_only,
+        "signed reasoning estimate {estimated} must exceed signature-only {signature_only}"
+    );
+}

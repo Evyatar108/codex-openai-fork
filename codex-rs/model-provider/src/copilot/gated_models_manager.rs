@@ -58,8 +58,14 @@ impl GatedModelsManager {
     }
 
     fn keep_model(&self, model: &ModelInfo) -> bool {
+        // SANDBOX PATCH: hide BOTH fork-only Anthropic routes (ChatCompletions and
+        // the signed AnthropicMessages) when the Anthropic-models gate is off; only
+        // `ProviderDefault` (GPT `/responses`) rows survive. Generalized from the
+        // D-001 `!= ChatCompletions` check so a cached/configured AnthropicMessages
+        // row can't leak into the picker when the gate is off.
         self.keep_model_slug(&model.slug)
-            && (self.anthropic_enabled() || model.wire_route != ModelWireRoute::ChatCompletions)
+            && (self.anthropic_enabled()
+                || matches!(model.wire_route, ModelWireRoute::ProviderDefault))
     }
 
     fn anthropic_enabled(&self) -> bool {
@@ -332,6 +338,33 @@ mod tests {
         assert_eq!(info.slug, "gpt-5.5");
         assert_eq!(info.wire_route, ModelWireRoute::ProviderDefault);
         assert!(info.used_fallback_model_metadata);
+    }
+
+    // SANDBOX PATCH: signed-CoT. The visibility filter hides BOTH fork-only
+    // Anthropic routes (ChatCompletions AND the signed AnthropicMessages) when the
+    // Anthropic-models gate is off; only ProviderDefault (GPT) rows survive.
+    #[tokio::test]
+    async fn off_filters_both_anthropic_routes_from_catalog() {
+        let models = ModelsResponse {
+            models: vec![
+                model("gpt-5.5", ModelWireRoute::ProviderDefault),
+                model("claude-chat", ModelWireRoute::ChatCompletions),
+                model("claude-signed", ModelWireRoute::AnthropicMessages),
+            ],
+        };
+        let gate = Arc::new(AtomicBool::new(false));
+        let manager = GatedModelsManager::wrap_with_test_gate(
+            Arc::new(StaticModelsManager::new(/*auth_manager*/ None, models)),
+            Arc::clone(&gate),
+        );
+
+        assert_eq!(slugs(&manager.get_remote_models().await), vec!["gpt-5.5"]);
+
+        gate.store(true, Ordering::Relaxed);
+        assert_eq!(
+            slugs(&manager.get_remote_models().await),
+            vec!["gpt-5.5", "claude-chat", "claude-signed"]
+        );
     }
 
     #[tokio::test]

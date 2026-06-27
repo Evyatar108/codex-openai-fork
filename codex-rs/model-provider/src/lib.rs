@@ -22,7 +22,9 @@ pub use auth::unauthenticated_auth_provider;
 // called once at config-build time; `anthropic_models_resolved` is read at the
 // transport/model-list gate call sites.
 pub use anthropic_gate::anthropic_models_resolved;
+pub use anthropic_gate::anthropic_signed_messages_resolved;
 pub use anthropic_gate::install_anthropic_gate;
+pub use anthropic_gate::install_anthropic_signed_messages_gate;
 pub use bearer_auth_provider::BearerAuthProvider;
 // SANDBOX PATCH: dropped `pub use BearerAuthProvider as CoreAuthProvider` alias.
 // It collides with `codex_api::CoreAuthProvider` (the fork's Copilot-aware

@@ -49,12 +49,15 @@ use tokio::time::timeout;
 use tracing::warn;
 
 use crate::anthropic_gate::anthropic_models_resolved;
+use crate::anthropic_gate::anthropic_signed_messages_resolved;
 
 const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const MODELS_PATH: &str = "/models";
 const COPILOT_RESPONSES_ENDPOINT: &str = "/responses";
 // SANDBOX PATCH: D-001 Claude-via-Copilot chat-completions transport.
 const COPILOT_CHAT_ENDPOINT: &str = "/chat/completions";
+// SANDBOX PATCH: signed-CoT native Anthropic Messages transport.
+const COPILOT_MESSAGES_ENDPOINT: &str = "/v1/messages";
 
 #[derive(Debug, Deserialize)]
 struct CopilotModelsResponse {
@@ -172,12 +175,18 @@ impl ModelsEndpointClient for CopilotModelsEndpoint {
     }
 
     fn cache_identity(&self) -> Option<ModelsCacheIdentity> {
-        // SANDBOX PATCH: Copilot filters `/models` through the resolved
-        // Anthropic gate, so the persisted catalog is only eligible when the
-        // same gate state is expected by the current process.
+        // SANDBOX PATCH: Copilot filters `/models` through the resolved Anthropic
+        // gate AND the signed-messages sub-gate (which changes a row's wire route),
+        // so the persisted catalog is only eligible when both gate states match the
+        // current process. Keying on the signed sub-gate invalidates a stale
+        // `models_cache.json` row that carries the wrong (signed vs unsigned) route.
         Some(
             ModelsCacheIdentity::new("copilot")
-                .with_request_shape("anthropic_models", anthropic_models_resolved().to_string()),
+                .with_request_shape("anthropic_models", anthropic_models_resolved().to_string())
+                .with_request_shape(
+                    "anthropic_signed_messages",
+                    anthropic_signed_messages_resolved().to_string(),
+                ),
         )
     }
 
@@ -236,11 +245,14 @@ impl ModelsEndpointClient for CopilotModelsEndpoint {
                 .unwrap_or_default();
 
             let anthropic_enabled = anthropic_models_resolved();
+            let signed_messages_enabled = anthropic_signed_messages_resolved();
             let models = body
                 .data
                 .into_iter()
                 .filter(|entry| is_chat_responses_picker_entry(entry, anthropic_enabled))
-                .map(|entry| translate_entry(entry, &bundled, anthropic_enabled))
+                .map(|entry| {
+                    translate_entry(entry, &bundled, anthropic_enabled, signed_messages_enabled)
+                })
                 .collect::<Vec<_>>();
 
             if models.is_empty() {
@@ -276,10 +288,19 @@ fn is_chat_responses_picker_entry(entry: &CopilotModelEntry, anthropic_enabled: 
     has_responses || (anthropic_enabled && has_chat)
 }
 
-// SANDBOX PATCH: D-001/D-002. A row advertising `/chat/completions` but NOT
-// `/responses` routes over the chat transport only when Anthropic is opted in;
-// everything else keeps the provider default.
-fn wire_route_for(entry: &CopilotModelEntry, anthropic_enabled: bool) -> ModelWireRoute {
+// SANDBOX PATCH: D-001/D-002 + signed-CoT. A row advertising `/chat/completions`
+// but NOT `/responses` routes over a fork transport only when Anthropic is opted
+// in. When the stricter signed sub-gate is ALSO on and the row advertises
+// `/v1/messages`, it prefers the native Anthropic Messages route (signed CoT);
+// otherwise it keeps the unsigned chat route. `has_chat` is required even for the
+// Messages route so the `effective_wire_api` degrade-to-chat fallback (signed off)
+// always has a valid `/chat/completions` target. Everything else keeps the
+// provider default.
+fn wire_route_for(
+    entry: &CopilotModelEntry,
+    anthropic_enabled: bool,
+    signed_messages_enabled: bool,
+) -> ModelWireRoute {
     let has_responses = entry
         .supported_endpoints
         .iter()
@@ -288,10 +309,17 @@ fn wire_route_for(entry: &CopilotModelEntry, anthropic_enabled: bool) -> ModelWi
         .supported_endpoints
         .iter()
         .any(|e| e == COPILOT_CHAT_ENDPOINT);
-    if anthropic_enabled && has_chat && !has_responses {
-        ModelWireRoute::ChatCompletions
+    let has_messages = entry
+        .supported_endpoints
+        .iter()
+        .any(|e| e == COPILOT_MESSAGES_ENDPOINT);
+    if !anthropic_enabled || has_responses || !has_chat {
+        return ModelWireRoute::ProviderDefault;
+    }
+    if signed_messages_enabled && has_messages {
+        ModelWireRoute::AnthropicMessages
     } else {
-        ModelWireRoute::ProviderDefault
+        ModelWireRoute::ChatCompletions
     }
 }
 
@@ -377,9 +405,10 @@ fn translate_entry(
     entry: CopilotModelEntry,
     bundled: &[ModelInfo],
     anthropic_enabled: bool,
+    signed_messages_enabled: bool,
 ) -> ModelInfo {
     // SANDBOX PATCH: D-001 compute the wire-route before `entry` is consumed below.
-    let wire_route = wire_route_for(&entry, anthropic_enabled);
+    let wire_route = wire_route_for(&entry, anthropic_enabled, signed_messages_enabled);
     // SANDBOX PATCH: Knob B/gpt-5.5 1M — capture the live prompt/input windows
     // + vendor before `entry` fields are moved, so we can overlay the tier
     // windows below.
@@ -408,12 +437,16 @@ fn translate_entry(
         info.max_context_window = max_context_window;
         return info;
     }
-    synthesize_from_capabilities(entry, anthropic_enabled)
+    synthesize_from_capabilities(entry, anthropic_enabled, signed_messages_enabled)
 }
 
-fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: bool) -> ModelInfo {
+fn synthesize_from_capabilities(
+    entry: CopilotModelEntry,
+    anthropic_enabled: bool,
+    signed_messages_enabled: bool,
+) -> ModelInfo {
     // SANDBOX PATCH: D-001 derive the wire-route before `entry` fields are moved below.
-    let wire_route = wire_route_for(&entry, anthropic_enabled);
+    let wire_route = wire_route_for(&entry, anthropic_enabled, signed_messages_enabled);
     let supports = entry
         .capabilities
         .as_ref()
@@ -460,10 +493,12 @@ fn synthesize_from_capabilities(entry: CopilotModelEntry, anthropic_enabled: boo
     // advertises it; otherwise keep the lowest advertised level. GPT
     // `/responses` rows are `ProviderDefault` and keep their existing
     // low-first default untouched.
-    let default_reasoning_level = if wire_route == ModelWireRoute::ChatCompletions
-        && supported_reasoning_levels
-            .iter()
-            .any(|p| p.effort == ReasoningEffort::Medium)
+    let default_reasoning_level = if matches!(
+        wire_route,
+        ModelWireRoute::ChatCompletions | ModelWireRoute::AnthropicMessages
+    ) && supported_reasoning_levels
+        .iter()
+        .any(|p| p.effort == ReasoningEffort::Medium)
     {
         Some(ReasoningEffort::Medium)
     } else {
@@ -533,6 +568,7 @@ fn truncate(input: &str, max: usize) -> &str {
 mod chat_transport_tests {
     use super::*;
     use crate::anthropic_gate::install_anthropic_gate;
+    use crate::anthropic_gate::install_anthropic_signed_messages_gate;
     use serde_json::json;
 
     fn entry(value: serde_json::Value) -> CopilotModelEntry {
@@ -554,11 +590,16 @@ mod chat_transport_tests {
             &chat_only, /*anthropic_enabled*/ true
         ));
         assert_eq!(
-            wire_route_for(&chat_only, /*anthropic_enabled*/ false),
+            wire_route_for(
+                &chat_only, /*anthropic_enabled*/ false,
+                /*signed_messages_enabled*/ false
+            ),
             ModelWireRoute::ProviderDefault
         );
         assert_eq!(
-            wire_route_for(&chat_only, /*anthropic_enabled*/ true),
+            wire_route_for(
+                &chat_only, /*anthropic_enabled*/ true, /*signed_messages_enabled*/ false
+            ),
             ModelWireRoute::ChatCompletions
         );
 
@@ -574,7 +615,11 @@ mod chat_transport_tests {
             /*anthropic_enabled*/ false
         ));
         assert_eq!(
-            wire_route_for(&responses_row, /*anthropic_enabled*/ false),
+            wire_route_for(
+                &responses_row,
+                /*anthropic_enabled*/ false,
+                /*signed_messages_enabled*/ false
+            ),
             ModelWireRoute::ProviderDefault
         );
     }
@@ -585,11 +630,14 @@ mod chat_transport_tests {
         let endpoint =
             CopilotModelsEndpoint::new("https://example.invalid".to_string(), Arc::default());
 
+        install_anthropic_signed_messages_gate(false);
         install_anthropic_gate(false);
         assert_eq!(
             endpoint.cache_identity(),
             Some(
-                ModelsCacheIdentity::new("copilot").with_request_shape("anthropic_models", "false")
+                ModelsCacheIdentity::new("copilot")
+                    .with_request_shape("anthropic_models", "false")
+                    .with_request_shape("anthropic_signed_messages", "false")
             )
         );
 
@@ -597,11 +645,107 @@ mod chat_transport_tests {
         assert_eq!(
             endpoint.cache_identity(),
             Some(
-                ModelsCacheIdentity::new("copilot").with_request_shape("anthropic_models", "true")
+                ModelsCacheIdentity::new("copilot")
+                    .with_request_shape("anthropic_models", "true")
+                    .with_request_shape("anthropic_signed_messages", "false")
             )
         );
 
+        // SANDBOX PATCH: signed-CoT. The signed sub-gate is part of the cache
+        // identity so a stale row with the wrong (signed vs unsigned) route is
+        // invalidated when the sub-gate flips.
+        install_anthropic_signed_messages_gate(true);
+        assert_eq!(
+            endpoint.cache_identity(),
+            Some(
+                ModelsCacheIdentity::new("copilot")
+                    .with_request_shape("anthropic_models", "true")
+                    .with_request_shape("anthropic_signed_messages", "true")
+            )
+        );
+
+        install_anthropic_signed_messages_gate(false);
         install_anthropic_gate(false);
+    }
+
+    // SANDBOX PATCH: signed-CoT. A row advertising `/v1/messages` routes to the
+    // signed `AnthropicMessages` transport ONLY when BOTH the Anthropic-models gate
+    // and the signed sub-gate are on; otherwise it keeps the unsigned chat route
+    // (or provider default). `has_chat` is required for the signed route so the
+    // degrade-to-chat fallback always has a valid endpoint.
+    #[test]
+    fn signed_messages_route_requires_both_gates() {
+        let claude = entry(json!({
+            "id": "claude-sonnet-4.6",
+            "model_picker_enabled": true,
+            "supported_endpoints": ["/chat/completions", "/v1/messages"],
+            "capabilities": { "type": "chat" }
+        }));
+        // anthropic off: provider default regardless of signed.
+        assert_eq!(
+            wire_route_for(&claude, false, false),
+            ModelWireRoute::ProviderDefault
+        );
+        assert_eq!(
+            wire_route_for(&claude, false, true),
+            ModelWireRoute::ProviderDefault
+        );
+        // anthropic on, signed off: unsigned chat route.
+        assert_eq!(
+            wire_route_for(&claude, true, false),
+            ModelWireRoute::ChatCompletions
+        );
+        // anthropic on, signed on: signed messages route.
+        assert_eq!(
+            wire_route_for(&claude, true, true),
+            ModelWireRoute::AnthropicMessages
+        );
+
+        // A chat-only row WITHOUT `/v1/messages` never gets the signed route even
+        // with both gates on (so the degrade-to-chat fallback stays valid).
+        let chat_only = entry(json!({
+            "id": "claude-chat-only",
+            "model_picker_enabled": true,
+            "supported_endpoints": ["/chat/completions"],
+            "capabilities": { "type": "chat" }
+        }));
+        assert_eq!(
+            wire_route_for(&chat_only, true, true),
+            ModelWireRoute::ChatCompletions
+        );
+
+        // A messages-only row WITHOUT `/chat/completions` cannot take the signed
+        // route (no valid chat fallback) and keeps the provider default.
+        let messages_only = entry(json!({
+            "id": "claude-messages-only",
+            "model_picker_enabled": true,
+            "supported_endpoints": ["/v1/messages"],
+            "capabilities": { "type": "chat" }
+        }));
+        assert_eq!(
+            wire_route_for(&messages_only, true, true),
+            ModelWireRoute::ProviderDefault
+        );
+    }
+
+    #[test]
+    fn synthesized_signed_messages_row_defaults_reasoning_to_medium() {
+        // The AnthropicMessages route gets the same Medium default as the chat route.
+        let info = synthesize_from_capabilities(
+            entry(json!({
+                "id": "claude-sonnet-4.6",
+                "model_picker_enabled": true,
+                "supported_endpoints": ["/chat/completions", "/v1/messages"],
+                "capabilities": {
+                    "type": "chat",
+                    "supports": { "reasoning_effort": ["low", "medium", "high", "xhigh"] }
+                }
+            })),
+            /*anthropic_enabled*/ true,
+            /*signed_messages_enabled*/ true,
+        );
+        assert_eq!(info.wire_route, ModelWireRoute::AnthropicMessages);
+        assert_eq!(info.default_reasoning_level, Some(ReasoningEffort::Medium));
     }
 
     #[test]
@@ -615,6 +759,7 @@ mod chat_transport_tests {
                 "capabilities": { "type": "chat" }
             })),
             /*anthropic_enabled*/ true,
+            /*signed_messages_enabled*/ false,
         );
         assert_eq!(info.wire_route, ModelWireRoute::ChatCompletions);
 
@@ -647,7 +792,7 @@ mod chat_transport_tests {
                 anthropic_enabled
             ));
             assert_eq!(
-                wire_route_for(&responses_row, anthropic_enabled),
+                wire_route_for(&responses_row, anthropic_enabled, false),
                 ModelWireRoute::ProviderDefault
             );
         }
@@ -670,6 +815,7 @@ mod chat_transport_tests {
                 }
             })),
             /*anthropic_enabled*/ true,
+            /*signed_messages_enabled*/ false,
         );
         assert_eq!(info.wire_route, ModelWireRoute::ChatCompletions);
         assert_eq!(info.default_reasoning_level, Some(ReasoningEffort::Medium));
@@ -696,6 +842,7 @@ mod chat_transport_tests {
                 }
             })),
             /*anthropic_enabled*/ true,
+            /*signed_messages_enabled*/ false,
         );
         assert_eq!(info.wire_route, ModelWireRoute::ProviderDefault);
         assert_eq!(info.default_reasoning_level, Some(ReasoningEffort::Low));
@@ -716,6 +863,7 @@ mod chat_transport_tests {
                 }
             })),
             /*anthropic_enabled*/ true,
+            /*signed_messages_enabled*/ false,
         );
         assert_eq!(info.wire_route, ModelWireRoute::ChatCompletions);
         assert_eq!(info.default_reasoning_level, Some(ReasoningEffort::Low));
@@ -742,6 +890,7 @@ mod knob_b_tier_tests {
                 "capabilities": { "type": "chat", "limits": { "max_context_window_tokens": max_tokens } }
             })),
             /*anthropic_enabled*/ false,
+            /*signed_messages_enabled*/ false,
         )
     }
 
@@ -822,6 +971,7 @@ mod knob_b_tier_tests {
                 }
             })),
             /*anthropic_enabled*/ false,
+            /*signed_messages_enabled*/ false,
         );
 
         assert_eq!(info.context_window, Some(400_000));
@@ -846,6 +996,7 @@ mod knob_b_tier_tests {
                 }
             })),
             /*anthropic_enabled*/ false,
+            /*signed_messages_enabled*/ false,
         );
 
         assert_eq!(info.context_window, Some(400_000));
@@ -870,6 +1021,7 @@ mod knob_b_tier_tests {
                 }
             })),
             /*anthropic_enabled*/ false,
+            /*signed_messages_enabled*/ false,
         );
 
         assert_eq!(info.context_window, Some(400_000));
@@ -917,6 +1069,7 @@ mod knob_b_tier_tests {
                 "capabilities": { "type": "chat" }
             })),
             /*anthropic_enabled*/ false,
+            /*signed_messages_enabled*/ false,
         );
         assert_eq!(info.context_window, None);
         assert_eq!(info.max_context_window, None);
@@ -957,6 +1110,7 @@ mod knob_b_tier_tests {
             })),
             &bundled,
             /*anthropic_enabled*/ false,
+            /*signed_messages_enabled*/ false,
         );
         assert_eq!(info.context_window, Some(400_000));
         assert_eq!(info.max_context_window, Some(922_000));

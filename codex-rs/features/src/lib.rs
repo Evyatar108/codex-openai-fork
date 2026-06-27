@@ -147,6 +147,12 @@ pub enum Feature {
     /// Enable Anthropic (Claude-via-Copilot) models. Default off; also settable via
     /// the `--enable-anthropic` flag.
     AnthropicModels,
+    // SANDBOX PATCH: stricter opt-in sub-gate for the SIGNED Anthropic Messages
+    // (`/v1/messages`) transport. ANDed with `AnthropicModels`; default off.
+    /// Route Claude over the native Anthropic Messages API so chain-of-thought
+    /// round-trips as cryptographically signed `thinking` blocks. Default off;
+    /// requires `AnthropicModels` to also be enabled.
+    AnthropicSignedMessages,
     // SANDBOX PATCH: opt-in gate for loading CLAUDE.md project docs.
     /// Auto-load CLAUDE.md when AGENTS files are absent. Default off.
     AutoLoadClaudeMd,
@@ -1045,6 +1051,19 @@ pub const FEATURES: &[FeatureSpec] = &[
             name: "Anthropic models",
             menu_description: "Enable Claude-via-Copilot model options.",
             announcement: "Anthropic models can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: stricter opt-in sub-gate for the SIGNED Anthropic Messages
+    // transport. ANDed with `anthropic_models`; default off so the signed path
+    // ships dark until a live-proxy soak validates replay acceptance.
+    FeatureSpec {
+        id: Feature::AnthropicSignedMessages,
+        key: "anthropic_signed_messages",
+        stage: Stage::Experimental {
+            name: "Anthropic signed messages",
+            menu_description: "Route Claude over the native Anthropic Messages API for signed chain-of-thought. Requires Anthropic models.",
+            announcement: "Signed Anthropic Messages transport can now be enabled from /experimental. Requires Anthropic models. Restart Codex after enabling it.",
         },
         default_enabled: false,
     },

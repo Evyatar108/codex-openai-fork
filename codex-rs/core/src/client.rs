@@ -1630,7 +1630,8 @@ impl ModelClientSession {
         let provider_wire = self.client.state.provider.info().wire_api;
         // SANDBOX PATCH: D-001. Per-model routing: map the protocol-local route hint
         // to the effective wire (the only place WireApi is derived from wire_route).
-        let wire_api = crate::chat_transport::effective_wire_api(model_info.wire_route, provider_wire);
+        let wire_api =
+            crate::chat_transport::effective_wire_api(model_info.wire_route, provider_wire);
         match wire_api {
             WireApi::Responses => {
                 if self.client.responses_websocket_enabled() {
@@ -1699,6 +1700,40 @@ impl ModelClientSession {
                     .or(model_info.default_reasoning_level.clone())
                     .map(|level| level.to_string());
                 crate::chat_transport::stream_chat_completions(
+                    responses_body,
+                    &model_info.slug,
+                    base_url.as_deref(),
+                    reasoning_effort,
+                )
+                .await
+            }
+            // SANDBOX PATCH: signed-CoT dispatch arm. Builds the same
+            // ResponsesApiRequest, serializes it, and routes it through the native
+            // Anthropic Messages transport (api.githubcopilot.com/v1/messages) so
+            // Claude chain-of-thought round-trips as SIGNED `thinking` blocks. Only
+            // reachable when both the Anthropic-models gate and the signed sub-gate
+            // are on (`effective_wire_api_gated`); otherwise the route degrades to
+            // `ChatCompletions` above. The reasoning effort is threaded the same way
+            // as the chat path (sizes the Anthropic `thinking.budget_tokens`).
+            WireApi::AnthropicMessages => {
+                let client_setup = self.client.current_client_setup().await?;
+                let request = self.client.build_responses_request(
+                    &client_setup.api_provider,
+                    prompt,
+                    model_info,
+                    effort.clone(),
+                    summary,
+                    service_tier,
+                    responses_metadata,
+                )?;
+                let responses_body = serde_json::to_value(&request).map_err(|err| {
+                    CodexErr::Fatal(format!("serialize messages request body: {err}"))
+                })?;
+                let base_url = self.client.state.provider.info().base_url.clone();
+                let reasoning_effort = effort
+                    .or(model_info.default_reasoning_level.clone())
+                    .map(|level| level.to_string());
+                crate::chat_transport::stream_anthropic_messages(
                     responses_body,
                     &model_info.slug,
                     base_url.as_deref(),

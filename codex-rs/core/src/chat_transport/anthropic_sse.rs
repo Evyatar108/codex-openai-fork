@@ -29,10 +29,12 @@
 use codex_copilot::ChatStreamEvent;
 use codex_copilot::ChatUsage;
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 /// One decoded event from the Anthropic Messages-API SSE stream. Either a neutral
 /// chat event (mapped downstream exactly like the overlay parser's events) or an
 /// in-band stream error that must abort the turn instead of silently blanking.
+#[derive(Debug)]
 pub(crate) enum TranslatedSseEvent {
     Chat(ChatStreamEvent),
     /// SANDBOX PATCH: D-001 reasoning capture. A chunk of Claude chain-of-thought
@@ -41,6 +43,30 @@ pub(crate) enum TranslatedSseEvent {
     /// the overlay `ChatStreamEvent`) so the overlay parser stays untouched.
     ReasoningDelta(String),
     StreamError(String),
+    // SANDBOX PATCH: signed-CoT capture. Block-aware SIGNED reasoning events from
+    // the native `/v1/messages` shape, keyed by content-block `index` so each
+    // signature binds to its OWN `thinking` block (interleaved thinking emits
+    // several). The unsigned chat driver ignores these (its thinking arrives as
+    // `reasoning_text`, not `thinking_delta`); the signed messages driver
+    // consumes them to build per-block `Reasoning{encrypted_content:Some(sig)}`.
+    /// A signed `thinking` block opened at `index`.
+    SignedThinkingStart {
+        index: i64,
+    },
+    /// A chunk of signed chain-of-thought text for the `thinking` block at `index`.
+    SignedThinkingDelta {
+        index: i64,
+        text: String,
+    },
+    /// A chunk of the cryptographic signature for the `thinking` block at `index`.
+    SignedThinkingSignature {
+        index: i64,
+        signature: String,
+    },
+    /// The signed `thinking` block at `index` closed (finalize its reasoning item).
+    SignedThinkingStop {
+        index: i64,
+    },
 }
 
 /// Incremental parser for an Anthropic Messages-API SSE byte stream.
@@ -56,6 +82,10 @@ pub(crate) struct AnthropicSseParser {
     /// `input_tokens` captured from `message_start` so the `message_delta` usage
     /// event (which only carries `output_tokens`) can report a complete `Usage`.
     input_tokens: Option<i64>,
+    /// SANDBOX PATCH: signed-CoT. Content-block indices currently known to be
+    /// `thinking` blocks, so the type-less `content_block_stop` event can emit a
+    /// `SignedThinkingStop` for the right blocks (and only those).
+    thinking_indices: BTreeSet<i64>,
 }
 
 impl AnthropicSseParser {
@@ -122,27 +152,55 @@ impl AnthropicSseParser {
             }
             "content_block_start" => {
                 let block = value.get("content_block");
-                let is_tool_use =
-                    block.and_then(|b| b.get("type")).and_then(Value::as_str) == Some("tool_use");
-                if is_tool_use {
-                    let index = value
-                        .get("index")
-                        .and_then(Value::as_i64)
-                        .unwrap_or_default();
-                    let id = block
-                        .and_then(|b| b.get("id"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                    let name = block
-                        .and_then(|b| b.get("name"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                    events.push(TranslatedSseEvent::Chat(ChatStreamEvent::ToolCallDelta {
-                        index,
-                        id,
-                        name,
-                        arguments: String::new(),
-                    }));
+                let block_type = block.and_then(|b| b.get("type")).and_then(Value::as_str);
+                let index = value
+                    .get("index")
+                    .and_then(Value::as_i64)
+                    .unwrap_or_default();
+                match block_type {
+                    Some("tool_use") => {
+                        let id = block
+                            .and_then(|b| b.get("id"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        let name = block
+                            .and_then(|b| b.get("name"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                        events.push(TranslatedSseEvent::Chat(ChatStreamEvent::ToolCallDelta {
+                            index,
+                            id,
+                            name,
+                            arguments: String::new(),
+                        }));
+                    }
+                    // SANDBOX PATCH: signed-CoT. Open a signed reasoning block and
+                    // surface any initial thinking/signature the start event carries.
+                    Some("thinking") => {
+                        self.thinking_indices.insert(index);
+                        events.push(TranslatedSseEvent::SignedThinkingStart { index });
+                        if let Some(text) = block
+                            .and_then(|b| b.get("thinking"))
+                            .and_then(Value::as_str)
+                            .filter(|t| !t.is_empty())
+                        {
+                            events.push(TranslatedSseEvent::SignedThinkingDelta {
+                                index,
+                                text: text.to_string(),
+                            });
+                        }
+                        if let Some(signature) = block
+                            .and_then(|b| b.get("signature"))
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                        {
+                            events.push(TranslatedSseEvent::SignedThinkingSignature {
+                                index,
+                                signature: signature.to_string(),
+                            });
+                        }
+                    }
+                    _ => {}
                 }
             }
             "content_block_delta" => {
@@ -176,9 +234,47 @@ impl AnthropicSseParser {
                             }));
                         }
                     }
-                    // `thinking_delta` / `signature_delta` are reasoning content and
-                    // are intentionally not surfaced as assistant text here.
+                    // SANDBOX PATCH: signed-CoT. Surface signed thinking text and the
+                    // cryptographic signature (keyed by block index) instead of
+                    // dropping them. The unsigned chat driver ignores these.
+                    Some("thinking_delta") => {
+                        if let Some(text) = delta
+                            .and_then(|d| d.get("thinking"))
+                            .and_then(Value::as_str)
+                            && !text.is_empty()
+                        {
+                            events.push(TranslatedSseEvent::SignedThinkingDelta {
+                                index,
+                                text: text.to_string(),
+                            });
+                        }
+                    }
+                    Some("signature_delta") => {
+                        if let Some(signature) = delta
+                            .and_then(|d| d.get("signature"))
+                            .and_then(Value::as_str)
+                            && !signature.is_empty()
+                        {
+                            events.push(TranslatedSseEvent::SignedThinkingSignature {
+                                index,
+                                signature: signature.to_string(),
+                            });
+                        }
+                    }
                     _ => {}
+                }
+            }
+            // SANDBOX PATCH: signed-CoT. A `content_block_stop` carries no block type,
+            // so finalize a signed reasoning block only when we recorded its index as
+            // `thinking` at start. Non-thinking blocks (text/tool_use) carry no
+            // renderable stop data.
+            "content_block_stop" => {
+                let index = value
+                    .get("index")
+                    .and_then(Value::as_i64)
+                    .unwrap_or_default();
+                if self.thinking_indices.remove(&index) {
+                    events.push(TranslatedSseEvent::SignedThinkingStop { index });
                 }
             }
             "message_delta" => {
@@ -212,7 +308,7 @@ impl AnthropicSseParser {
                     .unwrap_or("anthropic stream error");
                 events.push(TranslatedSseEvent::StreamError(message.to_string()));
             }
-            // `ping`, `content_block_stop`, `message_stop` carry no renderable data.
+            // `ping` and `message_stop` carry no renderable data.
             _ => {}
         }
     }
@@ -334,10 +430,10 @@ mod tests {
             .into_iter()
             .filter_map(|event| match event {
                 TranslatedSseEvent::Chat(chat) => Some(chat),
-                TranslatedSseEvent::ReasoningDelta(_) => None,
                 TranslatedSseEvent::StreamError(message) => {
                     panic!("unexpected stream error: {message}")
                 }
+                _ => None,
             })
             .collect()
     }
@@ -351,6 +447,33 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Reconstructs `(index, thinking_text, signature)` per signed thinking block,
+    /// in the order the blocks stop, from the signed `SignedThinking*` events.
+    fn collect_signed_blocks(sse: &str) -> Vec<(i64, String, String)> {
+        use std::collections::BTreeMap;
+        let mut open: BTreeMap<i64, (String, String)> = BTreeMap::new();
+        let mut done: Vec<(i64, String, String)> = Vec::new();
+        for event in parse_translated(sse) {
+            match event {
+                TranslatedSseEvent::SignedThinkingStart { index } => {
+                    open.entry(index).or_default();
+                }
+                TranslatedSseEvent::SignedThinkingDelta { index, text } => {
+                    open.entry(index).or_default().0.push_str(&text);
+                }
+                TranslatedSseEvent::SignedThinkingSignature { index, signature } => {
+                    open.entry(index).or_default().1.push_str(&signature);
+                }
+                TranslatedSseEvent::SignedThinkingStop { index } => {
+                    let (text, signature) = open.remove(&index).unwrap_or_default();
+                    done.push((index, text, signature));
+                }
+                _ => {}
+            }
+        }
+        done
     }
 
     fn collected_text(events: &[ChatStreamEvent]) -> String {
@@ -537,10 +660,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             TranslatedSseEvent::StreamError(message) => assert_eq!(message, "Overloaded"),
-            TranslatedSseEvent::Chat(event) => panic!("expected stream error, got {event:?}"),
-            TranslatedSseEvent::ReasoningDelta(text) => {
-                panic!("expected stream error, got reasoning {text:?}")
-            }
+            other => panic!("expected stream error, got {other:?}"),
         }
     }
 
@@ -559,8 +679,8 @@ mod tests {
             .into_iter()
             .filter_map(|event| match event {
                 TranslatedSseEvent::Chat(chat) => Some(chat),
-                TranslatedSseEvent::ReasoningDelta(_) => None,
                 TranslatedSseEvent::StreamError(message) => panic!("unexpected error: {message}"),
+                _ => None,
             })
             .collect();
         assert_eq!(chat, vec![ChatStreamEvent::ContentDelta("😀".to_string())]);
@@ -628,5 +748,66 @@ mod tests {
         assert_eq!(map_stop_reason("something_new"), "stop");
         assert_eq!(map_stop_reason("tool_use"), "tool_calls");
         assert_eq!(map_stop_reason("max_tokens"), "length");
+    }
+
+    // SANDBOX PATCH: signed-CoT capture tests.
+
+    #[test]
+    fn signed_thinking_delta_and_signature_are_surfaced() {
+        // A single signed thinking block: thinking_delta text + signature_delta,
+        // followed by a tool_use block (the exact turn-1 shape the probe captured).
+        let sse = concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"let me \"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"add\"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-\"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"abc\"}}\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"calc\"}}\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n",
+        );
+        // The thinking text + signature are surfaced (no longer dropped), keyed by
+        // block index, and concatenate to the full values.
+        assert_eq!(
+            collect_signed_blocks(sse),
+            vec![(0, "let me add".to_string(), "sig-abc".to_string())]
+        );
+        // The signed thinking is NOT leaked as assistant text on the chat path.
+        assert_eq!(collected_text(&parse_chat(sse)), "");
+    }
+
+    #[test]
+    fn multiple_signed_blocks_bind_each_signature_to_its_own_thinking() {
+        // Two thinking+tool_use blocks at out-of-order indices: each signature_delta
+        // must bind to its OWN block's thinking (no cross-binding).
+        let sse = concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":4,\"content_block\":{\"type\":\"thinking\"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":4,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"first\"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":4,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-one\"}}\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":4}\n",
+            "data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"thinking\"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"second\"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-two\"}}\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":2}\n",
+        );
+        assert_eq!(
+            collect_signed_blocks(sse),
+            vec![
+                (4, "first".to_string(), "sig-one".to_string()),
+                (2, "second".to_string(), "sig-two".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn content_block_stop_only_finalizes_thinking_blocks() {
+        // A tool_use block's content_block_stop must NOT emit a SignedThinkingStop
+        // (only thinking-block indices are tracked).
+        let sse = concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\"}}\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n",
+        );
+        assert!(collect_signed_blocks(sse).is_empty());
     }
 }

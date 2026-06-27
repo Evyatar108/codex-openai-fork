@@ -296,6 +296,10 @@ fn proto_wire_api(wire_api: WireApi) -> proto::WireApi {
         // thread config / remote_control is force-disabled in this fork), so it maps
         // to Unspecified. This helper is only exercised with Responses in real tests.
         WireApi::ChatCompletions => proto::WireApi::Unspecified,
+        // SANDBOX PATCH: signed-CoT Anthropic Messages — same rationale as
+        // ChatCompletions: a fork-local per-model dispatch route with no
+        // remote-thread-config protobuf representation, so it maps to Unspecified.
+        WireApi::AnthropicMessages => proto::WireApi::Unspecified,
     }
 }
 

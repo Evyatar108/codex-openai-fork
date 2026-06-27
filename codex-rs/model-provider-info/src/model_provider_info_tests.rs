@@ -150,6 +150,32 @@ wire_api = "chat"
     assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
 }
 
+// SANDBOX PATCH: signed-CoT. The signed Anthropic Messages wire value round-trips
+// through Display + Deserialize and is distinct from the other two variants.
+#[test]
+fn test_anthropic_messages_wire_api_serde_round_trip() {
+    assert_eq!(WireApi::AnthropicMessages.to_string(), "anthropicmessages");
+    let provider: ModelProviderInfo = toml::from_str(
+        r#"
+name = "Signed messages provider"
+base_url = "https://api.githubcopilot.com"
+wire_api = "anthropicmessages"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(provider.wire_api, WireApi::AnthropicMessages);
+    // An unknown wire value is still rejected and lists the known variants.
+    let err = toml::from_str::<ModelProviderInfo>(
+        r#"
+name = "Bogus"
+base_url = "https://api.openai.com/v1"
+wire_api = "messages"
+        "#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("anthropicmessages"));
+}
+
 #[test]
 fn test_deserialize_websocket_connect_timeout() {
     let provider_toml = r#"

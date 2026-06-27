@@ -11,6 +11,7 @@ use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -507,6 +508,30 @@ static ORIGINAL_IMAGE_ESTIMATE_CACHE: LazyLock<BlockingLruCache<[u8; 20], Option
 
 fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
     match item {
+        // SANDBOX PATCH: signed-CoT. A signed reasoning item carries model-visible
+        // PLAINTEXT (`content` — the thinking replayed as the signed `thinking`
+        // block) ALONGSIDE its signature (`encrypted_content`). Count the plaintext
+        // (not only the opaque signature) plus the signature bytes, so the
+        // no-item-over-10K-tokens bound holds in history estimation, not just at the
+        // request builder. (Opaque-only reasoning / compaction keep the
+        // signature-only estimate in the next arm.)
+        ResponseItem::Reasoning {
+            encrypted_content: Some(signature),
+            content: Some(parts),
+            ..
+        } => {
+            let plaintext_bytes: usize = parts
+                .iter()
+                .map(|part| match part {
+                    ReasoningItemContent::ReasoningText { text }
+                    | ReasoningItemContent::Text { text } => text.len(),
+                })
+                .sum();
+            i64::try_from(
+                estimate_reasoning_length(plaintext_bytes).saturating_add(signature.len()),
+            )
+            .unwrap_or(i64::MAX)
+        }
         ResponseItem::Reasoning {
             encrypted_content: Some(content),
             ..

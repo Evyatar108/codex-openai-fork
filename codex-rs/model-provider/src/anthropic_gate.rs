@@ -32,6 +32,13 @@ impl AnthropicGate {
 
 static CONFIG_GATE: AnthropicGate = AnthropicGate::new();
 
+// SANDBOX PATCH: stricter sub-gate for the SIGNED Anthropic Messages
+// (`/v1/messages`) transport. `Feature::AnthropicSignedMessages` is the sole
+// runtime source of truth; it is ANDed with `AnthropicModels` at every routing/
+// cache/filter site. Installed once at config-build time alongside the parent
+// gate; without that install path the flag stays `false`.
+static SIGNED_MESSAGES_GATE: AnthropicGate = AnthropicGate::new();
+
 /// Installs the final resolved `features.anthropic_models` value at config-build
 /// time and returns it for the caller's resolved config bookkeeping.
 pub fn install_anthropic_gate(enabled: bool) -> bool {
@@ -42,6 +49,20 @@ pub fn install_anthropic_gate(enabled: bool) -> bool {
 /// model-catalog call sites.
 pub fn anthropic_models_resolved() -> bool {
     CONFIG_GATE.resolved()
+}
+
+/// Installs the final resolved `features.anthropic_signed_messages` value at
+/// config-build time and returns it for the caller's resolved config
+/// bookkeeping. The signed path is only taken when this AND
+/// `install_anthropic_gate` are both `true`.
+pub fn install_anthropic_signed_messages_gate(enabled: bool) -> bool {
+    SIGNED_MESSAGES_GATE.install(enabled)
+}
+
+/// Returns the final resolved signed-messages sub-gate value at the routing,
+/// model-cache identity, and picker-filter call sites.
+pub fn anthropic_signed_messages_resolved() -> bool {
+    SIGNED_MESSAGES_GATE.resolved()
 }
 
 #[cfg(test)]

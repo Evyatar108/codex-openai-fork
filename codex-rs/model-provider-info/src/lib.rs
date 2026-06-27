@@ -66,6 +66,18 @@ pub enum WireApi {
     /// hint so a Claude row runs over chat while GPT-5.x keeps using Responses.
     /// See `docs/implementation/patch-surface.md` §14.
     ChatCompletions,
+    // SANDBOX PATCH: signed-CoT Anthropic Messages transport.
+    /// The native Anthropic Messages API at `/v1/messages`.
+    ///
+    /// Fork-only. Like `ChatCompletions` this is never a provider-level default:
+    /// the Copilot provider keeps `wire_api = Responses`, and this variant is
+    /// derived per-model at the dispatch boundary (`core/src/client.rs`) from the
+    /// `ModelInfo` wire-route hint, but only when BOTH the Anthropic-models gate
+    /// and the stricter signed-messages sub-gate are on. It carries Claude
+    /// chain-of-thought as cryptographically signed `thinking` blocks across the
+    /// tool loop, which the unsigned `ChatCompletions` path cannot do.
+    /// See `docs/implementation/patch-surface.md` §14.
+    AnthropicMessages,
 }
 
 impl fmt::Display for WireApi {
@@ -74,6 +86,8 @@ impl fmt::Display for WireApi {
             Self::Responses => "responses",
             // SANDBOX PATCH: D-001 chat-completions wire value (see enum variant).
             Self::ChatCompletions => "chatcompletions",
+            // SANDBOX PATCH: signed-CoT Anthropic Messages wire value (see variant).
+            Self::AnthropicMessages => "anthropicmessages",
         };
         f.write_str(value)
     }
@@ -90,10 +104,12 @@ impl<'de> Deserialize<'de> for WireApi {
             // SANDBOX PATCH: D-001 accept the chat-completions wire value WITHOUT
             // re-enabling the removed "chat" alias rejected on the next arm.
             "chatcompletions" => Ok(Self::ChatCompletions),
+            // SANDBOX PATCH: accept the signed-CoT Anthropic Messages wire value.
+            "anthropicmessages" => Ok(Self::AnthropicMessages),
             "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
             _ => Err(serde::de::Error::unknown_variant(
                 &value,
-                &["responses", "chatcompletions"],
+                &["responses", "chatcompletions", "anthropicmessages"],
             )),
         }
     }

@@ -416,6 +416,14 @@ pub enum ModelWireRoute {
     ProviderDefault,
     /// Route this model over the `/chat/completions` transport.
     ChatCompletions,
+    // SANDBOX PATCH: signed-CoT Anthropic Messages transport route hint.
+    /// Route this model over the native Anthropic Messages `/v1/messages`
+    /// transport for SIGNED chain-of-thought. Set by the Copilot `/models`
+    /// translation only when the row advertises `/v1/messages` and both the
+    /// Anthropic-models gate and the signed-messages sub-gate are on;
+    /// `core/src/client.rs` maps this hint to `WireApi::AnthropicMessages` (and
+    /// degrades it to `WireApi::ChatCompletions` if the signed sub-gate is off).
+    AnthropicMessages,
 }
 
 /// Model metadata returned by the Codex backend `/models` endpoint.

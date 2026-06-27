@@ -35,6 +35,7 @@ use codex_copilot::payload::request_initiator;
 use codex_copilot::send_chat_request;
 use codex_login::default_client::build_reqwest_client;
 use codex_model_provider::anthropic_models_resolved;
+use codex_model_provider::anthropic_signed_messages_resolved;
 use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
@@ -49,9 +50,12 @@ use tokio_util::sync::CancellationToken;
 use crate::client_common::ResponseStream;
 
 mod anthropic_sse;
+// SANDBOX PATCH: signed-CoT native Anthropic Messages (`/v1/messages`) driver.
+mod messages_stream;
 
 use anthropic_sse::AnthropicSseParser;
 use anthropic_sse::TranslatedSseEvent;
+pub(crate) use messages_stream::stream_anthropic_messages;
 
 const CHANNEL_CAPACITY: usize = 1600;
 const COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
@@ -59,20 +63,41 @@ const COPILOT_BASE_URL: &str = "https://api.githubcopilot.com";
 /// Maps a model's protocol-local route hint to the EFFECTIVE wire protocol at the
 /// dispatch boundary. This is the single place `ModelWireRoute` becomes a `WireApi`:
 /// a chat-hinted model routes to `ChatCompletions` only when Anthropic transport
-/// is opted in, everything else to the provider's wire. See
-/// `docs/implementation/patch-surface.md` §14 invariant 35.
+/// is opted in; a messages-hinted model routes to the SIGNED `AnthropicMessages`
+/// transport only when the stricter signed sub-gate is ALSO on, and otherwise
+/// degrades to the unsigned `ChatCompletions` path. Everything else routes to the
+/// provider's wire. See `docs/implementation/patch-surface.md` §14 invariant 35.
 pub(crate) fn effective_wire_api(route: ModelWireRoute, provider_wire: WireApi) -> WireApi {
-    effective_wire_api_gated(route, provider_wire, anthropic_models_resolved())
+    effective_wire_api_gated(
+        route,
+        provider_wire,
+        anthropic_models_resolved(),
+        anthropic_signed_messages_resolved(),
+    )
 }
 
 pub(crate) fn effective_wire_api_gated(
     route: ModelWireRoute,
     provider_wire: WireApi,
     anthropic_enabled: bool,
+    signed_messages_enabled: bool,
 ) -> WireApi {
     match route {
+        // SANDBOX PATCH: signed-CoT. The native Anthropic Messages route is taken
+        // only when BOTH the Anthropic-models gate and the signed sub-gate are on.
+        ModelWireRoute::AnthropicMessages if anthropic_enabled && signed_messages_enabled => {
+            WireApi::AnthropicMessages
+        }
+        // SANDBOX PATCH: signed-CoT degrade-to-chat safety net. With Anthropic on but
+        // the signed sub-gate off, a messages-hinted row falls back to the shipped
+        // unsigned `/chat/completions` path (never panics, never silently breaks the
+        // model). `wire_route_for` only assigns this route to rows that also support
+        // `/chat/completions`, so the fallback always has a valid endpoint.
+        ModelWireRoute::AnthropicMessages if anthropic_enabled => WireApi::ChatCompletions,
         ModelWireRoute::ChatCompletions if anthropic_enabled => WireApi::ChatCompletions,
-        ModelWireRoute::ChatCompletions | ModelWireRoute::ProviderDefault => provider_wire,
+        ModelWireRoute::ChatCompletions
+        | ModelWireRoute::AnthropicMessages
+        | ModelWireRoute::ProviderDefault => provider_wire,
     }
 }
 
@@ -506,6 +531,16 @@ async fn handle_translated_events(
                     .await;
                 return false;
             }
+            // SANDBOX PATCH: signed-CoT. The unsigned chat driver does not capture
+            // signatures — its reasoning arrives as `reasoning_text`
+            // (`ReasoningDelta`), not the native `thinking`/`signature` blocks. The
+            // signed `/v1/messages` driver (`messages_stream`) is the sole consumer
+            // of these block-aware events; here they are intentionally ignored so the
+            // unsigned path is unchanged.
+            TranslatedSseEvent::SignedThinkingStart { .. }
+            | TranslatedSseEvent::SignedThinkingDelta { .. }
+            | TranslatedSseEvent::SignedThinkingSignature { .. }
+            | TranslatedSseEvent::SignedThinkingStop { .. } => {}
         }
     }
     true
@@ -665,6 +700,7 @@ mod tests {
                 ModelWireRoute::ChatCompletions,
                 WireApi::Responses,
                 /*anthropic_enabled*/ true,
+                /*signed_messages_enabled*/ false,
             ),
             WireApi::ChatCompletions,
         );
@@ -673,6 +709,7 @@ mod tests {
                 ModelWireRoute::ProviderDefault,
                 WireApi::Responses,
                 /*anthropic_enabled*/ true,
+                /*signed_messages_enabled*/ false,
             ),
             WireApi::Responses,
         );
@@ -685,6 +722,7 @@ mod tests {
                 ModelWireRoute::ChatCompletions,
                 WireApi::Responses,
                 /*anthropic_enabled*/ false,
+                /*signed_messages_enabled*/ false,
             ),
             WireApi::Responses,
         );
@@ -693,9 +731,49 @@ mod tests {
                 ModelWireRoute::ProviderDefault,
                 WireApi::Responses,
                 /*anthropic_enabled*/ false,
+                /*signed_messages_enabled*/ false,
             ),
             WireApi::Responses,
         );
+    }
+
+    // SANDBOX PATCH: signed-CoT. The `AnthropicMessages` route maps to the signed
+    // wire ONLY when both gates are on; with Anthropic on but the signed sub-gate
+    // off it DEGRADES to the unsigned chat wire; with Anthropic off it keeps the
+    // provider wire (regardless of the signed sub-gate).
+    #[test]
+    fn signed_messages_route_honors_both_gates_with_degrade() {
+        assert_eq!(
+            effective_wire_api_gated(
+                ModelWireRoute::AnthropicMessages,
+                WireApi::Responses,
+                /*anthropic_enabled*/ true,
+                /*signed_messages_enabled*/ true,
+            ),
+            WireApi::AnthropicMessages,
+        );
+        // Anthropic on, signed off -> degrade to the shipped unsigned chat path.
+        assert_eq!(
+            effective_wire_api_gated(
+                ModelWireRoute::AnthropicMessages,
+                WireApi::Responses,
+                /*anthropic_enabled*/ true,
+                /*signed_messages_enabled*/ false,
+            ),
+            WireApi::ChatCompletions,
+        );
+        // Anthropic off -> provider wire, even if the signed sub-gate is on.
+        for signed in [false, true] {
+            assert_eq!(
+                effective_wire_api_gated(
+                    ModelWireRoute::AnthropicMessages,
+                    WireApi::Responses,
+                    /*anthropic_enabled*/ false,
+                    signed,
+                ),
+                WireApi::Responses,
+            );
+        }
     }
 
     #[test]

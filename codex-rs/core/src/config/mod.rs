@@ -2830,6 +2830,11 @@ impl Config {
         // model-provider runtime gate. Unlike managed hooks, Anthropic no longer
         // has an env fallback; `Feature::AnthropicModels` is the sole authority.
         codex_model_provider::install_anthropic_gate(features.enabled(Feature::AnthropicModels));
+        // SANDBOX PATCH: install the resolved signed-messages sub-gate. ANDed with
+        // the parent Anthropic gate at every routing/cache/filter site; default off.
+        codex_model_provider::install_anthropic_signed_messages_gate(
+            features.enabled(Feature::AnthropicSignedMessages),
+        );
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
         let disable_paste_burst = !features.enabled(Feature::LegacyPasteBurstHeuristic);
         let configured_windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg);
