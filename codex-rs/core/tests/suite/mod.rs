@@ -39,6 +39,8 @@ mod apply_patch_cli;
 #[cfg(not(target_os = "windows"))]
 mod approvals;
 mod auto_review;
+// SANDBOX PATCH: D-001 chat-completions transport e2e (US-008).
+mod chat_completions;
 mod cli_stream;
 mod client;
 mod client_websockets;

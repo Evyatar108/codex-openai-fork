@@ -25,6 +25,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub mod apps_test_server;
+// SANDBOX PATCH: D-001 chat-completions e2e harness (US-008).
+pub mod chat_sse;
 pub mod context_snapshot;
 pub mod hooks;
 pub mod process;
