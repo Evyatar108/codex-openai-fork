@@ -295,6 +295,8 @@ impl CodexThread {
     /// This is the thread-level bridge to `Session::inject_if_running` for
     /// callers that only hold a `CodexThread`.
     /// It returns the unchanged items when this thread has no active turn.
+    // SANDBOX PATCH: loopback_inject — the fork's loopback-inject daemon seam
+    // (steer path, default-off `Feature::LoopbackInject`) depends on this staying `pub`.
     pub async fn inject_if_running(
         &self,
         items: Vec<ResponseItem>,
@@ -315,6 +317,8 @@ impl CodexThread {
     /// On rejection, the returned error includes a stable reason and carries
     /// the original `items` unchanged so the caller can decide whether to drop
     /// them, retry later, or log why no automatic turn was started.
+    // SANDBOX PATCH: loopback_inject — the fork's loopback-inject daemon seam
+    // (idle-wake path, default-off `Feature::LoopbackInject`) depends on this staying `pub`.
     pub async fn try_start_turn_if_idle(
         &self,
         items: Vec<ResponseItem>,

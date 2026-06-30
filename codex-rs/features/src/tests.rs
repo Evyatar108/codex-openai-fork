@@ -264,6 +264,13 @@ fn fork_visibility_features_are_experimental_and_disabled_by_default() {
             "Remote session",
             "Mirror this Codex session to the Happy mobile app (end-to-end encrypted).",
         ),
+        // SANDBOX PATCH: loopback-inject seam is visible and default-off in `/experimental`.
+        (
+            Feature::LoopbackInject,
+            "loopback_inject",
+            "Loopback inject",
+            "Let a same-machine daemon steer or idle-wake this Codex session over loopback IPC.",
+        ),
     ];
 
     for (feature, key, menu_name, menu_description) in expected {

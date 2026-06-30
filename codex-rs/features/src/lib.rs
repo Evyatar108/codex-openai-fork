@@ -175,6 +175,11 @@ pub enum Feature {
     /// protocol (end-to-end encrypted). Default off; opt in via `/experimental`,
     /// `-c features.remote_session=true`, `--enable remote_session`, or `/remote on`.
     RemoteSession,
+    // SANDBOX PATCH: opt-in gate for the loopback-IPC inject seam.
+    /// Allow a same-machine daemon to steer/idle-wake this Codex session over a
+    /// loopback-IPC inject endpoint (no happy-server, no tunnel). Default off;
+    /// opt in via `/experimental` or `-c features.loopback_inject=true`.
+    LoopbackInject,
     /// Enable CSV-backed agent job tools.
     SpawnCsv,
     /// Enable apps.
@@ -1077,6 +1082,19 @@ pub const FEATURES: &[FeatureSpec] = &[
             name: "Remote session",
             menu_description: "Mirror this Codex session to the Happy mobile app (end-to-end encrypted).",
             announcement: "Remote session mirroring can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: opt-in gate for the loopback-IPC inject seam. Default off;
+    // the future overlay listener stays inert until enabled, so vanilla codex
+    // never opens a loopback socket. No transport/E2EE/happy-server is involved.
+    FeatureSpec {
+        id: Feature::LoopbackInject,
+        key: "loopback_inject",
+        stage: Stage::Experimental {
+            name: "Loopback inject",
+            menu_description: "Let a same-machine daemon steer or idle-wake this Codex session over loopback IPC.",
+            announcement: "Loopback inject can now be enabled from /experimental. Restart Codex after enabling it.",
         },
         default_enabled: false,
     },
