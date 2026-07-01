@@ -271,6 +271,13 @@ fn fork_visibility_features_are_experimental_and_disabled_by_default() {
             "Loopback inject",
             "Let a same-machine daemon steer or idle-wake this Codex session over loopback IPC.",
         ),
+        // SANDBOX PATCH: remote_auto_attach seam is visible and default-off in `/experimental`.
+        (
+            Feature::RemoteAutoAttach,
+            "remote_auto_attach",
+            "Remote auto-attach",
+            "Automatically mirror every Codex session to the Happy mobile app once onboarded.",
+        ),
     ];
 
     for (feature, key, menu_name, menu_description) in expected {

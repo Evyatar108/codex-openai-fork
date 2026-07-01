@@ -56,6 +56,14 @@ impl App {
         enabled: bool,
     ) {
         if enabled {
+            // SANDBOX PATCH: remote_auto_attach — Q1 status coherence. Flip the
+            // ChatWidget's `RemoteSession` feature ON so a bare `/remote` reports
+            // "on" for BOTH the manual `/remote on` path and the auto-attach path
+            // (which reaches this toggle via `AppEvent::SetRemoteSession`). The
+            // flip is on the ChatWidget's config (the one `/remote` status reads),
+            // NOT the App config.
+            self.chat_widget
+                .set_feature_enabled(Feature::RemoteSession, true);
             if self.happy_tap.is_none() {
                 let tx = self.app_event_tx.clone();
                 let outcome: codex_happy::attach::AttachOutcomeSink = Box::new(move |result| {

@@ -154,6 +154,8 @@ mod oss_selection;
 mod pager_overlay;
 mod permission_compat;
 pub(crate) mod public_widgets;
+// SANDBOX PATCH: remote_auto_attach — startup auto-attach flow module.
+mod remote_auto_attach;
 mod render;
 mod resize_reflow_cap;
 mod resume_picker;

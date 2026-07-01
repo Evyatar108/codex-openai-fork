@@ -1046,6 +1046,17 @@ See the Codex keymap documentation for supported actions and examples."
             None
         };
 
+        // SANDBOX PATCH: remote_auto_attach — when opted in, fire the same intent
+        // `/remote on` fires (daemon ensure_running -> AppEvent::SetRemoteSession),
+        // automatically at startup, minus the interactive onboard. Spawned as a
+        // background task so the first prompt is never delayed; clone the sender
+        // because `app_event_tx` is moved into the struct literal below.
+        if config.features.enabled(Feature::RemoteAutoAttach) {
+            tokio::spawn(crate::remote_auto_attach::auto_attach_flow(
+                app_event_tx.clone(),
+            ));
+        }
+
         let mut app = Self {
             model_catalog,
             session_telemetry: session_telemetry.clone(),

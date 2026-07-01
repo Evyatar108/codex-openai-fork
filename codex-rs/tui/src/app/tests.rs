@@ -4277,6 +4277,17 @@ async fn remote_session_toggle_attaches_then_detaches_without_killing_session() 
         app.happy_tap.is_some(),
         "/remote on installs the Happy overlay tap"
     );
+    // SANDBOX PATCH: remote_auto_attach — Q1 status coherence. Enabling the
+    // toggle (the shared path for both `/remote on` and the auto-attach flow)
+    // flips the ChatWidget's `RemoteSession` feature ON so a bare `/remote`
+    // reports "on".
+    assert!(
+        app.chat_widget
+            .config_ref()
+            .features
+            .enabled(Feature::RemoteSession),
+        "enabling the toggle flips the ChatWidget's RemoteSession feature on (status coherence)"
+    );
     app.apply_remote_session_toggle(&app_server, /*enabled*/ false);
     assert!(
         app.happy_tap.is_none(),

@@ -180,6 +180,13 @@ pub enum Feature {
     /// loopback-IPC inject endpoint (no happy-server, no tunnel). Default off;
     /// opt in via `/experimental` or `-c features.loopback_inject=true`.
     LoopbackInject,
+    // SANDBOX PATCH: remote_auto_attach — opt-in gate for auto-mirroring every
+    // session to Happy at startup.
+    /// Automatically attach this Codex session to the Happy mobile app at TUI
+    /// startup (fires the same intent `/remote on` fires, minus the interactive
+    /// onboard). Default off; opt in via `/experimental` or
+    /// `-c features.remote_auto_attach=true`.
+    RemoteAutoAttach,
     /// Enable CSV-backed agent job tools.
     SpawnCsv,
     /// Enable apps.
@@ -1095,6 +1102,21 @@ pub const FEATURES: &[FeatureSpec] = &[
             name: "Loopback inject",
             menu_description: "Let a same-machine daemon steer or idle-wake this Codex session over loopback IPC.",
             announcement: "Loopback inject can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: remote_auto_attach — opt-in gate for auto-attaching every
+    // session to Happy at startup. Default off; the launcher emits
+    // `-c features.remote_auto_attach=<bool>` only when opted in, and the TUI
+    // startup trigger stays inert until enabled, so vanilla codex never
+    // auto-attaches.
+    FeatureSpec {
+        id: Feature::RemoteAutoAttach,
+        key: "remote_auto_attach",
+        stage: Stage::Experimental {
+            name: "Remote auto-attach",
+            menu_description: "Automatically mirror every Codex session to the Happy mobile app once onboarded.",
+            announcement: "Remote auto-attach can now be enabled from /experimental. Restart Codex after enabling it.",
         },
         default_enabled: false,
     },
