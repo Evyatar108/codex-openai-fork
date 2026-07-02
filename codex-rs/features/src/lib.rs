@@ -187,6 +187,13 @@ pub enum Feature {
     /// onboard). Default off; opt in via `/experimental` or
     /// `-c features.remote_auto_attach=true`.
     RemoteAutoAttach,
+    // SANDBOX PATCH: remote_subagent_sessions — opt-in gate for nesting codex
+    // subagent (spawn_agent child) sessions as Agent sidechains in the Happy app.
+    /// Nest codex subagent (v1/v2 `spawn_agent` child) sessions as nested Agent
+    /// sidechains in the Happy mobile app (tag child-thread events with a minted
+    /// `subagent` id + emit a synthetic parent Agent tool-call). Default off; opt
+    /// in via `/experimental` or `-c features.remote_subagent_sessions=true`.
+    RemoteSubagentSessions,
     /// Enable CSV-backed agent job tools.
     SpawnCsv,
     /// Enable apps.
@@ -1117,6 +1124,20 @@ pub const FEATURES: &[FeatureSpec] = &[
             name: "Remote auto-attach",
             menu_description: "Automatically mirror every Codex session to the Happy mobile app once onboarded.",
             announcement: "Remote auto-attach can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: remote_subagent_sessions — opt-in gate for nesting codex
+    // subagent (spawn_agent child) sessions as Agent sidechains in the Happy app.
+    // Default off; the overlay registers nothing and suppresses non-primary
+    // events until enabled, so vanilla remote-session output is unchanged.
+    FeatureSpec {
+        id: Feature::RemoteSubagentSessions,
+        key: "remote_subagent_sessions",
+        stage: Stage::Experimental {
+            name: "Remote sub-agent sessions",
+            menu_description: "Show Codex sub-agent sessions as nested Agent sidechains in the Happy mobile app.",
+            announcement: "Remote sub-agent sessions can now be enabled from /experimental. Restart Codex after enabling it.",
         },
         default_enabled: false,
     },

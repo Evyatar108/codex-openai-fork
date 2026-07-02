@@ -278,6 +278,13 @@ fn fork_visibility_features_are_experimental_and_disabled_by_default() {
             "Remote auto-attach",
             "Automatically mirror every Codex session to the Happy mobile app once onboarded.",
         ),
+        // SANDBOX PATCH: remote_subagent_sessions seam is visible and default-off in `/experimental`.
+        (
+            Feature::RemoteSubagentSessions,
+            "remote_subagent_sessions",
+            "Remote sub-agent sessions",
+            "Show Codex sub-agent sessions as nested Agent sidechains in the Happy mobile app.",
+        ),
     ];
 
     for (feature, key, menu_name, menu_description) in expected {

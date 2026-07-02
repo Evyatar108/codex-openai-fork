@@ -77,10 +77,7 @@ impl App {
                     }
                 });
                 self.happy_tap = codex_happy::attach::maybe_attach_reporting(
-                    codex_happy::attach::AttachParams::new(
-                        self.config.cwd.to_path_buf(),
-                        CODEX_CLI_VERSION.to_string(),
-                    ),
+                    self.remote_session_attach_params(),
                     app_server.request_handle(),
                     outcome,
                 );
@@ -88,6 +85,32 @@ impl App {
         } else {
             self.happy_tap = None;
         }
+    }
+
+    /// Build the `AttachParams` for the runtime `SetRemoteSession` attach path.
+    /// Both `/remote on` and the auto-attach flow reach this method via
+    /// `AppEvent::SetRemoteSession` -> `apply_remote_session_toggle`, so the
+    /// gate MUST be threaded here too — not only at the boot constructor in
+    /// `app.rs`. Auto-attach is the primary way sessions reach Happy, so
+    /// without this the feature would never nest subagents in practice.
+    /// Split out so tests can assert the gate without spawning the overlay.
+    // SANDBOX PATCH: remote_subagent_sessions — wire the subagent-nesting gate
+    // from `Feature::RemoteSubagentSessions` through the runtime toggle so
+    // auto-attached + `/remote on` sessions nest codex subagent (spawn_agent
+    // child) threads as Happy Agent sidechains. Default-off (Disabled) keeps
+    // the mobile transcript byte-identical to plain remote-session output.
+    pub(super) fn remote_session_attach_params(&self) -> codex_happy::attach::AttachParams {
+        codex_happy::attach::AttachParams::new(
+            self.config.cwd.to_path_buf(),
+            CODEX_CLI_VERSION.to_string(),
+        )
+        .with_subagent_sessions(
+            codex_happy::inbound::SubagentSessions::from_feature_enabled(
+                self.config
+                    .features
+                    .enabled(Feature::RemoteSubagentSessions),
+            ),
+        )
     }
 
     pub(super) async fn handle_event(

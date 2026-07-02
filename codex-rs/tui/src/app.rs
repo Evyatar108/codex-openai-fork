@@ -1039,6 +1039,16 @@ See the Codex keymap documentation for supported actions and examples."
                 codex_happy::attach::AttachParams::new(
                     config.cwd.to_path_buf(),
                     CODEX_CLI_VERSION.to_string(),
+                )
+                // SANDBOX PATCH: remote_subagent_sessions — wire the subagent-
+                // nesting gate from `Feature::RemoteSubagentSessions` so codex
+                // subagent (spawn_agent child) threads appear as nested Agent
+                // sidechains in the Happy app. Default-off (Disabled) leaves the
+                // mobile transcript byte-identical to plain remote-session output.
+                .with_subagent_sessions(
+                    codex_happy::inbound::SubagentSessions::from_feature_enabled(
+                        config.features.enabled(Feature::RemoteSubagentSessions),
+                    ),
                 ),
                 app_server.request_handle(),
             )

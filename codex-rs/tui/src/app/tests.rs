@@ -4303,6 +4303,41 @@ async fn remote_session_toggle_attaches_then_detaches_without_killing_session() 
 }
 
 #[tokio::test]
+async fn remote_session_toggle_attach_params_carry_subagent_gate_from_feature() -> Result<()> {
+    // US-005 runtime-path gap closure: `/remote on` AND the auto-attach flow
+    // both attach via `AppEvent::SetRemoteSession` ->
+    // `apply_remote_session_toggle`, which builds its `AttachParams` through
+    // `remote_session_attach_params`. That builder MUST thread the
+    // `remote_subagent_sessions` gate from config so auto-attached sessions (the
+    // primary way sessions reach Happy now) nest codex subagent (spawn_agent
+    // child) threads too — not just the boot constructor in `app.rs`.
+    let mut app = make_test_app().await;
+
+    // Default test config: feature OFF -> gate Disabled (vanilla transcript).
+    assert!(
+        !app.config.features.enabled(Feature::RemoteSubagentSessions),
+        "remote_subagent_sessions is default-off in the test config"
+    );
+    assert_eq!(
+        app.remote_session_attach_params().subagent_sessions,
+        codex_happy::inbound::SubagentSessions::Disabled,
+        "runtime SetRemoteSession attach defaults the subagent gate OFF when the feature is off"
+    );
+
+    // Feature ON -> gate Enabled: the runtime attach path nests subagents.
+    app.config
+        .features
+        .set_enabled(Feature::RemoteSubagentSessions, true);
+    assert_eq!(
+        app.remote_session_attach_params().subagent_sessions,
+        codex_happy::inbound::SubagentSessions::Enabled,
+        "enabling Feature::RemoteSubagentSessions threads the gate through the runtime SetRemoteSession attach path"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_paste() -> Result<()>
 {
     let mut app = make_test_app().await;
