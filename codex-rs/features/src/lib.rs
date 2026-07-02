@@ -194,6 +194,20 @@ pub enum Feature {
     /// `subagent` id + emit a synthetic parent Agent tool-call). Default off; opt
     /// in via `/experimental` or `-c features.remote_subagent_sessions=true`.
     RemoteSubagentSessions,
+    // SANDBOX PATCH: remote_public_server — opt-in gate declaring the single-user
+    // PUBLIC happy-server variant (embedded per-daemon happy-server fronted by a
+    // Cloudflare Access edge). Codex is UNAFFECTED at the transport level:
+    // `/remote on` always attaches to the LOCAL `http://127.0.0.1:<tunnelPort>`
+    // daemon listener from persisted machine state, never the public URL. The gate
+    // only declares the operator's opt-in so it surfaces in `/experimental` and
+    // strict config accepts `-c features.remote_public_server=...`.
+    /// Opt into the single-user PUBLIC happy-server variant (embedded per-daemon
+    /// happy-server exposed over a Cloudflare Access edge). Default off; opt in via
+    /// `/experimental` or `-c features.remote_public_server=true`. Codex stays a
+    /// same-machine loopback attach regardless — this only marks the operator's
+    /// opt-in; the public exposure itself is owned by the CLI/daemon
+    /// (`HAPPY_TUNNEL_PROVIDER=cloudflare`).
+    RemotePublicServer,
     /// Enable CSV-backed agent job tools.
     SpawnCsv,
     /// Enable apps.
@@ -1138,6 +1152,23 @@ pub const FEATURES: &[FeatureSpec] = &[
             name: "Remote sub-agent sessions",
             menu_description: "Show Codex sub-agent sessions as nested Agent sidechains in the Happy mobile app.",
             announcement: "Remote sub-agent sessions can now be enabled from /experimental. Restart Codex after enabling it.",
+        },
+        default_enabled: false,
+    },
+    // SANDBOX PATCH: remote_public_server — opt-in gate declaring the single-user
+    // PUBLIC happy-server variant. Default off; the gate only declares the
+    // operator's opt-in (surfaces in `/experimental`; strict config accepts
+    // `-c features.remote_public_server=...` via `is_known_feature_key`). Codex
+    // stays a same-machine loopback attach: `/remote on` always targets
+    // `http://127.0.0.1:<tunnelPort>` from persisted machine state, never the
+    // public URL. Public exposure is owned by the CLI/daemon, not codex.
+    FeatureSpec {
+        id: Feature::RemotePublicServer,
+        key: "remote_public_server",
+        stage: Stage::Experimental {
+            name: "Remote public server",
+            menu_description: "Opt into the single-user public happy-server variant (Cloudflare Access edge). Codex stays a same-machine loopback attach.",
+            announcement: "Remote public server can now be enabled from /experimental. Restart Codex after enabling it.",
         },
         default_enabled: false,
     },

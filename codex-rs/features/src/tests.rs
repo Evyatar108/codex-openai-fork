@@ -285,6 +285,13 @@ fn fork_visibility_features_are_experimental_and_disabled_by_default() {
             "Remote sub-agent sessions",
             "Show Codex sub-agent sessions as nested Agent sidechains in the Happy mobile app.",
         ),
+        // SANDBOX PATCH: remote_public_server gate is visible and default-off in `/experimental`.
+        (
+            Feature::RemotePublicServer,
+            "remote_public_server",
+            "Remote public server",
+            "Opt into the single-user public happy-server variant (Cloudflare Access edge). Codex stays a same-machine loopback attach.",
+        ),
     ];
 
     for (feature, key, menu_name, menu_description) in expected {
